@@ -1,0 +1,9 @@
+Bio==1.8.0
+biopython==1.85
+h5py==3.14.0
+joblib==1.4.2
+numpy==2.3.2
+scipy==1.16.1
+torch==2.6.0+cu124
+torch_geometric==2.6.1
+transformers==4.53.2
