@@ -1,0 +1,22 @@
+Statistical Enrichment Analysis: gnomad_af
+============================================================
+
+Test: Chi-squared
+P-value: 1.7060e-40
+Cramér's V: 0.041
+
+Edgotype Proportions:
+----------------------------------------
+Group	Quasi-WT	Quasi-Null	Edgetic
+gnomad_upper_af_1e-06	0.675	0.322	0.003
+gnomad_upper_af_1e-05	0.723	0.274	0.003
+gnomad_upper_af_0.0001	0.716	0.280	0.003
+gnomad_upper_af_0.001	0.760	0.237	0.003
+gnomad_upper_af_0.01	0.759	0.239	0.001
+gnomad_upper_af_0.1	0.828	0.168	0.003
+
+Interpretation:
+----------------------------------------
+Chi-squared: Highly significant difference (p < 0.001)
+Cramér's V: 0.041 (negligible effect)
+No significant trend detected (p = 0.544)

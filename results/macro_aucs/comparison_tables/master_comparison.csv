@@ -1,0 +1,9 @@
+Dataset,Method,Class 1,Class 2,Class 3
+Sahni,GATMutPPI,0.8472 ± 0.0407,0.8155 ± 0.0318,0.6894 ± 0.0311
+Sahni,SWING (Test Pretrain),0.8092 ± 0.0242,0.6873 ± 0.0199,0.5062 ± 0.0217
+Sahni+Fragoza,GATMutPPI,0.8512 ± 0.0125,0.8177 ± 0.0140,0.7230 ± 0.0209
+Sahni+Fragoza,SWING (Test Pretrain),0.7776 ± 0.0093,0.6963 ± 0.0107,0.4830 ± 0.0160
+Sahni+Fragoza (VarChAMP/Cava),GATMutPPI,0.8458 ± 0.0107,0.8411 ± 0.0102,0.7179 ± 0.0220
+Sahni+Fragoza (VarChAMP/Cava),SWING (Test Pretrain),0.7832 ± 0.0082,0.7351 ± 0.0070,0.4939 ± 0.0138
+Sahni (VarChAMP/Cava),GATMutPPI,0.8466 ± 0.0235,0.8372 ± 0.0216,0.6932 ± 0.0321
+Sahni (VarChAMP/Cava),SWING (Test Pretrain),0.7812 ± 0.0139,0.7423 ± 0.0115,0.4978 ± 0.0180

@@ -1,0 +1,11 @@
+Statistical Enrichment Analysis: gnomad_disease_gene
+============================================================
+
+Test: Chi-squared
+P-value: 2.3004e-143
+Cramér's V: 0.040
+
+Interpretation:
+----------------------------------------
+Chi-squared: Highly significant difference (p < 0.001)
+Cramér's V: 0.040 (negligible effect)
