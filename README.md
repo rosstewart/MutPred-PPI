@@ -180,7 +180,7 @@ python ../02_run_gatmutppi_inference.py \
     --device cuda:0
 
 # View results
-cat output/results/predictions.csv
+cat output/results/GATMutPPI_preds.tsv
 ```
 
 ## Project Structure
@@ -248,7 +248,7 @@ If you use GATMutPPI in your research, please cite:
   author={Stewart, Ross and others},
   journal={xxx},
   year={xxx},
-  doi={xxxx}
+  doi={xxx}
 }
 ```
 
