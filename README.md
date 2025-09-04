@@ -47,6 +47,7 @@ Core dependencies from `src/requirements.txt`:
 python src/00_make_af3_input_files.py proteins.fasta variants.tsv af3_inputs/
 
 # Step 2: Generate in-house AlphaFold3 structures or submit to AlphaFold3 Server and download structures (note: submitting to AlphaFold3 Server may require differently formatted input files)
+# If available, experimental structures function as an alternative to those generated with AlphaFold3
 
 # Step 3: Generate contact graphs
 python src/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.tsv
