@@ -16,7 +16,7 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/gatmutppi.git
+git clone https://github.com/rosstewart/gatmutppi.git
 cd gatmutppi
 
 # Install dependencies
@@ -110,7 +110,7 @@ python src/01_make_contact_graphs_and_fasta.py \
 - `n_jobs`: Number of parallel jobs (default: 1)
 
 **Outputs:**
-- `working_dir/af3_graphs/`: Contact graph matrices (.mat files)
+- `working_dir/af3_graphs/`: Contact graph matrices (.mat and helper files)
 - `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences
 
 ### Step 3: Run GATMutPPI Inference
@@ -127,8 +127,8 @@ python src/02_run_gatmutppi_inference.py \
 - `working_dir`: Directory from Step 2 containing graphs and FASTA
 - `--device`: GPU device (default: cuda:0, use 'cpu' if no GPU)
 
-**Outputs:**
-- `working_dir/results/`: Prediction scores and analysis files
+**Output:**
+- `working_dir/results/GATMutPPI_preds.tsv`: Prediction scores for each input variant. Format: `(variant_partner_id, prediction_score)`
 
 ## File Formats
 
@@ -148,8 +148,7 @@ The pipeline accepts mmCIF files with flexible naming:
 ### Output Format
 
 Predictions are saved as:
-- Probability scores: 0.0 (maintained) to 1.0 (disrupted)
-- Per-variant results in CSV format
+- Per-variant results in TSV format
 
 ## Example Workflow
 
@@ -166,7 +165,7 @@ python ../00_make_af3_input_files.py \
     af3_inputs/
 
 # 2. Generate AlphaFold3 structures in-house or submit JSON files to AlphaFold3 Server
-# Download structures to structures/
+# Save structures to structures/
 
 # 3. Process structures
 python ../01_make_contact_graphs_and_fasta.py \
@@ -202,26 +201,9 @@ gatmutppi/
 └── README.md
 ```
 
-## Model Architecture
-
-GATMutPPI uses a multi-layer architecture:
-
-1. **Input Processing**
-   - Contact graphs from AlphaFold3 structures (4.5Å distance cutoff)
-   - ProtT5 embeddings for sequence representation
-
-2. **Graph Neural Network**
-   - Graph Attention Network (GAT) layers
-   - Attention mechanisms for important residue identification
-   - Global pooling for graph-level predictions
-
-3. **Output**
-   - Binary classification: disrupted vs. maintained
-   - Probability scores for confidence assessment
-
 ## Performance
 
-- **Inference speed**: ~100 variants/minute on GPU
+- **Inference speed**: ~100 variant-partner combinations/minute on GPU (after contact graph generation)
 - **Memory usage**: ~4GB GPU memory for typical complexes
 - **Accuracy**: See publication for detailed benchmarks
 
@@ -278,15 +260,3 @@ MIT License - see LICENSE file for details
 
 - **Issues**: Please open an issue on GitHub for bug reports or feature requests
 - **Email**: stewart.ro@northeastern.edu
-- **Personal Website**: https://rosstewart.github.io/
-
-## Acknowledgments
-
-- AlphaFold3 team for structure prediction capabilities
-- ProtT5 developers for protein language models
-- PyTorch Geometric contributors for graph neural network tools
-
-## Updates
-
-- **v1.0.0** (September 2025): Initial release
-- Check GitHub releases for latest updates
