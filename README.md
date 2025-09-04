@@ -9,7 +9,7 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 **Key Features:**
 - Graph neural networks with attention mechanisms for structural analysis
 - ProtT5 protein language model embeddings for sequence representation
-- Binary classification: disrupted (1) vs. maintained (0) interactions
+- Binary classification: probabilistic score ranging from [0-1], disrupted (1) vs. maintained (0) interactions
 - Parallel processing support for large-scale analysis
 
 ## Installation
@@ -251,10 +251,6 @@ If you use GATMutPPI in your research, please cite:
   doi={xxxx}
 }
 ```
-
-## License
-
-MIT License - see LICENSE file for details
 
 ## Contact
 
