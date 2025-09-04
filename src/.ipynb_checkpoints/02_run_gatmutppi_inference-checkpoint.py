@@ -7,6 +7,9 @@ runs GATMutPPI inference on a preformatted dataset and saves results
 Interaction prediction labels:
 - 1: Disrupted interaction (variant disrupts protein-protein interaction)
 - 0: Unperturbed interaction (variant maintains wild-type interaction)
+
+Usage:
+    python 02_run_gatmutppi_inference.py <working_dir> --device <device>
 '''
 
 import sys
