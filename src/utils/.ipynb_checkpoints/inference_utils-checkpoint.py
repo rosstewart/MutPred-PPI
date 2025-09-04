@@ -27,7 +27,7 @@ def write_output(out_f, ppi_preds, vt_ids):
     assert len(ppi_preds) == len(vt_ids)
     with open(out_f,'w') as f:
         for i,pred in enumerate(ppi_preds):
-            f.write(f'{vt_ids[i]} {pred}')
+            f.write(f'{vt_ids[i]}\t{pred}')
 
 
 '''
@@ -256,8 +256,9 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
                 print(f'done',flush=True)
                 prediction_count += 1
 
+                # save results along the way for large requests
                 if prediction_count % 2000 == 1000:
-                    write_output(f'{results_dir}/GATMutPPI_preds.txt', ppi_preds, all_vt_ids)
+                    write_output(f'{results_dir}/GATMutPPI_preds.tsv', ppi_preds, all_vt_ids)
 
             
             except Exception as e:
@@ -267,8 +268,8 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
                 # sys.exit(1)
     
     # save predictions
-    write_output(f'{results_dir}/GATMutPPI_preds.txt', ppi_preds, all_vt_ids)
-    print(f'\nWrote {len(ppi_preds)} prediction{"s" if len(ppi_preds) != 1 else ""} to {results_dir}/GATMutPPI_preds.txt', end='\n\n')
+    write_output(f'{results_dir}/GATMutPPI_preds.tsv', ppi_preds, all_vt_ids)
+    print(f'\nWrote {len(ppi_preds)} prediction{"s" if len(ppi_preds) != 1 else ""} to {results_dir}/GATMutPPI_preds.tsv', end='\n\n')
 
     
 
