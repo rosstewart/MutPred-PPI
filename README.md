@@ -12,14 +12,6 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 - Binary classification: probabilistic score ranging from [0-1], disrupted (1) vs. maintained (0) interactions
 - Parallel processing support for large-scale analysis
 
-### Licensing Note
-
-GATMutPPI operates under a dual-license structure depending on your structural data source:
-- **When using AlphaFold3 structures**: Non-commercial use only (Path A)
-- **When using PDB/experimental structures**: Standard MIT license (Path B)
-
-See LICENSE file for complete details. Users must document their structure sources.
-
 ## Installation
 
 ```bash
@@ -46,6 +38,14 @@ Core dependencies from `src/requirements.txt`:
 - `torch_geometric==2.6.1` - Graph neural networks
 - `transformers==4.46.0` - Protein language models
 - `numpy`, `scipy`, `joblib` - Scientific computing
+
+## Licensing Note
+
+GATMutPPI operates under a dual-license structure depending on your structural data source:
+- **When using AlphaFold3 structures**: Non-commercial use only (Path A)
+- **When using PDB/experimental structures**: Standard MIT license (Path B)
+
+See LICENSE file for complete details. Users must document their structure sources.
 
 ## Quick Start
 
