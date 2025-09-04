@@ -93,7 +93,7 @@ PROT2	W89R	PROT3
 
 ### Step 1.5: Generate AlphaFold3 structures
 
-Due to licensing restrictions, we are unable to provide AlphaFold3 binaries. AlphaFold3 source code and instructions for requesting access to model weights are available on [AlphaFold3's GitHub Page](https://github.com/google-deepmind/alphafold3). Alternatively, submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) (note: submitting to AlphaFold3 Server may require differently formatted input files).
+Due to licensing restrictions, we are unable to provide AlphaFold3 binaries. AlphaFold3 source code and instructions for requesting access to model weights are available on [AlphaFold3's GitHub Page](https://github.com/google-deepmind/alphafold3). Alternatively, submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) (note: AlphaFold3 Server may require slight modifications to generated input files).
 
 Save resulting PDBx/mmCIF files to `<mmcif_dir>`, which you will use in the next step.
 
