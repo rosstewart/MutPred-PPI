@@ -1,6 +1,6 @@
 # GATMutPPI
 
-Official repository for GATMutPPI: Predicting interaction-specific protein–protein interaction perturbations by missense variants
+Official repository for "Predicting interaction-specific protein–protein interaction perturbations by missense variants with GATMutPPI"
 
 ## Overview
 
@@ -45,7 +45,7 @@ Core dependencies from `src/requirements.txt`:
 # Step 1: Prepare AlphaFold3 inputs
 python src/00_make_af3_input_files.py proteins.fasta variants.tsv af3_inputs/
 
-# Step 2: Submit to AlphaFold3 Server and download structures
+# Step 2: Generate in-house AlphaFold3 structures or submit to AlphaFold3 Server and download structures (note: submitting to AlphaFold3 Server may require differently formatted input files)
 
 # Step 3: Generate contact graphs
 python src/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.tsv
@@ -148,8 +148,7 @@ The pipeline accepts mmCIF files with flexible naming:
 ### Output Format
 
 Predictions are saved as:
-- Binary labels: 0 (maintained) or 1 (disrupted)
-- Probability scores: 0.0 to 1.0
+- Probability scores: 0.0 (maintained) to 1.0 (disrupted)
 - Per-variant results in CSV format
 
 ## Example Workflow
@@ -166,7 +165,7 @@ python ../00_make_af3_input_files.py \
     test_variants.tsv \
     af3_inputs/
 
-# 2. Submit JSON files to AlphaFold3 Server
+# 2. Generate AlphaFold3 structures in-house or submit JSON files to AlphaFold3 Server
 # Download structures to structures/
 
 # 3. Process structures
@@ -262,12 +261,12 @@ pip install -r src/requirements.txt --upgrade
 If you use GATMutPPI in your research, please cite:
 
 ```bibtex
-@article{stewart2025gatmutppi,
-  title={Graph Attention Networks for Predicting Mutation Effects on Protein-Protein Interactions},
+@article{xxx,
+  title={Predicting interaction-specific protein–protein interaction perturbations by missense variants with GATMutPPI},
   author={Stewart, Ross and others},
-  journal={Nature Communications},
-  year={2025},
-  doi={10.1038/xxxxx}
+  journal={xxx},
+  year={xxx},
+  doi={xxxx}
 }
 ```
 
@@ -278,8 +277,8 @@ MIT License - see LICENSE file for details
 ## Contact
 
 - **Issues**: Please open an issue on GitHub for bug reports or feature requests
-- **Email**: ross.stewart@university.edu
-- **Lab Website**: https://labwebsite.edu
+- **Email**: stewart.ro@northeastern.edu
+- **Personal Website**: https://rosstewart.github.io/
 
 ## Acknowledgments
 
