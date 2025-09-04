@@ -39,13 +39,6 @@ Core dependencies from `src/requirements.txt`:
 - `transformers==4.46.0` - Protein language models
 - `numpy`, `scipy`, `joblib` - Scientific computing
 
-## Licensing Note
-
-GATMutPPI operates under a dual-license structure depending on your structural data source:
-- **When using AlphaFold3 structures**: Non-commercial use only (Path A)
-- **When using PDB/experimental structures**: Standard MIT license (Path B)
-
-See LICENSE file for complete details. Users must document their structure sources.
 
 ## Quick Start
 
@@ -116,6 +109,8 @@ Save all structure files (from either source) to `<mmcif_dir>` for use in Step 2
 **Note on Licensing:** The source of your structural data determines the applicable license:
 - AlphaFold3 structures → Non-commercial use only
 - PDB/experimental structures → No commercial restrictions (MIT license applies)
+
+See LICENSE file for complete details.
 
 ### Step 2: Generate Contact Graphs
 
