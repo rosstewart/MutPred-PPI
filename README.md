@@ -12,6 +12,14 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 - Binary classification: probabilistic score ranging from [0-1], disrupted (1) vs. maintained (0) interactions
 - Parallel processing support for large-scale analysis
 
+### Licensing Note
+
+GATMutPPI operates under a dual-license structure depending on your structural data source:
+- **When using AlphaFold3 structures**: Non-commercial use only (Path A)
+- **When using PDB/experimental structures**: Standard MIT license (Path B)
+
+See LICENSE file for complete details. Users must document their structure sources.
+
 ## Installation
 
 ```bash
@@ -91,11 +99,23 @@ PROT1	G456D	PROT3
 PROT2	W89R	PROT3
 ```
 
-### Step 1.5: Generate AlphaFold3 structures
+### Step 1.5: Generate or Obtain Protein Complex Structures
 
-Due to licensing restrictions, we are unable to provide AlphaFold3 binaries. AlphaFold3 source code and instructions for requesting access to model weights are available on [AlphaFold3's GitHub Page](https://github.com/google-deepmind/alphafold3). Alternatively, submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) (note: AlphaFold3 Server may require slight modifications to generated input files).
+You have two options for obtaining structures:
 
-Save resulting PDBx/mmCIF files to `<mmcif_dir>`, which you will use in the next step.
+#### Option A: AlphaFold3 Structures (Non-commercial use only)
+Due to licensing restrictions, we cannot provide AlphaFold3 binaries. AlphaFold3 source code and instructions for requesting access to model weights are available on [AlphaFold3's GitHub Page](https://github.com/google-deepmind/alphafold3). Alternatively, submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) (note: AlphaFold3 Server may require slight modifications to generated input files).
+
+**Important:** AlphaFold3 structures are restricted to non-commercial use only.
+
+#### Option B: Experimental Structures (No restrictions)
+If experimental structures of your protein complexes are available in the Protein Data Bank (PDB), you can use these without commercial restrictions. Download PDB structures and convert to mmCIF format if needed.
+
+Save all structure files (from either source) to `<mmcif_dir>` for use in Step 2.
+
+**Note on Licensing:** The source of your structural data determines the applicable license:
+- AlphaFold3 structures → Non-commercial use only
+- PDB/experimental structures → No commercial restrictions (MIT license applies)
 
 ### Step 2: Generate Contact Graphs
 
