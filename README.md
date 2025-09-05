@@ -4,7 +4,7 @@ Official repository for "Predicting interaction-specific protein–protein inter
 
 ## Overview
 
-GATMutPPI is a deep learning framework that predicts whether missense mutations disrupt protein-protein interactions. It combines structural information from AlphaFold3-predicted complexes with sequence embeddings from protein language models to achieve high-accuracy predictions.
+GATMutPPI is a deep learning framework that predicts whether missense mutations disrupt protein-protein interactions. It combines structural information from protein complexes with sequence embeddings from protein language models to achieve high-accuracy predictions.
 
 **Key Features:**
 - Graph neural networks with attention mechanisms for structural analysis
@@ -43,11 +43,10 @@ Core dependencies from `src/requirements.txt`:
 ## Quick Start
 
 ```bash
-# Step 1: Prepare AlphaFold3 inputs
+# Step 1: Prepare AlphaFold3 inputs (if using AlphaFold3)
 python src/00_make_af3_input_files.py proteins.fasta variants.tsv af3_inputs/
 
-# Step 2: Generate in-house AlphaFold3 structures or submit to AlphaFold3 Server and download structures (note: submitting to AlphaFold3 Server may require differently formatted input files)
-# If available, experimental structures function as an alternative to those generated with AlphaFold3
+# Step 2: Obtain protein complex structures (see Step 1.5 below)
 
 # Step 3: Generate contact graphs
 python src/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.tsv
@@ -58,9 +57,9 @@ python src/02_run_gatmutppi_inference.py working_dir/
 
 ## Detailed Usage
 
-### Step 1: Prepare AlphaFold3 Input Files
+### Step 1: Prepare AlphaFold3 Input Files (Optional)
 
-Generate JSON files for AlphaFold3 Server submission:
+If using AlphaFold3 for structure generation, prepare JSON files for submission:
 
 ```bash
 python src/00_make_af3_input_files.py \
@@ -93,29 +92,26 @@ PROT1	G456D	PROT3
 PROT2	W89R	PROT3
 ```
 
-### Step 1.5: Generate or Obtain Protein Complex Structures
+### Step 1.5: Obtain Protein Complex Structures
 
-You have two options for obtaining structures:
+GATMutPPI requires protein complex structures in mmCIF format. You can use structures from any source:
 
-#### Option A: AlphaFold3 Structures (Non-commercial use only)
-Due to licensing restrictions, we cannot provide AlphaFold3 binaries. AlphaFold3 source code and instructions for requesting access to model weights are available on [AlphaFold3's GitHub Page](https://github.com/google-deepmind/alphafold3). Alternatively, submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) (note: AlphaFold3 Server may require slight modifications to generated input files).
+#### Option A: AlphaFold3 Structures
+Submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) using the JSON files from Step 1, or generate structures locally if you have access to AlphaFold3. 
 
-**Important:** AlphaFold3 structures are restricted to non-commercial use only.
+**Note:** AlphaFold3 structures are subject to AlphaFold3's Terms of Use (non-commercial use only). See their [terms](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md) for details.
 
-#### Option B: Experimental Structures (No restrictions)
-If experimental structures of your protein complexes are available in the Protein Data Bank (PDB), you can use these without commercial restrictions. Download PDB structures and convert to mmCIF format if needed.
+#### Option B: Experimental Structures
+Download experimental structures from the [Protein Data Bank](https://www.rcsb.org/). Convert to mmCIF format if needed.
 
-Save all structure files (from either source) to `<mmcif_dir>` for use in Step 2.
+#### Option C: Other Structure Prediction Tools
+Use any other structure prediction tool that outputs mmCIF or PDB format.
 
-**Note on Licensing:** The source of your structural data determines the applicable license:
-- AlphaFold3 structures → Non-commercial use only
-- PDB/experimental structures → No commercial restrictions (MIT license applies)
-
-See LICENSE file for complete details.
+Save all structure files to `<mmcif_dir>` for use in Step 2.
 
 ### Step 2: Generate Contact Graphs
 
-Process AlphaFold3 structures to create residue contact graphs:
+Process structures to create residue contact graphs:
 
 ```bash
 python src/01_make_contact_graphs_and_fasta.py \
@@ -127,7 +123,7 @@ python src/01_make_contact_graphs_and_fasta.py \
 
 **Arguments:**
 - `working_dir`: Output directory for graphs and sequences
-- `mmcif_dir`: Directory containing AlphaFold3 .cif files
+- `mmcif_dir`: Directory containing structure files (.cif or .mmcif)
 - `variants_file`: Same TSV file from Step 1
 - `n_jobs`: Number of parallel jobs (default: 1)
 
@@ -160,7 +156,7 @@ Variants use standard notation: `[WT_residue][position][MT_residue]`
 - Example: `V123A` (Valine at position 123 to Alanine)
 - Position numbering starts at 1
 
-### AlphaFold3 Structure Files
+### Structure Files
 
 The pipeline accepts mmCIF files with flexible naming:
 - `PROT1_PROT2.cif`
@@ -180,13 +176,13 @@ Complete example using provided test data:
 # Navigate to example directory
 cd src/example/
 
-# 1. Generate AlphaFold3 inputs
+# 1. Generate AlphaFold3 inputs (if using AlphaFold3)
 python ../00_make_af3_input_files.py \
     test_proteins.fasta \
     test_variants.tsv \
     af3_inputs/
 
-# 2. Generate AlphaFold3 structures in-house or submit JSON files to AlphaFold3 Server
+# 2. Obtain structures (from AlphaFold3 Server, PDB, or other source)
 # Save structures to structures/
 
 # 3. Process structures
@@ -217,9 +213,10 @@ gatmutppi/
 │   │   ├── inference_utils.py           # Core inference functions
 │   │   ├── model_loader.py              # Model loading utilities
 │   │   └── prott5_loader.py             # ProtT5 embedding generation
-│   ├── models/                           # Pre-trained model weights
-│   ├── example/                          # Example data and workflow
-│   └── requirements.txt                  # Python dependencies
+│   ├── models/                          # Pre-trained model weights
+│   ├── example/                         # Example data and workflow
+│   └── requirements.txt                 # Python dependencies
+├── LICENSE                               # MIT License
 └── README.md
 ```
 
@@ -242,7 +239,7 @@ python src/02_run_gatmutppi_inference.py working_dir/ --device cpu
 python src/02_run_gatmutppi_inference.py working_dir/ --device cuda:1
 ```
 
-**Missing AlphaFold3 structures:**
+**Missing structures:**
 - Ensure structure files contain both protein IDs in filename
 - Check that files have .cif or .mmcif extension
 - Verify proteins IDs match between FASTA and TSV files
@@ -260,6 +257,15 @@ cd gatmutppi/
 pip install -r src/requirements.txt --upgrade
 ```
 
+## License
+
+This software is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+**Important Note:** While GATMutPPI itself is open source, users must comply with the licensing terms of any structural data they use as input:
+- If using AlphaFold3 structures: Subject to [AlphaFold3 Terms of Use](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md) (non-commercial only)
+- If using PDB structures: Check individual structure licenses
+- Other structure sources: Comply with respective terms
+
 ## Citation
 
 If you use GATMutPPI in your research, please cite:
@@ -267,10 +273,10 @@ If you use GATMutPPI in your research, please cite:
 ```bibtex
 @article{xxx,
   title={Predicting interaction-specific protein–protein interaction perturbations by missense variants with GATMutPPI},
-  author={Stewart, Ross and others},
-  journal={xxx},
+  author={Stewart, Ross and Laval, Florent and Calderwood, Michael A and Vidal, Marc and Starita, Lea M and Fowler, Douglas M and Radivojac, Predrag},
+  journal={[xxx]},
   year={xxx},
-  doi={xxx}
+  doi={[DOI]}
 }
 ```
 
