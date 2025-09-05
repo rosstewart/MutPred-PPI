@@ -1,44 +1,7 @@
 GATMutPPI License
 Copyright (c) 2025 Ross Stewart
 
-This software can process protein complex structures from various sources. The applicable
-license terms depend on the source of structural data used:
-
-DUAL LICENSING STRUCTURE:
-
-PATH A - WHEN USING ALPHAFOLD3 STRUCTURES (Non-Commercial Only):
-If using AlphaFold3-generated structures, this software is subject to strict 
-non-commercial restrictions. AlphaFold3 output is governed by Google DeepMind's 
-AlphaFold3 Terms of Use, available at:
-https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md
-
-Under Path A, the software may ONLY be used for non-commercial purposes by or on 
-behalf of non-commercial organizations.
-
-PATH B - WHEN USING OTHER STRUCTURES (MIT License):
-If using experimentally-determined structures (e.g., from PDB) or other non-AlphaFold3
-structural data, this software is licensed under the standard MIT License terms below.
-
-TERMS AND CONDITIONS:
-
-FOR PATH A (AlphaFold3 Structures) - NON-COMMERCIAL USE ONLY:
-
-1. The Software may ONLY be used for non-commercial purposes by non-commercial 
-   organizations (universities, non-profits, research institutes, educational 
-   institutions, journalism bodies, and government bodies).
-
-2. Commercial use is strictly prohibited, including:
-   - Use by or on behalf of commercial organizations
-   - Commercial research or development
-   - Developing commercial products or services
-   - Any use resulting in financial gain
-
-3. Users must comply with AlphaFold3 Terms of Use, including:
-   - Not using AlphaFold3 output for commercial activities
-   - Not training competing structure prediction models
-   - Properly attributing AlphaFold3 in publications
-
-FOR PATH B (Non-AlphaFold3 Structures) - MIT LICENSE:
+MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -47,39 +10,40 @@ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
 
-COMMON REQUIREMENTS (Both Paths):
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-1. ATTRIBUTION: The above copyright notice and this permission notice shall be 
-   included in all copies or substantial portions of the Software. Any publication 
-   or presentation of results obtained using this Software must cite:
-   "Predicting interaction-specific protein–protein interaction perturbations by 
-   missense variants with GATMutPPI" by Ross Stewart et al.
-
-2. STRUCTURE SOURCE DECLARATION: Users must clearly document and maintain records 
-   of the source of structural data used (AlphaFold3 vs. experimental/other).
-
-3. NO WARRANTY: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, 
-   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-   SOFTWARE.
-
-4. USER RESPONSIBILITY: Users are solely responsible for:
-   - Determining which license path applies to their use case
-   - Ensuring compliance with applicable structural data licenses
-   - Maintaining proper documentation of structure sources
-   - Obtaining appropriate rights for their intended use
-
-5. TERMINATION: This license automatically terminates if you:
-   - Violate any terms of this license
-   - Use AlphaFold3 structures under Path B terms
-   - Misrepresent the source of structural data
-   - Violate the AlphaFold3 Terms of Use when using AlphaFold3 output
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ---
 
-IMPORTANT: The license path is determined by the SOURCE of structural data, not 
-user preference. Using any AlphaFold3-generated structures automatically invokes 
-Path A restrictions for that usage.
+ATTRIBUTION REQUIREMENT:
+Any publication or presentation of results obtained using this Software must cite:
+"Predicting interaction-specific protein–protein interaction perturbations by 
+missense variants with GATMutPPI" by Ross Stewart et al.
+
+---
+
+IMPORTANT NOTE FOR USERS:
+This software processes protein complex structures that users provide. Users are
+responsible for ensuring they have the appropriate rights to use any structural
+data they input into this software. 
+
+If you use AlphaFold3-generated structures as input:
+- You must comply with AlphaFold3's Terms of Use
+- AlphaFold3 output is restricted to non-commercial use only
+- See: https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md
+
+If you use experimentally-determined structures (e.g., from PDB):
+- Ensure compliance with the respective database's terms of use
+
+This software itself does not generate, include, or distribute AlphaFold3 
+structures. The licensing restrictions of your input data do not change the 
+MIT license of this software, but you remain responsible for complying with 
+the terms governing your use of that input data.
