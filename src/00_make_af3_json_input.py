@@ -67,13 +67,13 @@ def create_af3_json(id_a, seq_a, id_b, seq_b):
             {
                 "protein": {
                     "sequence": seq_a,
-                    "id": id_a
+                    "id": "A"
                 }
             },
             {
                 "protein": {
                     "sequence": seq_b,
-                    "id": id_b
+                    "id": "B"
                 }
             }
         ]
