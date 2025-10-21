@@ -55,6 +55,10 @@ python src/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.
 python src/02_run_gatmutppi_inference.py working_dir/
 ```
 
+## Data Availability
+
+Datasets used in experiments are freely available on Zenodo [here](https://doi.org/10.5281/zenodo.17409377).
+
 ## Detailed Usage
 
 ### Step 1: Prepare AlphaFold3 Input Files (Optional)
