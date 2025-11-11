@@ -129,11 +129,11 @@ python src/01_make_contact_graphs_and_fasta.py \
 - `working_dir`: Output directory for graphs and sequences
 - `mmcif_dir`: Directory containing structure files (.cif or .mmcif)
 - `variants_file`: Same TSV file from Step 1
-- `n_jobs`: Number of parallel jobs (default: 1)
+- `n_jobs`: Number of parallel jobs (default: 1). Parallel processing is recommended for large-scale analysis.
 
 **Outputs:**
 - `working_dir/af3_graphs/`: Contact graph matrices (.mat and helper files)
-- `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences
+- `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences (input file for ProtT5 to generate embeddings for all wild-type and mutated sequences)
 
 ### Step 3: Run GATMutPPI Inference
 
