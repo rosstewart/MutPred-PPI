@@ -33,11 +33,11 @@ pip install -r src/requirements.txt
 ### Dependencies
 
 Core dependencies from `src/requirements.txt`:
-- `biopython==1.85` - Biological sequence parsing
-- `torch==2.6.0` - Deep learning framework
-- `torch_geometric==2.6.1` - Graph neural networks
-- `transformers==4.46.0` - Protein language models
-- `numpy`, `scipy`, `joblib` - Scientific computing
+- `biopython==1.85`
+- `torch==2.6.0`
+- `torch_geometric==2.6.1`
+- `transformers==4.46.0`
+- `numpy`, `scipy`, `joblib`
 
 
 ## Quick Start
@@ -111,7 +111,7 @@ Download experimental structures from the [Protein Data Bank](https://www.rcsb.o
 #### Option C: Other Structure Prediction Tools
 Use any other structure prediction tool that outputs mmCIF or PDB format.
 
-Save all structure files to `<mmcif_dir>` for use in Step 2.
+Save all mmCIF structure files to `<mmcif_dir>` for use in Step 2. NOTE: The sequence in the structure file must exactly match the sequences in the FASTA files.
 
 ### Step 2: Generate Contact Graphs
 
