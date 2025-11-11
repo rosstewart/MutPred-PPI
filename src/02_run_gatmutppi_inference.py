@@ -16,12 +16,15 @@ import sys
 import argparse
 import os
 from utils.inference_utils import run_inference_on_dataset
+import warnings
+from sklearn.exceptions import InconsistentVersionWarning
+warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 # parse arguments
 parser = argparse.ArgumentParser(description='Run GATMutPPI inference')
-parser.add_argument('working_dir', help='Working directory containing AF3 graphs and FASTA')
+parser.add_argument('working_dir', help='Working directory containing af3_graphs/ and wt_and_vt.fasta')
 parser.add_argument('--device', default='cuda:0', help='GPU device (default: cuda:0)')
 args = parser.parse_args()
 

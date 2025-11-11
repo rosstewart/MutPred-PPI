@@ -21,7 +21,7 @@ def parse_fasta(fasta_file):
     sequences = {}
     
     for record in SeqIO.parse(fasta_file, "fasta"):
-        seq_id = record.id
+        seq_id = record.id.split('|')[0]
         seq = str(record.seq).upper()
         
         # Check that IDs don't contain hyphens (reserved for complex naming)

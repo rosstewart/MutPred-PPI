@@ -26,8 +26,11 @@ write output
 def write_output(out_f, ppi_preds, vt_ids):
     assert len(ppi_preds) == len(vt_ids)
     with open(out_f,'w') as f:
+        f.write('complex_id\tvariant\tscore\n')
         for i,pred in enumerate(ppi_preds):
-            f.write(f'{vt_ids[i]}\t{pred}')
+            wt_id, variant = vt_ids[i].split(' ')
+            variant = variant[0] + str(int(variant[1:-1])+1) + variant[-1]
+            f.write(f'{wt_id}\t{variant}\t{pred}\n')
 
 
 '''

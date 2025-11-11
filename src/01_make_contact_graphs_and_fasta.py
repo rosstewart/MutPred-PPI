@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('working_dir')
 parser.add_argument('mmcif_dir')
 parser.add_argument('variants_file')
-parser.add_argument('n_jobs', type=int, nargs='?', default=1)
+parser.add_argument('n_jobs', type=int, nargs='?', default=-1)
 args = parser.parse_args()
 
 wd = args.working_dir
@@ -233,6 +233,7 @@ def write_variant_labels(variant_indices, save_dir, method='interaction_loss'):
         for chain, mt_idx, wt_res, mt_res in variant_indices[complex_id]:
             # validate mutation
             if mt_idx >= num_residues_a or pdb_seq[mt_idx] != wt_res:
+                print(chain, mt_idx, wt_res, mt_res, num_residues_a, '\n', pdb_seq[mt_idx], wt_res, '\n', pdb_seq)
                 num_bad_variants += 1
                 continue
             
