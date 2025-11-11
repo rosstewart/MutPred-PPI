@@ -1,8 +1,8 @@
-biopython==1.85
+biopython==1.83
 torch>=2.0.0
 torch_geometric>=2.0.0
 transformers>=4.30.0
-numpy
+numpy<2.0.0
 scipy
 joblib
-pandas
+pandas<2.0.0
