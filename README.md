@@ -39,7 +39,7 @@ pip install -r src/requirements.txt
 - Python 3.9 or higher
 - CUDA-capable GPU (recommended for faster inference)
 - 16GB+ RAM recommended
-- ~1GB disk space for models and data
+- ~4GB disk space for models and data
 
 
 ## Quick Start
