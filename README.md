@@ -58,7 +58,7 @@ python src/02_run_gatmutppi_inference.py working_dir/
 
 ## Data Availability
 
-Datasets used in experiments are freely available on Zenodo: [https://doi.org/10.5281/zenodo.17409377](https://doi.org/10.5281/zenodo.17409377)
+Training and evaluation data is freely available on Zenodo: [https://doi.org/10.5281/zenodo.17409377](https://doi.org/10.5281/zenodo.17409377). Note that AlphaFold3 structures and some variant data (COSMIC, HGMD) are not included due to licensing restrictions and must be obtained from their respective sources.
 
 ## Detailed Usage
 
