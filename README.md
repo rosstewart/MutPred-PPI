@@ -9,7 +9,7 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 **Key Features:**
 - Graph neural networks with attention mechanisms for structural analysis
 - ProtT5 protein language model embeddings for sequence representation
-- Binary classification: probabilistic score ranging from [0-1], disrupted (1) vs. maintained (0) interactions
+- Binary classification: probabilistic score ranging from 0-1, where 1 indicates high probability of interaction disruption and 0 indicates preserved interaction
 - Parallel processing support for large-scale analysis
 
 ## Installation
@@ -19,7 +19,17 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 git clone https://github.com/rosstewart/gatmutppi.git
 cd gatmutppi
 
-# Install dependencies
+# Create conda environment
+conda create -n gatmutppi python=3.8 -y
+conda activate gatmutppi
+
+# Install PyTorch with CUDA support (for GPU)
+conda install pytorch==2.6.0 pytorch-cuda=11.8 -c pytorch -c nvidia -y
+
+# Or install PyTorch for CPU only
+# conda install pytorch==2.6.0 cpuonly -c pytorch -y
+
+# Install remaining dependencies
 pip install -r src/requirements.txt
 ```
 
@@ -33,11 +43,11 @@ pip install -r src/requirements.txt
 ### Dependencies
 
 Core dependencies from `src/requirements.txt`:
-- `biopython==1.85` - Biological sequence parsing
-- `torch==2.6.0` - Deep learning framework
-- `torch_geometric==2.6.1` - Graph neural networks
-- `transformers==4.46.0` - Protein language models
-- `numpy`, `scipy`, `joblib` - Scientific computing
+- `biopython==1.85`
+- `torch==2.6.0`
+- `torch_geometric==2.6.1`
+- `transformers==4.46.0`
+- `numpy`, `scipy`, `joblib`
 
 
 ## Quick Start
@@ -55,6 +65,10 @@ python src/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.
 python src/02_run_gatmutppi_inference.py working_dir/
 ```
 
+## Data Availability
+
+Datasets used in experiments are freely available on Zenodo: [https://doi.org/10.5281/zenodo.17409377](https://doi.org/10.5281/zenodo.17409377)
+
 ## Detailed Usage
 
 ### Step 1: Prepare AlphaFold3 Input Files (Optional)
@@ -62,7 +76,7 @@ python src/02_run_gatmutppi_inference.py working_dir/
 If using AlphaFold3 for structure generation, prepare JSON files for submission:
 
 ```bash
-python src/00_make_af3_input_files.py \
+python src/00_make_af3_json_input.py \
     <fasta_file> \
     <triplet_tsv> \
     <output_directory> \
@@ -105,9 +119,9 @@ Submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserve
 Download experimental structures from the [Protein Data Bank](https://www.rcsb.org/). Convert to mmCIF format if needed.
 
 #### Option C: Other Structure Prediction Tools
-Use any other structure prediction tool that outputs mmCIF or PDB format.
+Use any other structure prediction tool that outputs mmCIF or PDB format (e.g., AlphaFold-Multimer, RoseTTAFold).
 
-Save all structure files to `<mmcif_dir>` for use in Step 2.
+Save all mmCIF structure files to `<mmcif_dir>` for use in Step 2. **Important:** The sequences in the structure file must exactly match the sequences in the FASTA files.
 
 ### Step 2: Generate Contact Graphs
 
@@ -125,11 +139,11 @@ python src/01_make_contact_graphs_and_fasta.py \
 - `working_dir`: Output directory for graphs and sequences
 - `mmcif_dir`: Directory containing structure files (.cif or .mmcif)
 - `variants_file`: Same TSV file from Step 1
-- `n_jobs`: Number of parallel jobs (default: 1)
+- `n_jobs`: Number of parallel jobs (default: 1). Parallel processing is recommended for large-scale analysis. Large protein complexes may take several minutes to process.
 
 **Outputs:**
 - `working_dir/af3_graphs/`: Contact graph matrices (.mat and helper files)
-- `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences
+- `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences for ProtT5 embedding generation
 
 ### Step 3: Run GATMutPPI Inference
 
@@ -143,10 +157,11 @@ python src/02_run_gatmutppi_inference.py \
 
 **Arguments:**
 - `working_dir`: Directory from Step 2 containing graphs and FASTA
-- `--device`: GPU device (default: cuda:0, use 'cpu' if no GPU)
+- `--device`: Compute device (default: cuda:0, use 'cpu' if no GPU available)
 
 **Output:**
-- `working_dir/results/GATMutPPI_preds.tsv`: Prediction scores for each input variant. Format: `(variant_partner_id, prediction_score)`
+- `working_dir/results/GATMutPPI_preds.tsv`: Prediction scores for each input variant
+  - Tab-separated format with headers: `complex_id`, `variant`, `score`
 
 ## File Formats
 
@@ -155,6 +170,7 @@ python src/02_run_gatmutppi_inference.py \
 Variants use standard notation: `[WT_residue][position][MT_residue]`
 - Example: `V123A` (Valine at position 123 to Alanine)
 - Position numbering starts at 1
+- Use single-letter amino acid codes
 
 ### Structure Files
 
@@ -163,42 +179,51 @@ The pipeline accepts mmCIF files with flexible naming:
 - `prefix_PROT1_PROT2_suffix.mmcif`
 - Case-insensitive matching supported
 
-### Output Format
-
-Predictions are saved as:
-- Per-variant results in TSV format
-
 ## Example Workflow
 
-Complete example using provided test data:
+A complete minimal example using 10 test variants is provided in `src/example/`.
+
+**Note:** Example AlphaFold3 structures are subject to AlphaFold 3 Output Terms of Use and provided for non-commercial research only. See: https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
 ```bash
-# Navigate to example directory
-cd src/example/
+# Activate conda environment (if using conda)
+conda activate gatmutppi
+
+# Navigate to the src/ directory
+cd src/
 
 # 1. Generate AlphaFold3 inputs (if using AlphaFold3)
-python ../00_make_af3_input_files.py \
-    test_proteins.fasta \
-    test_variants.tsv \
-    af3_inputs/
+python 00_make_af3_json_input.py \
+    example/test_proteins.fasta \
+    example/test_variants.tsv \
+    example/
 
-# 2. Obtain structures (from AlphaFold3 Server, PDB, or other source)
-# Save structures to structures/
+# NOTE: For this example, structure generation is already done
+# Example structure: example/af3_models/fold_o00548_p46531_model_0.cif
 
-# 3. Process structures
-python ../01_make_contact_graphs_and_fasta.py \
-    output/ \
-    structures/ \
-    test_variants.tsv \
+# 2. Process structures to generate contact graphs
+python 01_make_contact_graphs_and_fasta.py \
+    example/ \
+    example/af3_models/ \
+    example/test_variants.tsv \
     4  # Use 4 parallel jobs
 
-# 4. Run predictions
-python ../02_run_gatmutppi_inference.py \
-    output/ \
+# 3. Run predictions
+python 02_run_gatmutppi_inference.py \
+    example/ \
     --device cuda:0
 
 # View results
-cat output/results/GATMutPPI_preds.tsv
+cat example/results/GATMutPPI_preds.tsv
+```
+
+**Expected output:**
+```
+complex_id	variant	score
+O00548_P46531	A653T	0.08524392545223236
+O00548_P46531	R661S	0.06803165376186371
+O00548_P46531	N34I	0.35405662655830383
+...
 ```
 
 ## Project Structure
@@ -206,7 +231,7 @@ cat output/results/GATMutPPI_preds.tsv
 ```
 gatmutppi/
 ├── src/
-│   ├── 00_make_af3_input_files.py       # AlphaFold3 input preparation
+│   ├── 00_make_af3_json_input.py       # AlphaFold3 input preparation
 │   ├── 01_make_contact_graphs_and_fasta.py  # Contact graph generation
 │   ├── 02_run_gatmutppi_inference.py    # Model inference
 │   ├── utils/
@@ -222,9 +247,9 @@ gatmutppi/
 
 ## Performance
 
-- **Inference speed**: ~100 variant-partner combinations/minute on GPU (after contact graph generation)
+- **Inference speed**: ~100 variant-partner combinations/minute on GPU (V100) with precomputed structures
 - **Memory usage**: ~4GB GPU memory for typical complexes
-- **Accuracy**: See publication for detailed benchmarks
+- **Accuracy**: AUC 0.85 (seen proteins), 0.72 (unseen proteins) - see publication for detailed benchmarks
 
 ## Troubleshooting
 
@@ -242,11 +267,16 @@ python src/02_run_gatmutppi_inference.py working_dir/ --device cuda:1
 **Missing structures:**
 - Ensure structure files contain both protein IDs in filename
 - Check that files have .cif or .mmcif extension
-- Verify proteins IDs match between FASTA and TSV files
+- Verify protein IDs match between FASTA and TSV files
+
+**Sequence mismatch errors:**
+- Ensure sequences in structure files exactly match FASTA sequences
+- Check for missing or extra residues in structure files
+- Verify correct protein pairing in filenames
 
 **Invalid amino acids in sequences:**
 - Only standard 20 amino acids supported (ACDEFGHIKLMNPQRSTVWY)
-- Remove non-standard residues or replace with closest standard
+- Remove non-standard residues or replace with closest standard amino acid
 
 **Module import errors:**
 ```bash
@@ -257,26 +287,41 @@ cd gatmutppi/
 pip install -r src/requirements.txt --upgrade
 ```
 
+**ProtT5 loading issues:**
+- First run will download ProtT5 model (~2GB)
+- Ensure stable internet connection
+- Model is cached locally after first download
+
+**Conda environment issues:**
+```bash
+# If having package conflicts, create fresh environment
+conda deactivate
+conda env remove -n gatmutppi
+conda create -n gatmutppi python=3.8 -y
+conda activate gatmutppi
+# Then reinstall following Installation steps
+```
+
 ## License
 
 This software is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 **Important Note:** While GATMutPPI itself is open source, users must comply with the licensing terms of any structural data they use as input:
-- If using AlphaFold3 structures: Subject to [AlphaFold3 Terms of Use](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md) (non-commercial only)
-- If using PDB structures: Check individual structure licenses
-- Other structure sources: Comply with respective terms
+- **AlphaFold3 structures**: Subject to [AlphaFold3 Output Terms of Use](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md) (non-commercial only)
+- **PDB structures**: Check individual structure licenses
+- **Other sources**: Comply with respective terms
 
 ## Citation
 
 If you use GATMutPPI in your research, please cite:
 
 ```bibtex
-@article{xxx,
+@article{stewart2025gatmutppi,
   title={Predicting interaction-specific protein–protein interaction perturbations by missense variants with GATMutPPI},
   author={Stewart, Ross and Laval, Florent and Calderwood, Michael A and Vidal, Marc and Starita, Lea M and Fowler, Douglas M and Radivojac, Predrag},
-  journal={[xxx]},
-  year={xxx},
-  doi={[DOI]}
+  journal={[Journal TBD]},
+  year={2025},
+  doi={[DOI TBD]}
 }
 ```
 
