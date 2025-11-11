@@ -20,7 +20,7 @@ git clone https://github.com/rosstewart/gatmutppi.git
 cd gatmutppi
 
 # Create conda environment
-conda create -n gatmutppi python=3.8 -y
+conda create -n gatmutppi python=3.9 -y
 conda activate gatmutppi
 
 # Install PyTorch with CUDA support (for GPU)
@@ -35,7 +35,7 @@ pip install -r src/requirements.txt
 
 ### System Requirements
 
-- Python 3.8 or higher
+- Python 3.9 or higher
 - CUDA-capable GPU (recommended for faster inference)
 - 16GB+ RAM recommended
 - ~1GB disk space for models and data
@@ -288,7 +288,7 @@ pip install -r src/requirements.txt --upgrade
 # If having package conflicts, create fresh environment
 conda deactivate
 conda env remove -n gatmutppi
-conda create -n gatmutppi python=3.8 -y
+conda create -n gatmutppi python=3.9 -y
 conda activate gatmutppi
 # Then reinstall following Installation steps
 ```
