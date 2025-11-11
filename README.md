@@ -129,7 +129,7 @@ python src/01_make_contact_graphs_and_fasta.py \
 - `working_dir`: Output directory for graphs and sequences
 - `mmcif_dir`: Directory containing structure files (.cif or .mmcif)
 - `variants_file`: Same TSV file from Step 1
-- `n_jobs`: Number of parallel jobs (default: 1). Parallel processing is recommended for large-scale analysis.
+- `n_jobs`: Number of parallel jobs (default: 1). Parallel processing is recommended for large-scale analysis. Large protein complexes may take several minutes to process.
 
 **Outputs:**
 - `working_dir/af3_graphs/`: Contact graph matrices (.mat and helper files)
