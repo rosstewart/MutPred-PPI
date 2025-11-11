@@ -23,6 +23,9 @@ cd gatmutppi
 conda create -n gatmutppi python=3.9 -y
 conda activate gatmutppi
 
+# Install sentencepiece (required for ProtT5)
+conda install sentencepiece -c conda-forge -y
+
 # Install PyTorch
 # For GPU with CUDA 11.8:
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
