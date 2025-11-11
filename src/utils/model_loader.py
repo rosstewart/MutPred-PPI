@@ -64,7 +64,7 @@ def get_models(model_dir, device):
     
     for model_path in model_paths:
         model = GATMutPPI(input_dim=input_dim).to(device)
-        model.load_state_dict(torch.load(model_path, weights_only=True))
+        model.load_state_dict(torch.load(model_path, weights_only=True, map_location=device))
         model.eval()
 
         models.append(model)
