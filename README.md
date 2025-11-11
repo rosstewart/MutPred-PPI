@@ -111,7 +111,7 @@ Download experimental structures from the [Protein Data Bank](https://www.rcsb.o
 #### Option C: Other Structure Prediction Tools
 Use any other structure prediction tool that outputs mmCIF or PDB format.
 
-Save all mmCIF structure files to `<mmcif_dir>` for use in Step 2. NOTE: The sequence in the structure file must exactly match the sequences in the FASTA files.
+Save all mmCIF structure files to `<mmcif_dir>` for use in Step 2. NOTE: The sequences in the structure file must exactly match the sequences in the FASTA files.
 
 ### Step 2: Generate Contact Graphs
 
