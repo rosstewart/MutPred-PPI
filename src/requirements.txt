@@ -6,3 +6,6 @@ numpy<2.0.0
 scipy
 joblib
 pandas<2.0.0
+h5py
+scikit-learn
+sentencepiece
