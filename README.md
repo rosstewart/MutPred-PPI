@@ -161,8 +161,7 @@ python src/02_run_gatmutppi_inference.py \
 
 **Output:**
 - `working_dir/results/GATMutPPI_preds.tsv`: Prediction scores for each input variant
-  - Format: `variant_partner_id\tprediction_score`
-  - Example: `PROT1_V123A_PROT2\t0.87`
+  - Tab-separated format with headers: `complex_id`, `variant`, `score`
 
 ## File Formats
 
@@ -179,12 +178,6 @@ The pipeline accepts mmCIF files with flexible naming:
 - `PROT1_PROT2.cif`
 - `prefix_PROT1_PROT2_suffix.mmcif`
 - Case-insensitive matching supported
-
-### Output Format
-
-Predictions are tab-separated values (TSV):
-- Column 1: Variant-partner identifier
-- Column 2: Disruption probability (0-1)
 
 ## Example Workflow
 
@@ -224,11 +217,12 @@ python 02_run_gatmutppi_inference.py \
 cat example/results/GATMutPPI_preds.tsv
 ```
 
-**Expected output format:**
+**Expected output:**
 ```
-O00548_A653T_P46531	0.085
-O00548_R661S_P46531	0.068
-O00548_N34I_P46531	0.354
+complex_id	variant	score
+O00548_P46531	A653T	0.08524392545223236
+O00548_P46531	R661S	0.06803165376186371
+O00548_P46531	N34I	0.35405662655830383
 ...
 ```
 
