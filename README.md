@@ -40,15 +40,6 @@ pip install -r src/requirements.txt
 - 16GB+ RAM recommended
 - ~1GB disk space for models and data
 
-### Dependencies
-
-Core dependencies from `src/requirements.txt`:
-- `biopython==1.85`
-- `torch==2.6.0`
-- `torch_geometric==2.6.1`
-- `transformers==4.46.0`
-- `numpy`, `scipy`, `joblib`
-
 
 ## Quick Start
 
