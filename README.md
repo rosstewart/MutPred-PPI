@@ -23,11 +23,12 @@ cd gatmutppi
 conda create -n gatmutppi python=3.9 -y
 conda activate gatmutppi
 
-# Install PyTorch with CUDA support (for GPU)
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y
+# Install PyTorch
+# For GPU with CUDA 11.8:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
-# Or install PyTorch for CPU only
-# conda install pytorch torchvision torchaudio cpuonly -c pytorch -y
+# For CPU only:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining dependencies
 pip install -r src/requirements.txt
