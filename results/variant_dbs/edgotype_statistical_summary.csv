@@ -1,6 +1,0 @@
-Dataset,Test,P-value,Significance,Effect Size,Effect Size Type,Sample Sizes
-gnomad_disease_gene,Chi-squared,2.3004e-143,***,0.040,Cramér's V,[]
-gnomad_af,Chi-squared,1.7060e-40,***,0.041,Cramér's V,"[17199, 12930, 26416, 5175, 848, 297]"
-neurodev,Chi-squared,4.5609e-01,ns,0.029,Cramér's V,[]
-clinvar,Chi-squared,0.0000e+00,***,0.063,Cramér's V,"[12987, 24050, 216638]"
-cosmic,Chi-squared,0.0000e+00,***,0.043,Cramér's V,"[394716, 120215, 20977, 6283, 2434, 896]"
