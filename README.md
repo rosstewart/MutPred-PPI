@@ -198,7 +198,7 @@ python 01_make_contact_graphs_and_fasta.py \
     example/ \
     example/af3_models/ \
     example/test_variants.tsv \
-    4  # Use 4 parallel jobs
+    1  # Limit to 1 parallel job
 
 # 3. Run predictions
 python 02_run_gatmutppi_inference.py \
@@ -240,8 +240,7 @@ gatmutppi/
 ## Performance
 
 - **Inference speed**: ~100 variant-partner combinations/minute on GPU (V100) with precomputed structures
-- **Memory usage**: ~4GB GPU memory for typical complexes
-- **Accuracy**: AUC 0.85 (seen proteins), 0.72 (unseen proteins) - see publication for detailed benchmarks
+- **Memory usage**: ~4GB GPU memory for typical complexes (ProtT5 usage)
 
 ## Troubleshooting
 
@@ -278,11 +277,6 @@ cd gatmutppi/
 # Reinstall dependencies
 pip install -r src/requirements.txt --upgrade
 ```
-
-**ProtT5 loading issues:**
-- First run will download ProtT5 model (~2GB)
-- Ensure stable internet connection
-- Model is cached locally after first download
 
 **Conda environment issues:**
 ```bash
