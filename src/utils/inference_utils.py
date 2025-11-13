@@ -167,7 +167,7 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
 
     models = get_models(model_dir, device)
     scaler = joblib.load(f'{model_dir}/mutation_diff_scaler.pkl')
-    print('loaded GATMutPPI')
+    print('loaded MutPred-PPI')
 
     t5_model, t5_vocab = get_T5_model(model_dir=None, device=device)
     print('loaded ProtT5')
@@ -261,7 +261,7 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
 
                 # save results along the way for large requests
                 if prediction_count % 2000 == 1000:
-                    write_output(f'{results_dir}/GATMutPPI_preds.tsv', ppi_preds, all_vt_ids)
+                    write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids)
 
             
             except Exception as e:
@@ -271,8 +271,8 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
                 # sys.exit(1)
     
     # save predictions
-    write_output(f'{results_dir}/GATMutPPI_preds.tsv', ppi_preds, all_vt_ids)
-    print(f'\nWrote {len(ppi_preds)} prediction{"s" if len(ppi_preds) != 1 else ""} to {results_dir}/GATMutPPI_preds.tsv', end='\n\n')
+    write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids)
+    print(f'\nWrote {len(ppi_preds)} prediction{"s" if len(ppi_preds) != 1 else ""} to {results_dir}/MutPred-PPI_preds.tsv', end='\n\n')
 
     
 

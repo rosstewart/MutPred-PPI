@@ -1,8 +1,8 @@
 '''
 run_model_inference_pipeline_scaledstability_finetune.py
 Author: Ross Stewart
-Date: September 2025
-runs GATMutPPI inference on a preformatted dataset and saves results
+Date: November 2025
+runs MutPred-PPI inference on a preformatted dataset and saves results
 
 Interaction prediction labels:
 - 1: Disrupted interaction (variant disrupts protein-protein interaction)
@@ -23,7 +23,7 @@ warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 # parse arguments
-parser = argparse.ArgumentParser(description='Run GATMutPPI inference')
+parser = argparse.ArgumentParser(description='Run MutPred-PPI inference')
 parser.add_argument('working_dir', help='Working directory containing af3_graphs/ and wt_and_vt.fasta')
 parser.add_argument('--device', default='cuda:0', help='GPU device (default: cuda:0)')
 args = parser.parse_args()

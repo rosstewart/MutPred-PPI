@@ -6,10 +6,10 @@ import glob
 import numpy as np
 
 
-class GATMutPPI(nn.Module):
+class MutPred_PPI(nn.Module):
     def __init__(self, input_dim, hidden_dim=256, output_dim=1,
                  num_heads=4, mutation_diff_dim=1024):
-        super(GATMutPPI, self).__init__()
+        super(MutPred_PPI, self).__init__()
 
         # process mutation site difference
         self.mutation_diff_processor = nn.Sequential(
@@ -60,10 +60,10 @@ def get_models(model_dir, device):
     BATCH_SIZE = 16
     
     models = []
-    model_paths = glob.glob(f'{model_dir}/GATMutPPI_sahni_fragoza_varchamp_cava_*.pt')
+    model_paths = glob.glob(f'{model_dir}/MutPred-PPI_sahni_fragoza_varchamp_cava_*.pt')
     
     for model_path in model_paths:
-        model = GATMutPPI(input_dim=input_dim).to(device)
+        model = MutPred_PPI(input_dim=input_dim).to(device)
         model.load_state_dict(torch.load(model_path, weights_only=True, map_location=device))
         model.eval()
 

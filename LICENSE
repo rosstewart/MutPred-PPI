@@ -1,4 +1,4 @@
-GATMutPPI License
+MutPred-PPI License
 Copyright (c) 2025 Ross Stewart
 
 MIT License
@@ -26,7 +26,7 @@ SOFTWARE.
 ATTRIBUTION REQUIREMENT:
 Any publication or presentation of results obtained using this Software must cite:
 "Predicting interaction-specific protein–protein interaction perturbations by 
-missense variants with GATMutPPI" by Ross Stewart et al.
+missense variants with MutPred-PPI" by Ross Stewart et al.
 
 ---
 
