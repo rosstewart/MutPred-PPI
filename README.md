@@ -1,10 +1,10 @@
-# GATMutPPI
+# MutPred-PPI
 
-Official repository for "Predicting interaction-specific protein–protein interaction perturbations by missense variants with GATMutPPI"
+Official repository for "Predicting interaction-specific protein–protein interaction perturbations by missense variants with MutPred-PPI"
 
 ## Overview
 
-GATMutPPI is a deep learning framework that predicts whether missense mutations disrupt protein-protein interactions. It combines structural information from protein complexes with sequence embeddings from protein language models to achieve high-accuracy predictions.
+MutPred-PPI is a deep learning framework that predicts whether missense mutations disrupt protein-protein interactions. It combines structural information from protein complexes with sequence embeddings from protein language models to achieve high-accuracy predictions.
 
 **Key Features:**
 - Graph neural networks with attention mechanisms for structural analysis
@@ -16,12 +16,12 @@ GATMutPPI is a deep learning framework that predicts whether missense mutations 
 
 ```bash
 # Clone repository
-git clone https://github.com/rosstewart/gatmutppi.git
-cd gatmutppi
+git clone https://github.com/rosstewart/mutpred-ppi.git
+cd mutpred-ppi
 
 # Create conda environment
-conda create -n gatmutppi python=3.9 -y
-conda activate gatmutppi
+conda create -n mutpred-ppi python=3.9 -y
+conda activate mutpred-ppi
 
 # Install sentencepiece (required for ProtT5)
 conda install sentencepiece -c conda-forge -y
@@ -57,7 +57,7 @@ python src/00_make_af3_input_files.py proteins.fasta variants.tsv af3_inputs/
 python src/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.tsv
 
 # Step 4: Run predictions
-python src/02_run_gatmutppi_inference.py working_dir/
+python src/02_run_mutpred-ppi_inference.py working_dir/
 ```
 
 ## Data Availability
@@ -103,7 +103,7 @@ PROT2	W89R	PROT3
 
 ### Step 1.5: Obtain Protein Complex Structures
 
-GATMutPPI requires protein complex structures in mmCIF format. You can use structures from any source:
+MutPred-PPI requires protein complex structures in mmCIF format. You can use structures from any source:
 
 #### Option A: AlphaFold3 Structures
 Submit protein complex queries to the [AlphaFold3 Server](https://alphafoldserver.com/) using the JSON files from Step 1, or generate structures locally if you have access to AlphaFold3. 
@@ -140,12 +140,12 @@ python src/01_make_contact_graphs_and_fasta.py \
 - `working_dir/af3_graphs/`: Contact graph matrices (.mat and helper files)
 - `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences for ProtT5 embedding generation
 
-### Step 3: Run GATMutPPI Inference
+### Step 3: Run MutPred-PPI Inference
 
 Predict interaction disruption for all variants:
 
 ```bash
-python src/02_run_gatmutppi_inference.py \
+python src/02_run_mutpred-ppi_inference.py \
     <working_dir> \
     [--device DEVICE]
 ```
@@ -155,7 +155,7 @@ python src/02_run_gatmutppi_inference.py \
 - `--device`: Compute device (default: cuda:0, use 'cpu' if no GPU available)
 
 **Output:**
-- `working_dir/results/GATMutPPI_preds.tsv`: Prediction scores for each input variant
+- `working_dir/results/MutPred-PPI_preds.tsv`: Prediction scores for each input variant
   - Tab-separated format with headers: `complex_id`, `variant`, `score`
 
 ## File Formats
@@ -182,7 +182,7 @@ A complete minimal example using 10 test variants is provided in `src/example/`.
 
 ```bash
 # Activate conda environment (if using conda)
-conda activate gatmutppi
+conda activate mutpred-ppi
 
 # Navigate to the src/ directory
 cd src/
@@ -204,12 +204,12 @@ python 01_make_contact_graphs_and_fasta.py \
     1  # Limit to 1 parallel job
 
 # 3. Run predictions
-python 02_run_gatmutppi_inference.py \
+python 02_run_mutpred-ppi_inference.py \
     example/ \
     --device cuda:0
 
 # View results
-cat example/results/GATMutPPI_preds.tsv
+cat example/results/MutPred-PPI_preds.tsv
 ```
 
 **Expected output:**
@@ -224,11 +224,11 @@ O00548_P46531	N34I	0.35405662655830383
 ## Project Structure
 
 ```
-gatmutppi/
+mutpred-ppi/
 ├── src/
 │   ├── 00_make_af3_json_input.py       # AlphaFold3 input preparation
 │   ├── 01_make_contact_graphs_and_fasta.py  # Contact graph generation
-│   ├── 02_run_gatmutppi_inference.py    # Model inference
+│   ├── 02_run_mutpred-ppi_inference.py    # Model inference
 │   ├── utils/
 │   │   ├── inference_utils.py           # Core inference functions
 │   │   ├── model_loader.py              # Model loading utilities
@@ -252,10 +252,10 @@ gatmutppi/
 **CUDA out of memory error:**
 ```bash
 # Use CPU instead
-python src/02_run_gatmutppi_inference.py working_dir/ --device cpu
+python src/02_run_mutpred-ppi_inference.py working_dir/ --device cpu
 
 # Or use a different GPU
-python src/02_run_gatmutppi_inference.py working_dir/ --device cuda:1
+python src/02_run_mutpred-ppi_inference.py working_dir/ --device cuda:1
 ```
 
 **Missing structures:**
@@ -275,7 +275,7 @@ python src/02_run_gatmutppi_inference.py working_dir/ --device cuda:1
 **Module import errors:**
 ```bash
 # Ensure you're in the correct directory
-cd gatmutppi/
+cd mutpred-ppi/
 
 # Reinstall dependencies
 pip install -r src/requirements.txt --upgrade
@@ -285,9 +285,9 @@ pip install -r src/requirements.txt --upgrade
 ```bash
 # If having package conflicts, create fresh environment
 conda deactivate
-conda env remove -n gatmutppi
-conda create -n gatmutppi python=3.9 -y
-conda activate gatmutppi
+conda env remove -n mutpred-ppi
+conda create -n mutpred-ppi python=3.9 -y
+conda activate mutpred-ppi
 # Then reinstall following Installation steps
 ```
 
@@ -295,18 +295,18 @@ conda activate gatmutppi
 
 This software is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-**Important Note:** While GATMutPPI itself is open source, users must comply with the licensing terms of any structural data they use as input:
+**Important Note:** While MutPred-PPI itself is open source, users must comply with the licensing terms of any structural data they use as input:
 - **AlphaFold3 structures**: Subject to [AlphaFold3 Output Terms of Use](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md) (non-commercial only)
 - **PDB structures**: Check individual structure licenses
 - **Other sources**: Comply with respective terms
 
 ## Citation
 
-If you use GATMutPPI in your research, please cite:
+If you use MutPred-PPI in your research, please cite:
 
 ```bibtex
-@article{stewart2025gatmutppi,
-  title={Predicting interaction-specific protein–protein interaction perturbations by missense variants with GATMutPPI},
+@article{stewart2025mutpred-ppi,
+  title={Predicting interaction-specific protein–protein interaction perturbations by missense variants with MutPred-PPI},
   author={Stewart, Ross and Laval, Florent and Calderwood, Michael A and Vidal, Marc and Starita, Lea M and Fowler, Douglas M and Radivojac, Predrag},
   journal={[Journal TBD]},
   year={2025},
