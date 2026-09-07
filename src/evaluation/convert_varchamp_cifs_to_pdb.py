@@ -15,10 +15,15 @@ from pathlib import Path
 
 import gemmi
 
-_CIF_DIR = Path("/data/ross/ppi_lossgain/interaction_loss/2026/af3_out/models")
-_PDB_DIR = Path("/data/ross/ppi_lossgain/interaction_loss/2026/af3_out/pdbs")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REVISIONS_DIR  # noqa: E402
 
 
+_CIF_DIR = REVISIONS_DIR / "af3_out" / "models"
+_PDB_DIR = REVISIONS_DIR / "af3_out" / "pdbs"
 def main():
     _PDB_DIR.mkdir(parents=True, exist_ok=True)
     cif_files = sorted(_CIF_DIR.glob("*.cif"))

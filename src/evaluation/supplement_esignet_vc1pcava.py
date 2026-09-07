@@ -34,7 +34,14 @@ from vcfp_common import (  # noqa: E402
 import predictors.esignet as _esignet_mod          # noqa: E402
 from predictors.esignet import ESigNetPredictor    # noqa: E402
 
-_ESM_CACHE = "/data/ross/ppi_lossgain/interaction_loss/2026/esm2_residue_embeddings_with_pooled.pkl"
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REVISIONS_DIR  # noqa: E402
+
+
+_ESM_CACHE = str(REVISIONS_DIR / "esm2_residue_embeddings_with_pooled.pkl")
 _VC1P_SUPP = Path(
     "/data/ross/ppi_lossgain/interaction_loss/home/eSIG-Net/"
     "esm2_varchamp1p_blind_test_supplement_sahni_fragoza.pkl"

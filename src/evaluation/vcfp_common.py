@@ -38,14 +38,21 @@ if str(_CV_MOD) not in sys.path:
     sys.path.insert(0, str(_CV_MOD))
 
 from mutpred_ppi_cv import (  # noqa: E402
+
     _load_varchamp1p_raw, _load_cava_raw,
     get_gene_name, split_wt_id_underscore,
 )
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import HOME_DIR, REPO_ROOT  # noqa: E402
+
+_PUB = REPO_ROOT
 TRAINING_CSV = _PUB / "data_caches" / "training_data_internal.csv"
-VC1P_MAP = Path("/data/ross/ppi_lossgain/interaction_loss/home/varchamp1p/gene_symbol_to_uniprot.pkl")
-CAVA_MAP = Path("/data/ross/ppi_lossgain/interaction_loss/home/cava/gene_symbol_to_uniprot.pkl")
+VC1P_MAP = HOME_DIR / "varchamp1p" / "gene_symbol_to_uniprot.pkl"
+CAVA_MAP = HOME_DIR / "cava" / "gene_symbol_to_uniprot.pkl"
 OUT_DIR = _PUB / "results" / "varchamp_seqcnf_newvar_eval"
 
 

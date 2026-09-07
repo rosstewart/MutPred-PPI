@@ -61,13 +61,8 @@ conda run -n ppi python src/inference/01_make_contact_graphs_and_fasta.py \
     working_dir/ datasets/af3_structures/ variants.tsv
 ```
 
-CV fold assignments (30-seed grouped cross-validation, used for Fig 3) are regenerated from
-scratch, not stored:
-
-```bash
-conda run -n ppi python src/training/generate_cv_splits.py \
-    --dataset sahni_fragoza --out-dir cv_splits/
-```
+CV fold assignments (30-seed grouped cross-validation, used for Fig 3) are generated inline
+during the GCV run — no separate step required.
 
 ## Model Training
 

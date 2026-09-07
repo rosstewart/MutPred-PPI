@@ -33,10 +33,16 @@ import torch.nn as nn
 from scipy.io import loadmat
 from torch_geometric.nn import GATConv
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT  # noqa: E402
+
+
 _THIS_DIR = Path(__file__).resolve().parent
 _PUB = _THIS_DIR.parent.parent
-_BASE = Path("/data/ross/ppi_lossgain/interaction_loss")
-
+_BASE = DATA_ROOT
 _MEGASCALE_PRETRAINED = _PUB / "weights" / "MutPred-PPI_stability_pretrain.pt"
 _SCALER_PATH = _PUB / "weights" / "mutation_diff_scaler.pkl"
 _OUT_DIR = _PUB / "results_revisions" / "variant_dbs_stability"

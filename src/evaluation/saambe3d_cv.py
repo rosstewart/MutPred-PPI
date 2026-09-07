@@ -34,13 +34,18 @@ import sys
 
 import numpy as np
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import CV_DIR, DATA_ROOT  # noqa: E402
+
+
 # ── fixed paths ───────────────────────────────────────────────────────────────
-_CV_DIR        = Path("/home/rcstewart/gnn/ppi_interaction_loss/cv_splits")
-_AF3_PDBS      = Path("/data/ross/ppi_lossgain/interaction_loss/three_datasets_af3_models/pdbs")
-_SAHNI_PDBS    = Path("/data/ross/ppi_lossgain/interaction_loss/sahni_pdbs")
-_ALL_TO_UNIPROT = Path("/data/ross/ppi_lossgain/interaction_loss/all_to_uniprot.pkl")
-
-
+_CV_DIR = CV_DIR
+_AF3_PDBS = DATA_ROOT / "three_datasets_af3_models" / "pdbs"
+_SAHNI_PDBS = DATA_ROOT / "sahni_pdbs"
+_ALL_TO_UNIPROT = DATA_ROOT / "all_to_uniprot.pkl"
 # ── dataset configuration ─────────────────────────────────────────────────────
 
 @dataclass

@@ -35,12 +35,19 @@ import predictors.esignet as _esignet_mod                                    # n
 from predictors.esignet import ESigNetPredictor, _compute_573, _FEAT_CACHE  # noqa: E402
 from predictors.nn_base import load_cache                                    # noqa: E402
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import CV_DIR, DATA_ROOT  # noqa: E402
+
+
 # Surface load_cache's INFO logs ("Loading cache: …", "Loaded N entries").
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # ── fixed paths ───────────────────────────────────────────────────────────────
-_CV_DIR      = Path("/home/rcstewart/gnn/ppi_interaction_loss/cv_splits")
-_FASTA_ROOT  = Path("/data/ross/ppi_lossgain/interaction_loss")
+_CV_DIR = CV_DIR
+_FASTA_ROOT = DATA_ROOT
 _UNIMAP_DIR  = _FASTA_ROOT / "varchamp1p"
 
 

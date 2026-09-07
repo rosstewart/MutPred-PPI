@@ -45,7 +45,14 @@ from vcfp_common import (  # noqa: E402
     iter_vc1pcava_entries, save_vc1pcava_supplement,
 )
 
-_GCV_CACHE = Path(__file__).resolve().parents[2] / "data_caches" / "pplm_cache.pkl"
+
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import cache_file  # noqa: E402
+
+_GCV_CACHE = cache_file("pplm_cache.pkl")
 
 _DESCRIPTIONS = {
     "seq_diff":  "PPLM_seq_diff (Sahni+Fragoza train) (varchamp_full_pooled)",

@@ -36,7 +36,14 @@ from .nn_base import (
 logger = logging.getLogger(__name__)
 
 from pathlib import Path as _Path
-CACHE_PATH = str(_Path(__file__).resolve().parents[3] / "data_caches" / "pplm_cache.pkl")
+
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from paths import cache_file  # noqa: E402
+
+CACHE_PATH = str(cache_file("pplm_cache.pkl"))
 
 
 def _pplm_keys(row: pd.Series):

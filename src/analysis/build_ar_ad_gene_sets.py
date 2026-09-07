@@ -31,8 +31,14 @@ from pathlib import Path
 
 import pandas as pd
 
-_BASE = Path("/data/ross/ppi_lossgain/interaction_loss")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT  # noqa: E402
 
+
+_BASE = DATA_ROOT
 CLINGEN_CSV       = _BASE / "ClinGen_MOI.csv"
 GENE_TO_UNIPROT    = _BASE / "cosmic_mutations" / "gene_symbol_to_uniprot.pkl"
 UNIPROT_TO_GENE_TSV = _BASE / "gnomad" / "gnomad_uniprot_to_gene.tsv"

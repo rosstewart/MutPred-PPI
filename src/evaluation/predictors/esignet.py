@@ -28,13 +28,19 @@ from torch.utils.data import DataLoader, TensorDataset
 from . import BasePredictor, register
 from .nn_base import load_cache, parse_mutation
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from paths import REVISIONS_DIR  # noqa: E402
+
+
 logger = logging.getLogger(__name__)
 
 _SDNN_MODEL_PATH = Path(
     "/data/ross/ppi_lossgain/interaction_loss/2026/eSIG-Net/backbones/sdnn/sdnn_model.py"
 )
-_ESM_CACHE_PATH = "/data/ross/ppi_lossgain/interaction_loss/2026/esm2_residue_embeddings.pkl"
-
+_ESM_CACHE_PATH = str(REVISIONS_DIR / "esm2_residue_embeddings.pkl")
 # Sequence → 573-dim feature vector (None on error).  Shared across all folds.
 _FEAT_CACHE: dict[str, Optional[np.ndarray]] = {}
 

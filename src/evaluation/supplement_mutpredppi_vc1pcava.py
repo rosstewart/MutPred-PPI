@@ -27,19 +27,27 @@ import numpy as np
 import torch
 
 _CV_MOD  = Path(__file__).resolve().parent  # src/evaluation
-_INF_MOD = Path("/data/ross/ppi_lossgain/interaction_loss/publication/src/inference")
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
+
+_INF_MOD = REPO_ROOT / "src" / "inference"
 # Import model_loader BEFORE cv.py to prevent src/evaluation/utils/ shadowing.
 sys.path.insert(0, str(_INF_MOD))
 from utils.model_loader import MutPred_PPI, model_predict  # noqa: E402
 
 sys.path.insert(0, str(_CV_MOD))
 from vcfp_common import (  # noqa: E402
+
     build_sf_proteins, load_vc1pcava_sources, iter_vc1pcava_entries,
     save_vc1pcava_supplement,
 )
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
+
+_PUB = REPO_ROOT
 _MODEL_PATH = _PUB / "weights" / "MutPred-PPI_sahni_fragoza.pt"
 _SCALER_PATH = _PUB / "weights" / "mutation_diff_scaler.pkl"
 _DESCRIPTION = "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)"

@@ -32,12 +32,19 @@ import sys
 import numpy as np
 import pandas as pd
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import CV_DIR as _P_CV_DIR, REPO_ROOT, cv_reference_dir  # noqa: E402
+
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
-_PUB = "/data/ross/ppi_lossgain/interaction_loss/publication"
+_PUB = str(REPO_ROOT)
 _ANALYSIS_DIR = os.path.join(_PUB, "src", "analysis")
 GCV_DIR = os.path.join(_PUB, "results_revisions", "macro_aucs")
 BLIND_TEST_DIR = os.path.join(_PUB, "results", "varchamp_seqcnf_newvar_eval")
-CV_DIR = "/home/rcstewart/gnn/ppi_interaction_loss/cv_splits"
+CV_DIR = str(cv_reference_dir())
 OUT_DIR = os.path.join(_PUB, "datasets", "reconstruction_tables")
 
 sys.path.insert(0, _ANALYSIS_DIR)

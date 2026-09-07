@@ -41,11 +41,14 @@ sys.path.insert(0, str(_EVAL_DIR))
 from mutpred_ppi_cv import (  # noqa: E402
     DATASET_CONFIGS,
     load_dataset,
+    shuffle_data,
     align_to_vt_ids,
+    canonical_vt_ids_path,
+    canonical_clusters_path,
+    make_fold_splits,
     GAT_mut_processor,
     GAT_mut_processor_no_gat,
     GAT_mut_processor_no_mut,
-    _CV_DIR,
     _V1_0_SCALER_PATH,
     _MEGASCALE_SCALER_PATH,
     _V1_0_PRETRAINED_PATH,
@@ -357,7 +360,13 @@ def run(args: argparse.Namespace) -> None:
             print(f"Saving data cache to {args.data_cache}", flush=True)
             with open(args.data_cache, "wb") as _f:
                 pickle.dump(data, _f)
-    ordered = align_to_vt_ids(data, cfg)
+    canonical = canonical_vt_ids_path(cfg)
+    if canonical.exists():
+        ordered = align_to_vt_ids(data, canonical, canonical_clusters_path(cfg))
+    else:
+        print(f"  no canonical ordering at {canonical}; deriving one by shuffle",
+              flush=True)
+        ordered = shuffle_data(data)
     print(f"  {len(ordered['all_vt_ids'])} rows", flush=True)
 
     _MEGASCALE_ABLATIONS = {
@@ -402,10 +411,8 @@ def run(args: argparse.Namespace) -> None:
         print(f"\nDone. Checkpoint: {save_path}", flush=True)
     else:
         gcv_seed = args.seed
-        splits_path = _CV_DIR / cfg.fold_splits_pat.format(seed=gcv_seed)
-        print(f"\nLoading fold splits: {splits_path}", flush=True)
-        with open(splits_path, "rb") as f:
-            fold_splits = pickle.load(f)
+        fold_splits = make_fold_splits(ordered, gcv_seed, cfg=cfg)
+        print(f"\nGenerated fold splits for seed={gcv_seed}: {len(fold_splits)} folds", flush=True)
 
         for fold, train_val_idx, test_idx in fold_splits:
             save_path = save_dir / f"{stem}_{fold}.pt"

@@ -26,8 +26,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
+
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
-_PUB = "/data/ross/ppi_lossgain/interaction_loss/publication"
+_PUB = str(REPO_ROOT)
 DATA_DIR = f"{_PUB}/results_revisions/variant_dbs_sfvfp"
 OUT_DIR = f"{_PUB}/results_revisions/robustness_analyses"
 

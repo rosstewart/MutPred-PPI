@@ -11,8 +11,15 @@ from pathlib import Path
 from collections import defaultdict
 import pandas as pd
 
-_PUB  = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
-_BASE = Path("/data/ross/ppi_lossgain/interaction_loss")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT, REPO_ROOT  # noqa: E402
+
+
+_PUB = REPO_ROOT
+_BASE = DATA_ROOT
 _HOME = _BASE / "home"
 _OUT  = _PUB / "figures" / "variant_db_stats_table.tex"
 

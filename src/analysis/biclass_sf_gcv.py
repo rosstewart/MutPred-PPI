@@ -26,17 +26,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import roc_curve, auc
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
-_CV  = Path("/home/rcstewart/gnn/ppi_interaction_loss/cv_splits")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import CV_DIR, REPO_ROOT  # noqa: E402
 
+
+_PUB = REPO_ROOT
+_CV = CV_DIR
 sys.path.insert(0, str(_PUB / "src" / "analysis"))
 from roc_plots import (
+
     compute_roc_with_variance,
     plot_roc_with_confidence,
     METHOD_DISPLAY_NAMES,
     colors as METHOD_COLORS,
     WORKING_DIR,
 )
+
 
 LABEL_FILE   = _CV / "sahni_fragoza_all_vt_ids_and_labels.txt"
 IPTM_PKL     = _PUB / "results_revisions" / "macro_aucs" / "iptm_sahni_fragoza_gcv_splits.pkl"

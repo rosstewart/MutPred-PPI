@@ -31,18 +31,24 @@ from collections import defaultdict
 
 import numpy as np
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT, RESULTS_REV_DIR  # noqa: E402
+
+
 # ── paths ──────────────────────────────────────────────────────────────────────
 
-_BASE = "/data/ross/ppi_lossgain/interaction_loss"
+_BASE = str(DATA_ROOT)
 _HOME = f"{_BASE}/home"
 
-PREDICTION_TSGS = {
-    "clinvar":   "publication/results_revisions/variant_dbs/clinvar_mutpred_ppi_predictions.tsv",
-    "gnomad":    "publication/results_revisions/variant_dbs/gnomad_mutpred_ppi_predictions.tsv",
-    "hgmd":      "publication/results_revisions/variant_dbs/hgmd_mutpred_ppi_predictions.tsv",
-    "cosmic":    "publication/results_revisions/variant_dbs/cosmic_mutpred_ppi_predictions.tsv",
-    "fu_autism": "publication/results_revisions/variant_dbs/autism_mutpred_ppi_predictions.tsv",
-}
+# Predictions from the SFVCFP model (Sahni+Fragoza+VarChAMP), which is what the
+# manuscript's variant-repository figures report. Overridable with --pred-dir,
+# but every database in a run must come from one model: mixing them silently
+# produced a Fig 5 in which ClinVar/HGMD were scored by the SF model while
+# gnomAD/COSMIC/autism were scored by SFVCFP.
+DEFAULT_PRED_DIR = RESULTS_REV_DIR / "variant_dbs_sfvfp"
 
 SUBSET_FILES = {
     "clinvar": {
@@ -396,11 +402,12 @@ def main():
                    choices=["clinvar", "gnomad", "hgmd", "cosmic", "fu_autism"],
                    default=["clinvar", "gnomad", "hgmd", "cosmic", "fu_autism"],
                    help="Databases to process (default: all)")
-    p.add_argument("--pred-dir", default=None,
-                   help="Override prediction TSV directory (replaces hardcoded PREDICTION_TSGS paths)")
+    p.add_argument("--pred-dir", default=str(DEFAULT_PRED_DIR),
+                   help=f"Directory holding the per-database prediction TSVs "
+                        f"(default: {DEFAULT_PRED_DIR}). All databases in one run "
+                        f"must come from the same model.")
     args = p.parse_args()
 
-    base = _BASE + "/"
     _DB_TSV_NAMES = {
         "clinvar":   "clinvar_mutpred_ppi_predictions.tsv",
         "gnomad":    "gnomad_mutpred_ppi_predictions.tsv",
@@ -409,19 +416,17 @@ def main():
         "fu_autism": "autism_mutpred_ppi_predictions.tsv",
     }
     db_funcs = {
-        "clinvar":   (process_clinvar,  PREDICTION_TSGS["clinvar"],   "clinvar"),
-        "gnomad":    (process_gnomad,   PREDICTION_TSGS["gnomad"],    "gnomad"),
-        "hgmd":      (process_hgmd,     PREDICTION_TSGS["hgmd"],      "hgmd"),
-        "cosmic":    (process_cosmic,   PREDICTION_TSGS["cosmic"],    "cosmic"),
-        "fu_autism": (process_autism,   PREDICTION_TSGS["fu_autism"], "fu_autism"),
+        "clinvar":   (process_clinvar,  "clinvar"),
+        "gnomad":    (process_gnomad,   "gnomad"),
+        "hgmd":      (process_hgmd,     "hgmd"),
+        "cosmic":    (process_cosmic,   "cosmic"),
+        "fu_autism": (process_autism,   "fu_autism"),
     }
+    print(f"Prediction TSVs: {args.pred_dir}", flush=True)
 
     for db in args.databases:
-        func, tsv_rel, out_subdir = db_funcs[db]
-        if args.pred_dir:
-            tsv_path = os.path.join(args.pred_dir, _DB_TSV_NAMES[db])
-        else:
-            tsv_path = base + tsv_rel
+        func, out_subdir = db_funcs[db]
+        tsv_path = os.path.join(args.pred_dir, _DB_TSV_NAMES[db])
         out_dir = os.path.join(args.output_dir, out_subdir)
         if not os.path.exists(tsv_path):
             print(f"WARNING: TSV not found: {tsv_path}, skipping {db}")

@@ -82,6 +82,14 @@ METHODS_TO_COMPARE = [
 ]
 
 
+# Methods with no Sahni+Fragoza training component. C1/C2/C3 is defined by
+# training-set membership, so the stratification carries no meaning for them:
+# they are scored on the pooled test set and drawn identically in all three panels.
+STRATIFICATION_INDEPENDENT_METHODS = {
+    "MutPred2 (varchamp_full_pooled)",
+}
+
+
 def extract_method_name(filepath):
     fname = os.path.basename(filepath)
     return re.sub(r'_c[123]_(labels|preds|vt_ids)\.npy$', '', fname)
@@ -102,6 +110,15 @@ def load_method_data(method_name, directory):
                 return {}
             data[f"labels_c{c}"] = np.load(labels_f)
             data[f"preds_c{c}"]  = preds
+
+    if data and method_name in STRATIFICATION_INDEPENDENT_METHODS:
+        present = [c for c in [1, 2, 3] if f"labels_c{c}" in data]
+        labels  = np.concatenate([data[f"labels_c{c}"] for c in present])
+        preds   = np.concatenate([data[f"preds_c{c}"]  for c in present])
+        for c in [1, 2, 3]:
+            data[f"labels_c{c}"] = labels
+            data[f"preds_c{c}"]  = preds
+        data["pooled"] = True
     return data
 
 

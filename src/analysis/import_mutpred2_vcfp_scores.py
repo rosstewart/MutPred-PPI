@@ -32,7 +32,14 @@ sys.path.insert(0, str(_ANALYSIS_DIR))
 from merge_vc1pcava_into_main import merge_method              # noqa: E402
 from restratify_vcfp_blind_test import restratify_one_method   # noqa: E402
 
-_EVAL = Path("/data/ross/ppi_lossgain/interaction_loss/publication/results/varchamp_seqcnf_newvar_eval")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import VCFP_RESULTS_DIR  # noqa: E402
+
+
+_EVAL = VCFP_RESULTS_DIR
 _FULL_METHOD = "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)"
 _MP2_METHOD  = "MutPred2 (varchamp_full_pooled)"
 _SUPP_TAG    = "vc1pcava"

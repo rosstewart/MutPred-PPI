@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 """MutPred-PPI group cross-validation training script.
 
-Mirrors esignet_gcv_iter.py: reads pre-existing CV splits written by the
-original gnn_*_gcv_iterations.py scripts; does not write new splits.
-
 Model: single GAT_mut_processor (hidden_dim=64) identical to
 predictors/mutpredppi.py.  Architecture does not vary across datasets.
 
+CV fold assignments are generated inline (deterministic: GroupKFold with the
+canonical data shuffle, random_state=gcv_seed) rather than read from pre-computed
+split files.
+
 Usage:
-    conda run -n pytorch_env python mutpred_ppi_gcv_iter.py --dataset sahni_fragoza --device cuda:0
-    conda run -n pytorch_env python mutpred_ppi_gcv_iter.py --dataset sahni_fragoza_varchamp1p_cava \\
+    conda run -n ppi python src/evaluation/mutpred_ppi_cv.py --dataset sahni_fragoza --device cuda:0
+    conda run -n ppi python src/evaluation/mutpred_ppi_cv.py --dataset sahni_fragoza \\
         --device cuda:0 --n-gcv 30 --outdir /path/to/results/
 """
 
@@ -22,6 +23,7 @@ import os
 import pickle
 import random
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,15 +43,24 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.nn import GATConv
 from torch_geometric.utils import dense_to_sparse
 
-_REPO_ROOT                 = Path(__file__).resolve().parents[2]
-_MODEL_WEIGHTS_DIR         = _REPO_ROOT / "weights"
-_CV_DIR                  = Path("/home/rcstewart/gnn/ppi_interaction_loss/cv_splits")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from paths import (  # noqa: E402
+    REPO_ROOT as _REPO_ROOT,
+    WEIGHTS_DIR as _MODEL_WEIGHTS_DIR,
+    DATA_ROOT as _DATA_ROOT,
+    HOME_DIR as _HOME_DIR,
+    REVISIONS_DIR as _REVISIONS_DIR,
+    GCV_RESULTS_DIR as _GCV_RESULTS_DIR,
+    DATA_CACHES_DIR as _DATA_CACHES_DIR,
+    cdhit_binary,
+    cv_reference_dir,
+)
+
 _V1_0_SCALER_PATH          = _MODEL_WEIGHTS_DIR / "v1_0" / "mutation_diff_scaler_v1_0.pkl"
 _MEGASCALE_SCALER_PATH     = _MODEL_WEIGHTS_DIR / "mutation_diff_scaler.pkl"
-_V1_0_PRETRAINED_PATH      = _MODEL_WEIGHTS_DIR / "v1_0" / "MutPred-PPI_v1_0.pt"
+_V1_0_PRETRAINED_PATH      = _MODEL_WEIGHTS_DIR / "v1_0" / "MutPred-PPI_v1_0_stability_pretrain.pt"
 _MEGASCALE_PRETRAINED_PATH = _MODEL_WEIGHTS_DIR / "MutPred-PPI_stability_pretrain.pt"
-_CD_HIT                  = "/home/rcstewart/miniconda3/envs/pytorch_env/bin/cd-hit"
-_METHOD                  = "interaction_loss"
+_METHOD                    = "interaction_loss"
 
 
 # ── model — verbatim from predictors/mutpredppi.py ────────────────────────────
@@ -134,55 +145,62 @@ class GAT_mut_processor_no_mut(nn.Module):
 @dataclass
 class DatasetConfig:
     name: str
-    fold_splits_pat: str       # pattern with {seed}; read from _CV_DIR
-    all_vt_ids_file: str       # non-seed canonical ordering; read from _CV_DIR
-    pair_test_classes_pat: str # pattern with {seed}; read from _CV_DIR
+    vt_ids_file: str            # canonical row set + ordering
+    clusters_file: str = ""     # canonical cd-hit clusters (GroupKFold groups)
+    fold_splits_pat: str = ""   # canonical fold splits, "{s}" for the GCV seed
 
 
 DATASET_CONFIGS: dict[str, DatasetConfig] = {
     "sahni": DatasetConfig(
-        name="sahni",
-        fold_splits_pat="fold_splits_{seed}.pkl",
-        all_vt_ids_file="all_vt_ids.pkl",
-        pair_test_classes_pat="pair_test_classes_{seed}.npy",
-    ),
+        name="sahni", vt_ids_file="all_vt_ids.pkl",
+        clusters_file="clusters.pkl",
+        fold_splits_pat="fold_splits_{s}.pkl"),
     "sahni_fragoza": DatasetConfig(
-        name="sahni_fragoza",
-        fold_splits_pat="sahni_fragoza_train_fold_splits_{seed}.pkl",
-        all_vt_ids_file="sahni_fragoza_train_all_vt_ids.pkl",
-        pair_test_classes_pat="swing_train_pair_test_classes_{seed}.npy",
-    ),
+        name="sahni_fragoza", vt_ids_file="sahni_fragoza_train_all_vt_ids.pkl",
+        clusters_file="sahni_fragoza_train_clusters.pkl",
+        fold_splits_pat="sahni_fragoza_train_fold_splits_{s}.pkl"),
     "sahni_fragoza_varchamp1p_cava": DatasetConfig(
         name="sahni_fragoza_varchamp1p_cava",
-        fold_splits_pat="sahni_fragoza_varchamp1p_cava_train_fold_splits_{seed}.pkl",
-        all_vt_ids_file="sahni_fragoza_varchamp1p_cava_train_all_vt_ids.pkl",
-        pair_test_classes_pat="combined_sahni_fragoza_varchamp1p_cava_seq_confirmed_pair_test_classes_{seed}.npy",
-    ),
+        vt_ids_file="sahni_fragoza_varchamp1p_cava_train_all_vt_ids.pkl",
+        clusters_file="sahni_fragoza_varchamp1p_cava_train_clusters.pkl",
+        fold_splits_pat="sahni_fragoza_varchamp1p_cava_train_fold_splits_{s}.pkl"),
     "sahni_varchamp1p_cava": DatasetConfig(
         name="sahni_varchamp1p_cava",
-        fold_splits_pat="sahni_varchamp1p_cava_train_fold_splits_{seed}.pkl",
-        all_vt_ids_file="sahni_varchamp1p_cava_train_all_vt_ids.pkl",
-        pair_test_classes_pat="combined_sahni_varchamp1p_cava_seq_confirmed_concat_clust_pair_test_classes_{seed}.npy",
-    ),
+        vt_ids_file="sahni_varchamp1p_cava_train_all_vt_ids.pkl",
+        clusters_file="sahni_varchamp1p_cava_train_clusters.pkl",
+        fold_splits_pat="sahni_varchamp1p_cava_train_fold_splits_{s}.pkl"),
     "sahni_fragoza_varchamp_full": DatasetConfig(
         name="sahni_fragoza_varchamp_full",
-        fold_splits_pat="sahni_fragoza_varchamp_full_train_fold_splits_{seed}.pkl",
-        all_vt_ids_file="sahni_fragoza_varchamp_full_train_all_vt_ids.pkl",
-        pair_test_classes_pat="combined_sahni_fragoza_varchamp_full_pair_test_classes_{seed}.npy",
-    ),
+        vt_ids_file="sahni_fragoza_varchamp_full_train_all_vt_ids.pkl",
+        fold_splits_pat="sahni_fragoza_varchamp_full_train_fold_splits_{s}.pkl"),
     "sahni_fragoza_varchamp_pooled": DatasetConfig(
         name="sahni_fragoza_varchamp_pooled",
-        fold_splits_pat="sahni_fragoza_varchamp_pooled_train_fold_splits_{seed}.pkl",
-        all_vt_ids_file="sahni_fragoza_varchamp_pooled_train_all_vt_ids.pkl",
-        pair_test_classes_pat="combined_sahni_fragoza_varchamp_pooled_pair_test_classes_{seed}.npy",
-    ),
+        vt_ids_file="sahni_fragoza_varchamp_pooled_train_all_vt_ids.pkl",
+        fold_splits_pat="sahni_fragoza_varchamp_pooled_train_fold_splits_{s}.pkl"),
     "sahni_fragoza_varchamp_full_pooled": DatasetConfig(
         name="sahni_fragoza_varchamp_full_pooled",
-        fold_splits_pat="sahni_fragoza_varchamp_full_pooled_train_fold_splits_{seed}.pkl",
-        all_vt_ids_file="sahni_fragoza_varchamp_full_pooled_train_all_vt_ids.pkl",
-        pair_test_classes_pat="combined_sahni_fragoza_varchamp_full_pooled_pair_test_classes_{seed}.npy",
-    ),
+        vt_ids_file="sahni_fragoza_varchamp_full_pooled_train_all_vt_ids.pkl",
+        fold_splits_pat="sahni_fragoza_varchamp_full_pooled_train_fold_splits_{s}.pkl"),
 }
+
+
+def canonical_vt_ids_path(cfg: DatasetConfig) -> Path:
+    """Canonical ordering for a dataset: in-repo copy, else the legacy dir."""
+    return Path(cv_reference_dir()) / cfg.vt_ids_file
+
+
+def canonical_clusters_path(cfg: DatasetConfig):
+    """Canonical cd-hit clusters, or None if this dataset has none saved."""
+    if not cfg.clusters_file:
+        return None
+    return Path(cv_reference_dir()) / cfg.clusters_file
+
+
+def canonical_fold_splits_path(cfg: DatasetConfig, gcv_seed: int):
+    """Canonical fold splits for one seed, or None if this dataset has none saved."""
+    if not cfg.fold_splits_pat:
+        return None
+    return Path(cv_reference_dir()) / cfg.fold_splits_pat.format(s=gcv_seed)
 
 
 # ── ID splitting helpers ───────────────────────────────────────────────────────
@@ -232,12 +250,15 @@ def cluster_sequences(sequences: list, identity: float = 0.5) -> list:
 
     out_path = fasta_path + "_clustered"
     result = subprocess.run(
-        [_CD_HIT, "-i", fasta_path, "-o", out_path, "-c", str(identity), "-n", "3"],
+        [cdhit_binary(), "-i", fasta_path, "-o", out_path, "-c", str(identity), "-n", "3"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if result.returncode != 0:
-        print("CD-HIT error:", result.stderr.decode())
-        return []
+        # Returning [] here would surface much later as an opaque IndexError,
+        # since these clusters are the GroupKFold groups.
+        raise RuntimeError(
+            f"cd-hit failed (exit {result.returncode}):\n{result.stderr.decode()}"
+        )
 
     clstr_path = out_path + ".clstr"
     cluster_map: dict[int, int] = {}
@@ -264,10 +285,16 @@ def _build_emb_dict(
     t5_emb_dict: dict,
     id_parts_fn,           # callable(complex_id) → (refseq_id, partner_id)
     use_wt_emb: bool = False,
-) -> Tuple[dict, dict]:
-    """Build updated_emb_dict and complex_length_dict from .mat directory."""
+) -> Tuple[dict, dict, dict]:
+    """Build updated_emb_dict, complex_length_dict and complex_pair_dict from .mat directory.
+
+    complex_pair_dict records the (interactor, partner) split produced by this
+    dataset's own id_parts_fn, so downstream code (e.g. C1/C2/C3 classification)
+    never has to re-parse complex_id strings.
+    """
     updated_emb_dict: dict = {}
     complex_length_dict: dict = {}
+    complex_pair_dict: dict = {}
     for wt_f_mat in glob.glob(f"{graph_dir}/*.mat"):
         complex_id = os.path.splitext(os.path.basename(wt_f_mat))[0]
         try:
@@ -292,18 +319,20 @@ def _build_emb_dict(
             complex_length_dict[f"{complex_id} {variant}"] = [
                 len(vt_emb), len(t5_emb_dict[partner_id])
             ]
-    return updated_emb_dict, complex_length_dict
+            complex_pair_dict[f"{complex_id} {variant}"] = (refseq_id, partner_id)
+    return updated_emb_dict, complex_length_dict, complex_pair_dict
 
 
 def _load_graphs(
     graph_dir: str,
     updated_emb_dict: dict,
     complex_length_dict: dict,
+    complex_pair_dict: dict,
     seq_confirmed_set: Optional[set] = None,
 ) -> dict:
     data: dict = {k: [] for k in [
         "prott5_embeddings", "mutation_site_diffs", "all_vt_ids", "all_wt_ids",
-        "vt_seqs", "wt_seqs", "edge_mats", "seq_lengths",
+        "vt_seqs", "wt_seqs", "edge_mats", "seq_lengths", "all_pairs",
     ]}
     for wt_f_mat in glob.glob(f"{graph_dir}/*.mat"):
         complex_id = os.path.splitext(os.path.basename(wt_f_mat))[0]
@@ -336,6 +365,7 @@ def _load_graphs(
             np.fill_diagonal(wt_edge_mat, 1)
             data["edge_mats"].append(wt_edge_mat.copy())
             data["seq_lengths"].append(complex_length_dict[key])
+            data["all_pairs"].append(complex_pair_dict[key])
     return data
 
 
@@ -396,32 +426,38 @@ def _load_seq_confirmed_set(pkl_path: str) -> set:
 # ── full dataset loaders ───────────────────────────────────────────────────────
 
 def load_sahni(use_wt_emb: bool = False) -> dict:
-    graph_dir = "/data/ross/ppi_lossgain/interaction_loss/home/sahni/af3_graphs"
-    with open("/data/ross/ppi_lossgain/interaction_loss/sahni_wt_and_vt_t5.pkl", "rb") as f:
+    graph_dir = str(_HOME_DIR / "sahni" / "af3_graphs")
+    with open(str(_DATA_ROOT / "sahni_wt_and_vt_t5.pkl"), "rb") as f:
         t5 = pickle.load(f)
     # sahni: complex_id is NP_XXXXX_N_PARTNER, split at position 2
-    emb_dict, len_dict = _build_emb_dict(
+    emb_dict, len_dict, pair_dict = _build_emb_dict(
         graph_dir, t5,
         lambda cid: ("_".join(cid.split("_")[:2]), "_".join(cid.split("_")[2:])),
         use_wt_emb=use_wt_emb,
     )
-    data = _load_graphs(graph_dir, emb_dict, len_dict)
+    data = _load_graphs(graph_dir, emb_dict, len_dict, pair_dict)
     pos, neg = _gather_labels_pos_neg(graph_dir, data["all_vt_ids"])
     data["pos_labels"] = pos
     data["neg_labels"] = neg
+    # The interactor is a RefSeq accession but the partner is a gene symbol.
+    # C1/C2/C3 asks whether a protein was seen in training, so both sides must
+    # live in one namespace: map the interactor to its symbol.
+    with open(str(_HOME_DIR / "sahni" / "refseq_to_symbol.pkl"), "rb") as f:
+        refseq_to_symbol = pickle.load(f)
+    data["all_pairs"] = [(refseq_to_symbol.get(a, a), b) for a, b in data["all_pairs"]]
     clusters = [str(c) for c in cluster_sequences(data["wt_seqs"])]
     data["clusters"] = clusters
     return data
 
 
 def load_sahni_fragoza(use_wt_emb: bool = False) -> dict:
-    main_dir  = "/data/ross/ppi_lossgain/interaction_loss/swing_train"
+    main_dir  = str(_DATA_ROOT / "swing_train")
     graph_dir = f"{main_dir}/af3_graphs"
     with open(f"{main_dir}/swing_train_t5_embs.pkl", "rb") as f:
         t5 = pickle.load(f)
-    emb_dict, len_dict = _build_emb_dict(graph_dir, t5, split_complex_id_hyphen,
+    emb_dict, len_dict, pair_dict = _build_emb_dict(graph_dir, t5, split_complex_id_hyphen,
                                          use_wt_emb=use_wt_emb)
-    data = _load_graphs(graph_dir, emb_dict, len_dict)
+    data = _load_graphs(graph_dir, emb_dict, len_dict, pair_dict)
     pos, neg = _gather_labels_pos_neg(graph_dir, data["all_vt_ids"])
     data["pos_labels"] = pos
     data["neg_labels"] = neg
@@ -431,17 +467,17 @@ def load_sahni_fragoza(use_wt_emb: bool = False) -> dict:
 
 
 def _load_varchamp1p_raw(use_wt_emb: bool = False) -> dict:
-    graph_dir = "/data/ross/ppi_lossgain/interaction_loss/varchamp1p/af3_graphs"
-    with open("/data/ross/ppi_lossgain/interaction_loss/varchamp1p/varchamp1p_t5_embs.pkl", "rb") as f:
+    graph_dir = str(_DATA_ROOT / "varchamp1p" / "af3_graphs")
+    with open(str(_DATA_ROOT / "varchamp1p" / "varchamp1p_t5_embs.pkl"), "rb") as f:
         t5 = pickle.load(f)
-    seq_conf = _load_seq_confirmed_set("/data/ross/ppi_lossgain/interaction_loss/home/varchamp1p/seq_confirmed_variants.pkl")
+    seq_conf = _load_seq_confirmed_set(str(_HOME_DIR / "varchamp1p" / "seq_confirmed_variants.pkl"))
     # varchamp1p: complex_id is GENE1_orf_GENE2_orf, split at position 1
-    emb_dict, len_dict = _build_emb_dict(
+    emb_dict, len_dict, pair_dict = _build_emb_dict(
         graph_dir, t5,
         lambda cid: ("_".join(cid.split("_")[:1]), "_".join(cid.split("_")[1:])),
         use_wt_emb=use_wt_emb,
     )
-    data = _load_graphs(graph_dir, emb_dict, len_dict, seq_conf)
+    data = _load_graphs(graph_dir, emb_dict, len_dict, pair_dict, seq_conf)
     pos, neg = _gather_labels_scored(graph_dir, data["all_vt_ids"])
     data["pos_labels"] = pos
     data["neg_labels"] = neg
@@ -449,35 +485,41 @@ def _load_varchamp1p_raw(use_wt_emb: bool = False) -> dict:
 
 
 def _load_cava_raw(use_wt_emb: bool = False) -> dict:
-    graph_dir = "/data/ross/ppi_lossgain/interaction_loss/cava/af3_graphs"
-    with open("/data/ross/ppi_lossgain/interaction_loss/cava/cava_t5_embs.pkl", "rb") as f:
+    graph_dir = str(_DATA_ROOT / "cava" / "af3_graphs")
+    with open(str(_DATA_ROOT / "cava" / "cava_t5_embs.pkl"), "rb") as f:
         t5 = pickle.load(f)
-    seq_conf = _load_seq_confirmed_set("/data/ross/ppi_lossgain/interaction_loss/home/cava/seq_confirmed_variants.pkl")
-    emb_dict, len_dict = _build_emb_dict(
+    seq_conf = _load_seq_confirmed_set(str(_HOME_DIR / "cava" / "seq_confirmed_variants.pkl"))
+    emb_dict, len_dict, pair_dict = _build_emb_dict(
         graph_dir, t5,
         lambda cid: ("_".join(cid.split("_")[:1]), "_".join(cid.split("_")[1:])),
         use_wt_emb=use_wt_emb,
     )
-    data = _load_graphs(graph_dir, emb_dict, len_dict, seq_conf)
+    data = _load_graphs(graph_dir, emb_dict, len_dict, pair_dict, seq_conf)
     pos, neg = _gather_labels_scored(graph_dir, data["all_vt_ids"])
     data["pos_labels"] = pos
     data["neg_labels"] = neg
     return data
 
 
-def _remap_vt_ids(src: dict, new_wt_ids: list) -> None:
-    """Update all_wt_ids and all_vt_ids in-place to use new_wt_ids."""
+def _remap_vt_ids(src: dict, new_wt_ids: list, new_pairs: Optional[list] = None) -> None:
+    """Update all_wt_ids, all_vt_ids and all_pairs in-place to use new_wt_ids.
+
+    new_pairs carries the (interactor, partner) IDs in the same namespace as
+    new_wt_ids; callers already compute this split to build new_wt_ids.
+    """
     src["all_wt_ids"] = new_wt_ids
     src["all_vt_ids"] = [
         f"{wt_id} {vt_id.split(' ', 1)[1]}"
         for wt_id, vt_id in zip(new_wt_ids, src["all_vt_ids"])
     ]
+    if new_pairs is not None:
+        src["all_pairs"] = new_pairs
 
 
 _DATA_KEYS = [
     "prott5_embeddings", "mutation_site_diffs", "edge_mats",
     "pos_labels", "neg_labels", "all_wt_ids", "all_vt_ids",
-    "wt_seqs", "vt_seqs", "seq_lengths",
+    "wt_seqs", "vt_seqs", "seq_lengths", "all_pairs",
 ]
 
 
@@ -525,31 +567,36 @@ def load_sahni_fragoza_varchamp1p_cava(use_wt_emb: bool = False) -> dict:
     vc  = _load_varchamp1p_raw(use_wt_emb=use_wt_emb)
     cava = _load_cava_raw(use_wt_emb=use_wt_emb)
 
-    with open("/data/ross/ppi_lossgain/interaction_loss/home/varchamp1p/gene_symbol_to_uniprot.pkl", "rb") as f:
+    with open(str(_HOME_DIR / "varchamp1p" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
         vc_gs2u = pickle.load(f)
-    with open("/data/ross/ppi_lossgain/interaction_loss/home/cava/gene_symbol_to_uniprot.pkl", "rb") as f:
+    with open(str(_HOME_DIR / "cava" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
         cava_gs2u = pickle.load(f)
 
     # sahni_fragoza: "A-B" → "A_B"
-    sf_new_wt = []
+    sf_new_wt, sf_new_pairs = [], []
     for wt_id in sf["all_wt_ids"]:
         a, b = split_complex_id_hyphen(wt_id)
         sf_new_wt.append(f"{a}_{b}")
-    _remap_vt_ids(sf, sf_new_wt)
+        sf_new_pairs.append((a, b))
+    _remap_vt_ids(sf, sf_new_wt, sf_new_pairs)
 
     # varchamp1p: gene+orf → UniProt_UniProt
-    vc_new_wt = []
+    vc_new_wt, vc_new_pairs = [], []
     for wt_id in vc["all_wt_ids"]:
         a, b = split_wt_id_underscore(wt_id)
-        vc_new_wt.append(f"{vc_gs2u[get_gene_name(a)]}_{vc_gs2u[get_gene_name(b)]}")
-    _remap_vt_ids(vc, vc_new_wt)
+        ua, ub = vc_gs2u[get_gene_name(a)], vc_gs2u[get_gene_name(b)]
+        vc_new_wt.append(f"{ua}_{ub}")
+        vc_new_pairs.append((ua, ub))
+    _remap_vt_ids(vc, vc_new_wt, vc_new_pairs)
 
     # cava: gene+orf → UniProt_UniProt
-    cava_new_wt = []
+    cava_new_wt, cava_new_pairs = [], []
     for wt_id in cava["all_wt_ids"]:
         a, b = split_wt_id_underscore(wt_id)
-        cava_new_wt.append(f"{cava_gs2u[get_gene_name(a)]}_{cava_gs2u[get_gene_name(b)]}")
-    _remap_vt_ids(cava, cava_new_wt)
+        ua, ub = cava_gs2u[get_gene_name(a)], cava_gs2u[get_gene_name(b)]
+        cava_new_wt.append(f"{ua}_{ub}")
+        cava_new_pairs.append((ua, ub))
+    _remap_vt_ids(cava, cava_new_wt, cava_new_pairs)
 
     data = _dedup_and_merge([sf, vc, cava])
     data["clusters"] = [str(c) for c in cluster_sequences(data["wt_seqs"])]
@@ -564,9 +611,9 @@ def _load_varchamp2026_raw(use_wt_emb: bool = False) -> dict:
     ProtT5 embeddings use 'UNIPROT' (WT) and 'UNIPROT_MutXXX' (VT, 1-based) keys.
     Labels: perturbed=True → disrupted (pos, y=1), perturbed=False → maintained (neg, y=0).
     """
-    _CSV      = "/data/ross/ppi_lossgain/interaction_loss/2026/sfvc2026_labeled_data.csv"
-    _T5_PKL   = "/data/ross/ppi_lossgain/interaction_loss/2026/all_labeled_prott5_embeddings.pkl"
-    _GRAPH_DIR = "/data/ross/ppi_lossgain/interaction_loss/2026/graphs"
+    _CSV      = str(_REVISIONS_DIR / "sfvc2026_labeled_data.csv")
+    _T5_PKL   = str(_REVISIONS_DIR / "all_labeled_prott5_embeddings.pkl")
+    _GRAPH_DIR = str(_REVISIONS_DIR / "graphs")
 
     df = pd.read_csv(_CSV)
     vc_df = df[df["dataset"].str.contains("VarChAMP", na=False)]
@@ -646,6 +693,7 @@ def _load_varchamp2026_raw(use_wt_emb: bool = False) -> dict:
         data["wt_seqs"].append(wt_seq_full)
         data["vt_seqs"].append(vt_seq_str)
         data["seq_lengths"].append([L_inter, len(part_emb)])
+        data["all_pairs"].append((inter, partner))
 
         if perturbed:  # disrupted → pos → y=1 (consistent with Sahni/Fragoza/VC1p/CAVA)
             data["pos_labels"].append([mut_idx])
@@ -664,11 +712,12 @@ def load_sahni_fragoza_varchamp_full(use_wt_emb: bool = False) -> dict:
     vc1p = _load_varchamp1p_raw(use_wt_emb=use_wt_emb)
     cava = _load_cava_raw(use_wt_emb=use_wt_emb)
 
-    sf_new_wt = []
+    sf_new_wt, sf_new_pairs = [], []
     for wt_id in sf["all_wt_ids"]:
         a, b = split_complex_id_hyphen(wt_id)
         sf_new_wt.append(f"{a}_{b}")
-    _remap_vt_ids(sf, sf_new_wt)
+        sf_new_pairs.append((a, b))
+    _remap_vt_ids(sf, sf_new_wt, sf_new_pairs)
 
     data = _dedup_and_merge([sf, vc26, vc1p, cava])
     data["clusters"] = [str(c) for c in cluster_sequences(data["wt_seqs"])]
@@ -682,9 +731,9 @@ def _load_varchamp_pooled_raw(use_wt_emb: bool = False) -> dict:
     T5 pkl keys: {INTERACTOR} (WT), {INTERACTOR}_{mutation} (mutant, e.g. O00189_E80K)
     Labels: perturbed=True → disrupted (pos, y=1), perturbed=False → maintained (neg, y=0).
     """
-    _CSV      = "/data/ross/ppi_lossgain/interaction_loss/publication/data_caches/training_data_internal.csv"
-    _T5_PKL   = "/data/ross/ppi_lossgain/interaction_loss/varchamp_pooled/varchamp_pooled_t5_embs.pkl"
-    _GRAPH_DIR = "/data/ross/ppi_lossgain/interaction_loss/varchamp_pooled/af3_graphs"
+    _CSV      = str(_DATA_CACHES_DIR / "training_data_internal.csv")
+    _T5_PKL   = str(_DATA_ROOT / "varchamp_pooled" / "varchamp_pooled_t5_embs.pkl")
+    _GRAPH_DIR = str(_DATA_ROOT / "varchamp_pooled" / "af3_graphs")
 
     df = pd.read_csv(_CSV)
     pool_df = df[df["dataset"].str.contains("VarChAMP_pooled", na=False)].copy()
@@ -751,6 +800,7 @@ def _load_varchamp_pooled_raw(use_wt_emb: bool = False) -> dict:
         data["wt_seqs"].append(wt_seq_full)
         data["vt_seqs"].append(vt_seq_str)
         data["seq_lengths"].append([L_inter, len(part_emb)])
+        data["all_pairs"].append((inter, partner))
 
         if perturbed:  # disrupted → pos → y=1 (consistent with Sahni/Fragoza/VC1p/CAVA)
             data["pos_labels"].append([mut_idx])
@@ -768,11 +818,12 @@ def load_sahni_fragoza_varchamp_pooled(use_wt_emb: bool = False) -> dict:
     sf   = load_sahni_fragoza(use_wt_emb=use_wt_emb)
     pool = _load_varchamp_pooled_raw(use_wt_emb=use_wt_emb)
 
-    sf_new_wt = []
+    sf_new_wt, sf_new_pairs = [], []
     for wt_id in sf["all_wt_ids"]:
         a, b = split_complex_id_hyphen(wt_id)
         sf_new_wt.append(f"{a}_{b}")
-    _remap_vt_ids(sf, sf_new_wt)
+        sf_new_pairs.append((a, b))
+    _remap_vt_ids(sf, sf_new_wt, sf_new_pairs)
 
     data = _dedup_and_merge([sf, pool], drop_conflicts=True)
     data["clusters"] = [str(c) for c in cluster_sequences(data["wt_seqs"])]
@@ -787,11 +838,12 @@ def load_sahni_fragoza_varchamp_full_pooled(use_wt_emb: bool = False) -> dict:
     cava = _load_cava_raw(use_wt_emb=use_wt_emb)
     pool = _load_varchamp_pooled_raw(use_wt_emb=use_wt_emb)
 
-    sf_new_wt = []
+    sf_new_wt, sf_new_pairs = [], []
     for wt_id in sf["all_wt_ids"]:
         a, b = split_complex_id_hyphen(wt_id)
         sf_new_wt.append(f"{a}_{b}")
-    _remap_vt_ids(sf, sf_new_wt)
+        sf_new_pairs.append((a, b))
+    _remap_vt_ids(sf, sf_new_wt, sf_new_pairs)
 
     data = _dedup_and_merge([sf, vc26, vc1p, cava, pool], drop_conflicts=True)
     data["clusters"] = [str(c) for c in cluster_sequences(data["wt_seqs"])]
@@ -804,7 +856,7 @@ def load_sahni_varchamp1p_cava(use_wt_emb: bool = False) -> dict:
     vc    = _load_varchamp1p_raw(use_wt_emb=use_wt_emb)
     cava  = _load_cava_raw(use_wt_emb=use_wt_emb)
 
-    with open("/data/ross/ppi_lossgain/interaction_loss/home/sahni/refseq_to_symbol.pkl", "rb") as f:
+    with open(str(_HOME_DIR / "sahni" / "refseq_to_symbol.pkl"), "rb") as f:
         refseq_to_symbol = pickle.load(f)
 
     # For dedup comparison: convert sahni NP_ → gene_symbol (NP_ ids never match
@@ -855,42 +907,150 @@ def load_dataset(cfg: DatasetConfig, use_wt_emb: bool = False) -> dict:
     return data
 
 
-# ── alignment to canonical vt_ids ordering ────────────────────────────────────
+# ── split generation ──────────────────────────────────────────────────────────
 
-def align_to_vt_ids(data: dict, cfg: DatasetConfig) -> dict:
-    """Reorder data to match the canonical ordering in all_vt_ids_file.
+def align_to_vt_ids(data: dict, canonical_path, clusters_path=None) -> dict:
+    """Restore the canonical row set and ordering from a reference vt_id list.
 
-    Mirrors esignet_gcv_iter.py align_to_vt_ids.  Variant positions in the
-    stored pkl are 0-based; loaded data is also 0-based — no conversion needed.
+    Each loaded row is placed at its position in the canonical list, so the result
+    is independent of directory listing order and of any rows the source has
+    gained since the reference was written (those are dropped). This is what makes
+    a run reproduce published numbers exactly; deriving the order from a fresh
+    shuffle cannot, because both the row set and the pre-shuffle order can drift.
+
+    Clusters are the GroupKFold groups and cd-hit is order-dependent (it assigns
+    representatives greedily in input order), so they are never recomputed here.
+    A saved canonical clusters file is used when available; otherwise the clusters
+    computed at load time are carried through, which reproduces the original
+    behaviour exactly as long as the source data has not grown.
     """
-    with open(_CV_DIR / cfg.all_vt_ids_file, "rb") as f:
+    with open(canonical_path, "rb") as f:
         canonical = pickle.load(f)
-
-    canonical_pos = {vt_id: i for i, vt_id in enumerate(canonical)}
+    pos = {vt_id: i for i, vt_id in enumerate(canonical)}
     n = len(canonical)
 
     valid_loaded: list[int] = []
     dest_positions: list[int] = []
     for i, vt_id in enumerate(data["all_vt_ids"]):
-        if vt_id in canonical_pos:
+        if vt_id in pos:
             valid_loaded.append(i)
-            dest_positions.append(canonical_pos[vt_id])
+            dest_positions.append(pos[vt_id])
 
-    assert len(valid_loaded) == n, (
-        f"Row count mismatch: {len(valid_loaded)} matched vs {n} expected in {cfg.all_vt_ids_file}"
-    )
-    assert len(dest_positions) == len(set(dest_positions)), "Duplicate vt_id mappings"
+    if len(valid_loaded) != n:
+        raise ValueError(
+            f"{n - len(valid_loaded)} of {n} rows in {Path(canonical_path).name} were "
+            f"not found in the loaded dataset ({len(data['all_vt_ids'])} rows). The "
+            f"reference and the source data are inconsistent."
+        )
+    assert len(set(dest_positions)) == len(dest_positions), "duplicate vt_id mapping"
+
+    dropped = len(data["all_vt_ids"]) - n
+    if dropped:
+        print(f"  align_to_vt_ids: {len(data['all_vt_ids'])} loaded -> {n} "
+              f"(dropped {dropped} not in reference)", flush=True)
 
     ordered: dict = {k: [None] * n for k in _DATA_KEYS}
     for loaded_i, dest_i in zip(valid_loaded, dest_positions):
         for k in _DATA_KEYS:
             ordered[k][dest_i] = data[k][loaded_i]
 
-    ordered["clusters"] = [None] * n
-    for loaded_i, dest_i in zip(valid_loaded, dest_positions):
-        ordered["clusters"][dest_i] = data["clusters"][loaded_i]
-
+    if clusters_path is not None and Path(clusters_path).exists():
+        with open(clusters_path, "rb") as f:
+            saved = pickle.load(f)
+        if len(saved) != n:
+            raise ValueError(f"{Path(clusters_path).name} has {len(saved)} clusters, "
+                             f"expected {n}")
+        ordered["clusters"] = [str(c) for c in saved]
+    else:
+        ordered["clusters"] = [None] * n
+        for loaded_i, dest_i in zip(valid_loaded, dest_positions):
+            ordered["clusters"][dest_i] = data["clusters"][loaded_i]
     return ordered
+
+
+def shuffle_data(data: dict, seed: int = 42) -> dict:
+    """Apply a fixed permutation to produce a canonical data ordering.
+
+    Only used when no canonical reference exists for a dataset (i.e. when
+    establishing one). Prefer align_to_vt_ids for anything reproducing results.
+    """
+    missing = [k for k in _DATA_KEYS if k not in data]
+    if missing:
+        raise KeyError(
+            f"Loaded data is missing {missing}. A --data-cache written before "
+            "'all_pairs' was added is stale: delete it and let it rebuild. The "
+            "interactor/partner pair is recorded at load time and cannot be "
+            "reliably recovered from complex_id strings afterwards."
+        )
+    n = len(data["all_vt_ids"])
+    indices = list(range(n))
+    rng = random.Random(seed)
+    rng.shuffle(indices)
+    result: dict = {}
+    for k in _DATA_KEYS:
+        result[k] = [data[k][i] for i in indices]
+    result["clusters"] = [data["clusters"][i] for i in indices]
+    return result
+
+
+def make_fold_splits(data: dict, gcv_seed: int, n_splits: int = 10,
+                     cfg: Optional[DatasetConfig] = None) -> list:
+    """Fold splits for one GCV seed.
+
+    When the canonical saved splits are present they are returned directly —
+    a run is deterministic with respect to the original published run.
+
+    When splits must be generated, the loader's cd-hit clusters (on the full
+    complex sequence) are used as the GroupKFold groups.
+    """
+    if cfg is not None:
+        saved = canonical_fold_splits_path(cfg, gcv_seed)
+        if saved is not None and saved.exists():
+            with open(saved, "rb") as f:
+                fold_splits = pickle.load(f)
+            total = sum(len(te) for _, _, te in fold_splits)
+            if total != len(data["all_vt_ids"]):
+                raise ValueError(
+                    f"{saved.name} covers {total} rows but the aligned dataset has "
+                    f"{len(data['all_vt_ids'])}")
+            return fold_splits
+
+    n = len(data["all_vt_ids"])
+    kf = GroupKFold(n_splits=n_splits, shuffle=True, random_state=gcv_seed)
+    return [
+        (fold, train_idx, test_idx)
+        for fold, (train_idx, test_idx) in enumerate(
+            kf.split(range(n), groups=data["clusters"])
+        )
+    ]
+
+
+def compute_pair_test_classes(data: dict, fold_splits: list) -> np.ndarray:
+    """Classify each test sample as C1/C2/C3 and return in fold order.
+
+    C1: both proteins seen in training; C2: one seen; C3: neither seen.
+    Result is a flat array concatenated across folds (fold 0 first), matching
+    the layout of all_preds/all_labels in the GCV loop.
+
+    Uses all_pairs, recorded at load time by each dataset's own id_parts_fn, so
+    the interactor/partner split is never re-derived from complex_id strings
+    (which is unreliable: separators vary per source, gene names may contain
+    hyphens, and combined datasets mix conventions in a single dataset).
+    """
+    pairs = data["all_pairs"]
+    classes: list[int] = []
+    for _fold, train_idx, test_idx in fold_splits:
+        train_proteins: set = set()
+        for i in train_idx:
+            a, b = pairs[i]
+            train_proteins.add(a)
+            train_proteins.add(b)
+        for i in test_idx:
+            a, b = pairs[i]
+            a_seen = a in train_proteins
+            b_seen = b in train_proteins
+            classes.append(1 if (a_seen and b_seen) else 2 if (a_seen or b_seen) else 3)
+    return np.array(classes, dtype=np.int64)
 
 
 # ── training ──────────────────────────────────────────────────────────────────
@@ -1246,8 +1406,14 @@ def run(args: argparse.Namespace) -> None:
                 pickle.dump(data, _f)
             print(f"Data cache saved.", flush=True)
 
-    ordered = align_to_vt_ids(data, cfg)
-    print(f"  {len(ordered['all_vt_ids'])} rows after vt_ids alignment", flush=True)
+    canonical = canonical_vt_ids_path(cfg)
+    if canonical.exists():
+        ordered = align_to_vt_ids(data, canonical, canonical_clusters_path(cfg))
+    else:
+        print(f"  no canonical ordering at {canonical}; deriving one by shuffle "
+              f"(results will not match a published run)", flush=True)
+        ordered = shuffle_data(data)
+    print(f"  {len(ordered['all_vt_ids'])} rows", flush=True)
 
     # Prefit scaler — megascale ablations use the MegaScale scaler; all others use
     # the FoldX scaler; scratch fits per fold from training data.
@@ -1307,13 +1473,9 @@ def run(args: argparse.Namespace) -> None:
         print(f"\n{'='*60}", flush=True)
         print(f"GCV seed {gcv_seed}/{args.n_gcv - 1}", flush=True)
 
-        with open(_CV_DIR / cfg.fold_splits_pat.format(seed=gcv_seed), "rb") as f:
-            fold_splits = pickle.load(f)
+        fold_splits = make_fold_splits(ordered, gcv_seed, cfg=cfg)
         fold_n_test = [len(test_idx) for _, _, test_idx in fold_splits]
-
-        pair_test_classes = np.load(
-            str(_CV_DIR / cfg.pair_test_classes_pat.format(seed=gcv_seed))
-        )
+        pair_test_classes = compute_pair_test_classes(ordered, fold_splits)
 
         all_preds:  list = []
         all_labels: list = []
@@ -1383,8 +1545,9 @@ def _parse_args() -> argparse.Namespace:
                    help="PyTorch device string (e.g. 'cuda:0'). Defaults to auto-detect.")
     p.add_argument("--n-gcv", type=int, default=30,
                    help="Number of GCV iterations (default: 30)")
-    p.add_argument("--outdir", default=str(_CV_DIR),
-                   help="Output directory for results (default: CV splits dir)")
+    p.add_argument("--outdir", default=str(_REPO_ROOT / "results_revisions" / "macro_aucs"),
+                   help="Output directory for results (default: results_revisions/macro_aucs, "
+                        "where the figure scripts look for them)")
     p.add_argument("--ablation", default="megascale_all",
                    choices=[
                        "full", "full_all",

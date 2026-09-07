@@ -54,16 +54,24 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# ── resolve dataset configs from esignet_scripts ─────────────────────────────
-_ESIGNET_SCRIPTS = Path(__file__).resolve().parent.parent / "esignet_scripts"
-sys.path.insert(0, str(_ESIGNET_SCRIPTS))
-from esignet_gcv_iter import DATASET_CONFIGS, load_data  # noqa: E402
+# ── dataset configs (vendored in-repo) ───────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from esignet_gcv_iter_legacy import DATASET_CONFIGS, load_data  # noqa: E402
 
 # ── PPLM package ─────────────────────────────────────────────────────────────
-_PPLM_DIR    = Path("/data/ross/ppi_lossgain/interaction_loss/2026/PPLM")
+
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REVISIONS_DIR, cache_file# noqa: E402
+
+_PPLM_DIR = REVISIONS_DIR / "PPLM"
 _WEIGHTS_PATH = str(_PPLM_DIR / "weights" / "pplm_t33_650M.pt")
 sys.path.insert(0, str(_PPLM_DIR))
 from pplm.pplm import PPLM, Alphabet  # noqa: E402
+
+
 
 
 # ── mutation helper ───────────────────────────────────────────────────────────
@@ -323,7 +331,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--output",
-        default=str(Path(__file__).resolve().parents[2] / "data_caches" / "pplm_cache.pkl"),
+        default=str(cache_file("pplm_cache.pkl")),
         help="Output .pkl cache file path (created or extended if it exists)",
     )
     p.add_argument(

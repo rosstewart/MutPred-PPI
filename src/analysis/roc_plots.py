@@ -11,8 +11,14 @@ import glob
 import os
 import re
 
-WORKING_DIR = "/data/ross/ppi_lossgain/interaction_loss/publication/results_revisions/macro_aucs"
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import GCV_RESULTS_DIR  # noqa: E402
 
+
+WORKING_DIR = str(GCV_RESULTS_DIR)
 # %% Helper functions
 def get_gene_name(gene_name_and_orf_id):
     if gene_name_and_orf_id.startswith('NP_'):
@@ -66,6 +72,8 @@ with open('/data/ross/ppi_lossgain/interaction_loss/three_datasets_af3_models/ol
 SAAMBE_train_uniprots = np.load(f'{WORKING_DIR}/SAAMBE_train_uniprots.npy')
 
 from collections import defaultdict
+
+
 iptm_scores = defaultdict(dict)
 for key in iptm_scores_raw:
     p1, p2 = split_wt_id(key)

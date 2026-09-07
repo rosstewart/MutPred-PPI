@@ -49,10 +49,16 @@ _SCALER_PATH = _MODELS_DIR / "mutation_diff_scaler.pkl"
 sys.path.insert(0, str(_THIS_DIR.parent / "inference"))
 from utils.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT  # noqa: E402
+
+
 # ── dataset path registry ─────────────────────────────────────────────────────
 
-_BASE = Path("/data/ross/ppi_lossgain/interaction_loss")
-
+_BASE = DATA_ROOT
 DATASET_CONFIGS = {
     "clinvar": {
         "graph_dir":          _BASE / "clinvar" / "af3_graphs",

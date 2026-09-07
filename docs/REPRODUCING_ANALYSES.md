@@ -173,8 +173,8 @@ conda run -n ppi python src/analysis/roc_plots.py
 conda run -n ppi python src/analysis/run_roc_ablation.py
 ```
 
-The `full`/`full_all` ablation ("Prior Best" bar) uses `weights/v1_0/MutPred-PPI_v1_0.pt`, a
-pre-MegaScale (FoldX/RaSP-based) checkpoint kept for this one comparison; all other ablations use
+The `full`/`full_all` ablation ("Prior Best" bar) uses `weights/v1_0/MutPred-PPI_v1_0_stability_pretrain.pt`,
+a pre-MegaScale (FoldX/RaSP-based) checkpoint kept for this one comparison; all other ablations use
 `weights/MutPred-PPI_stability_pretrain.pt`. If `weights/v1_0/` is unavailable, skip `full`/`full_all`.
 
 Output: `results_revisions/macro_aucs/roc_plots_with_variance/ablation_bar_sahni_fragoza_with_variance.png` → **S-abl**

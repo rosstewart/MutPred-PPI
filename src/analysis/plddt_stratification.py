@@ -30,10 +30,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import CV_DIR as _P_CV_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir  # noqa: E402
+
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
-_PUB = "/data/ross/ppi_lossgain/interaction_loss/publication"
-_BASE = "/data/ross/ppi_lossgain/interaction_loss"
-CV_DIR = "/home/rcstewart/gnn/ppi_interaction_loss/cv_splits"
+_PUB = str(REPO_ROOT)
+_BASE = str(DATA_ROOT)
+CV_DIR = str(cv_reference_dir())
 PLDDT_CACHE = f"{_BASE}/2026/plddt_cache.pkl"
 GCV_RESULTS = f"{_PUB}/results_revisions/macro_aucs/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
 VT_IDS_FILE = f"{CV_DIR}/sahni_fragoza_train_all_vt_ids.pkl"

@@ -24,8 +24,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT  # noqa: E402
+
+
 # ── paths ─────────────────────────────────────────────────────────────────────
-_BASE   = Path("/data/ross/ppi_lossgain/interaction_loss")
+_BASE = DATA_ROOT
 _HOME   = _BASE / "home"
 _PUB    = _BASE / "publication"
 _REVDIR = _PUB / "results_revisions"

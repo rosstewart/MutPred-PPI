@@ -23,7 +23,14 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
+
+
+_PUB = REPO_ROOT
 _TRAINING_DATA_CSV = _PUB / "data_caches" / "training_data_internal.csv"
 
 # ── Grantham aa_score_dict ────────────────────────────────────────────────────

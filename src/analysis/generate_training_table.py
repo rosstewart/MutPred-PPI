@@ -11,10 +11,17 @@ from pathlib import Path
 
 import pandas as pd
 
-_PUB    = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
-_MS     = Path("/data/ross/ppi_lossgain/interaction_loss/megascale_preprocessed")
-_CV     = Path("/home/rcstewart/gnn/ppi_interaction_loss/cv_splits")
-_TRAIN  = Path("/data/ross/ppi_lossgain/interaction_loss/publication/data_caches/training_data_internal.csv")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import CV_DIR, DATA_CACHES_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
+
+
+_PUB = REPO_ROOT
+_MS = DATA_ROOT / "megascale_preprocessed"
+_CV = CV_DIR
+_TRAIN = DATA_CACHES_DIR / "training_data_internal.csv"
 _OUT    = _PUB / "figures" / "training_data_table.tex"
 
 _SF_LABELS   = _CV / "sahni_fragoza_all_vt_ids_and_labels.txt"

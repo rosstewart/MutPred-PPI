@@ -40,8 +40,14 @@ import h5py
 import numpy as np
 import scipy.io as sio
 
-_BASE = Path("/data/ross/ppi_lossgain/interaction_loss")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT  # noqa: E402
 
+
+_BASE = DATA_ROOT
 DATASET_CONFIGS = {
     "clinvar": {
         "h5_in":    _BASE / "clinvar" / "prott5_embeddings.h5",

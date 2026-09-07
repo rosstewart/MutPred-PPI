@@ -20,10 +20,16 @@ import os
 import numpy as np
 import pandas as pd
 
-_PUB    = "/data/ross/ppi_lossgain/interaction_loss/publication"
-_EVAL   = os.path.join(_PUB, "results/varchamp_seqcnf_newvar_eval")
-_CSV    = "/data/ross/ppi_lossgain/interaction_loss/publication/data_caches/training_data_internal.csv"
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_CACHES_DIR, REPO_ROOT  # noqa: E402
 
+
+_PUB = str(REPO_ROOT)
+_EVAL   = os.path.join(_PUB, "results/varchamp_seqcnf_newvar_eval")
+_CSV = str(DATA_CACHES_DIR / "training_data_internal.csv")
 # All method descriptions that have VCFP blind test arrays
 METHODS = [
     "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)",

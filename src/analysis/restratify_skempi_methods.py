@@ -16,7 +16,14 @@ import argparse
 import os
 import numpy as np
 
-_PUB = "/data/ross/ppi_lossgain/interaction_loss/publication"
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
+
+
+_PUB = str(REPO_ROOT)
 _EVAL_DIR = os.path.join(_PUB, "results/varchamp_seqcnf_newvar_eval")
 _SAAMBE_UNIPROTS = os.path.join(
     _PUB, "results_revisions/macro_aucs/SAAMBE_train_uniprots.npy"

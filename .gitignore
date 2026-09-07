@@ -56,3 +56,6 @@ example/af3_models/
 
 # Figures
 figures/
+
+# Reproducibility test scratch (generated)
+repro_test/

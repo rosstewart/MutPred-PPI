@@ -47,7 +47,14 @@ import scipy.io as sio
 import torch
 from transformers import T5EncoderModel, T5Tokenizer
 
-_BASE      = Path("/data/ross/ppi_lossgain/interaction_loss/gnomad")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT  # noqa: E402
+
+
+_BASE = DATA_ROOT / "gnomad"
 _FASTA     = _BASE / "gnomad_interaction_loss_wt_and_vt.fasta"
 _AF_FILE   = _BASE / "gnomad_allele_frequencies.tsv"
 _GRAPH_DIR = _BASE / "af3_graphs"

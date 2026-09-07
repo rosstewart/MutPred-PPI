@@ -25,13 +25,24 @@ from pathlib import Path
 
 import numpy as np
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
 
+
+_PUB = REPO_ROOT
 sys.path.insert(0, str(_PUB / "src" / "analysis"))
 from variant_db_charts import calc_enrichment
 
-BOOTSTRAP_PKL = _PUB / "results_revisions" / "variant_dbs_classified" / "all_bootstrap_results.pkl"
-CLASSIFIED_DIR = _PUB / "results_revisions" / "variant_dbs_classified" / "cosmic"
+
+
+# Must match the model used for Fig 5 (SFVCFP). The older variant_dbs/ and
+# variant_dbs_classified/ trees hold SF-model predictions; mixing the two
+# across panels is what this path previously did.
+BOOTSTRAP_PKL = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "all_bootstrap_results.pkl"
+CLASSIFIED_DIR = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "cosmic"
 OUT_DIR        = _PUB / "results_revisions" / "cosmic_stat_test"
 
 BIN_LABELS   = ["Single", r"$\geq$2", r"$\geq$4", r"$\geq$8", r"$\geq$16", r"$\geq$32"]

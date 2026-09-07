@@ -48,16 +48,24 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# ── resolve dataset configs from esignet_scripts ─────────────────────────────
-_ESIGNET_SCRIPTS = Path(__file__).resolve().parent.parent / "esignet_scripts"
-sys.path.insert(0, str(_ESIGNET_SCRIPTS))
-from esignet_gcv_iter import DATASET_CONFIGS, load_data  # noqa: E402
+# ── dataset configs (vendored in-repo) ───────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from esignet_gcv_iter_legacy import DATASET_CONFIGS, load_data  # noqa: E402
 
 # ── MINT package ─────────────────────────────────────────────────────────────
-_MINT_DIR = Path("/data/ross/ppi_lossgain/interaction_loss/2026/mint")
+
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REVISIONS_DIR, cache_file# noqa: E402
+
+_MINT_DIR = REVISIONS_DIR / "mint"
 sys.path.insert(0, str(_MINT_DIR))
 import mint                                              # noqa: E402
 from mint.model.esm2 import ESM2                        # noqa: E402
+
+
 
 _CKPT_PATH   = str(_MINT_DIR / "mint.ckpt")
 _CONFIG_PATH = str(_MINT_DIR / "esm2_t33_650M_UR50D.json")
@@ -340,7 +348,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--output",
-        default=str(Path(__file__).resolve().parents[2] / "data_caches" / "mint_cache.pkl"),
+        default=str(cache_file("mint_cache.pkl")),
         help="Output .pkl cache file path (created or extended if it exists)",
     )
     p.add_argument(

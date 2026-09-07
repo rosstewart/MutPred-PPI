@@ -26,11 +26,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_CACHES_DIR, REVISIONS_DIR  # noqa: E402
+
+
 # ── constants ──────────────────────────────────────────────────────────────────
 
-TRAINING_CSV   = "/data/ross/ppi_lossgain/interaction_loss/publication/data_caches/training_data_internal.csv"
-SFVC2026_CSV   = "/data/ross/ppi_lossgain/interaction_loss/2026/sfvc2026_labeled_data.csv"
-
+TRAINING_CSV = str(DATA_CACHES_DIR / "training_data_internal.csv")
+SFVC2026_CSV = str(REVISIONS_DIR / "sfvc2026_labeled_data.csv")
 DATASET_MAP = {
     "Sahni":          "Sahni",
     "Fragoza":        "Fragoza",

@@ -31,14 +31,23 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
 from matplotlib.patches import Ellipse
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
-_HOME = Path("/data/ross/ppi_lossgain/interaction_loss/home")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_ROOT, HOME_DIR, REPO_ROOT  # noqa: E402
+
+
+_PUB = REPO_ROOT
+_HOME = HOME_DIR
 _DB   = _PUB / "results_revisions" / "variant_dbs"
 _STAB = _PUB / "results_revisions" / "variant_dbs_stability"
 _OUT  = _PUB / "results_revisions" / "stability_interaction"
 
 sys.path.insert(0, str(_PUB / "src" / "analysis"))
 from stability_interaction_scatter import load_tsv_grouped, aggregate_per_variant
+
+
 
 COSMIC_MIN_RECURRENCE = 32
 K_RANGE = range(2, 7)
@@ -83,7 +92,7 @@ def build_pooled_data() -> pd.DataFrame:
     frames.append(df)
     print(f"  HGMD: {len(df):,} variants", flush=True)
 
-    cosmic_rec_file = Path("/data/ross/ppi_lossgain/interaction_loss/cosmic/vt_to_tumor_site.pkl")
+    cosmic_rec_file = DATA_ROOT / "cosmic" / "vt_to_tumor_site.pkl"
     with open(cosmic_rec_file, "rb") as f:
         vt_to_sites = pickle.load(f)
     cosmic_high_rec = set()

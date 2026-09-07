@@ -28,12 +28,19 @@ import pandas as pd
 import torch
 from transformers import T5EncoderModel, T5Tokenizer
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import DATA_CACHES_DIR  # noqa: E402
+
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("pooled_t5")
 
 TRANSFORMER_LINK = "Rostlab/prot_t5_xl_half_uniref50-enc"
-TRAINING_CSV = "/data/ross/ppi_lossgain/interaction_loss/publication/data_caches/training_data_internal.csv"
+TRAINING_CSV = str(DATA_CACHES_DIR / "training_data_internal.csv")
 MAX_RESIDUES = 4000
 MAX_SEQ_LEN = 1000
 MAX_BATCH = 100

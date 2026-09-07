@@ -19,8 +19,14 @@ from pathlib import Path
 
 import numpy as np
 
-_EVAL = Path("/data/ross/ppi_lossgain/interaction_loss/publication/results/varchamp_seqcnf_newvar_eval")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import VCFP_RESULTS_DIR  # noqa: E402
 
+
+_EVAL = VCFP_RESULTS_DIR
 # Methods that have vc1pcava supplements
 METHODS_WITH_SUPP = [
     "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)",

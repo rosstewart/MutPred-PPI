@@ -27,7 +27,14 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-_PUB     = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
+
+
+_PUB = REPO_ROOT
 _DB_DIR  = _PUB / "results_revisions" / "variant_dbs"
 _STAB    = _PUB / "results_revisions" / "variant_dbs_stability"
 _OUT_DIR = _PUB / "results_revisions" / "stability_interaction"

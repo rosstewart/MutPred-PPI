@@ -22,7 +22,14 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-_PUB = Path("/data/ross/ppi_lossgain/interaction_loss/publication")
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT  # noqa: E402
+
+
+_PUB = REPO_ROOT
 _DB_DIR = _PUB / "results_revisions" / "variant_dbs"
 _OUT = _PUB / "results_revisions" / "protein_class_annotations.csv"
 
