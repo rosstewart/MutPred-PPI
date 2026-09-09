@@ -7,14 +7,12 @@ not the raw training_data.csv which includes AF3-failed structures.
 Writes figures/training_data_table.tex as a drop-in tabular block.
 """
 import pickle
-from pathlib import Path
 
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 from paths import CV_DIR, DATA_CACHES_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
 
 

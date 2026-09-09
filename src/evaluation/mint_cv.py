@@ -13,7 +13,7 @@ precompute_mint_embeddings.py to generate the cache.
 
 Usage:
     conda run -n ppi python mint_gcv_iter.py --dataset sahni_fragoza \\
-        --mint-cache /data/ross/ppi_lossgain/interaction_loss/2026/mint_cache/sahni_fragoza.pkl
+        --mint-cache $MUTPRED_DATA_ROOT/2026/mint_cache/sahni_fragoza.pkl
 
     conda run -n ppi python mint_gcv_iter.py \\
         --dataset sahni_fragoza_varchamp1p_cava \\
@@ -27,30 +27,20 @@ from __future__ import annotations
 
 import argparse
 import logging
-import pickle
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
 
-# ── shared code (vendored in-repo, see src/evaluation/esignet_gcv_iter_legacy.py
-#    and src/evaluation/predictors/) ───────────────────────────────────────────
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from esignet_gcv_iter_legacy import (    # noqa: E402
-    DATASET_CONFIGS,
-    DatasetConfig,
-    _CV_DIR,
-    load_data,
-    align_to_vt_ids,
-    swing_to_esignet,
-    _compute_class_aucs,
-)
+# ── shared code (see src/evaluation/esignet_cv.py and
+#    src/evaluation/predictors/) ───────────────────────────────────────────────
+from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
+# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
+from evaluation.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
-import predictors.mint_mlp as _mint_mod   # noqa: E402
-from predictors.mint_mlp import MINTSeqDiff, MINTSiteDiff  # noqa: E402
-from predictors.nn_base import load_cache, zero_based_variant  # noqa: E402
+import evaluation.predictors.mint_mlp as _mint_mod   # noqa: E402
+from evaluation.predictors.mint_mlp import MINTSeqDiff, MINTSiteDiff  # noqa: E402
+from evaluation.predictors.nn_base import load_cache  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -94,10 +84,10 @@ def audit_mint_cache(
     print(f"entries: {len(cache)}", flush=True)
 
     # Filter out NaN rows (unmatched vt_ids produce NaN mutations)
-    valid_df    = ordered_df.dropna(subset=["Mutation"])
-    interactors = valid_df["refseq_id"].astype(str)
+    valid_df    = ordered_df
+    interactors = valid_df["interactor"].astype(str)
     partners    = valid_df["partner"].astype(str)
-    mutations   = valid_df["Mutation"].astype(str)
+    mutations   = valid_df["mutation"].astype(str)
 
     unique_pairs = set(zip(interactors, partners))
     unique_muts  = set(zip(interactors, partners, mutations))
@@ -107,24 +97,31 @@ def audit_mint_cache(
 
     mean_wt_hits  = sum(1 for a, b    in unique_pairs if f"mean_{a}_{b}" in cache)
     mean_mut_hits = sum(1 for a, b, m in unique_muts
-                        if f"mean_{a}_{b}_{zero_based_variant(m)}" in cache)
+                        if f"mean_{a}_{b}_{m}" in cache)
     print(f"mean WT  keys: {_rate(mean_wt_hits,  len(unique_pairs))}", flush=True)
     print(f"mean MUT keys: {_rate(mean_mut_hits, len(unique_muts))}", flush=True)
 
     if predictor == "site_diff":
         res_wt_hits  = sum(1 for a, b    in unique_pairs if f"res_wt_pair_{a}_{b}" in cache)
         res_mut_hits = sum(1 for a, b, m in unique_muts
-                           if f"res_mut_pair_{zero_based_variant(m)}_{a}_{b}" in cache)
+                           if f"res_mut_pair_{m}_{a}_{b}" in cache)
         print(f"res WT  keys: {_rate(res_wt_hits,  len(unique_pairs))}", flush=True)
         print(f"res MUT keys: {_rate(res_mut_hits, len(unique_muts))}", flush=True)
 
     mut_rate = mean_mut_hits / max(len(unique_muts), 1)
-    if mut_rate < min_hit_rate:
+    if mean_wt_hits < len(unique_pairs) or mut_rate < min_hit_rate:
+        missing_wt = sorted(f"mean_{a}_{b}" for a, b in unique_pairs
+                            if f"mean_{a}_{b}" not in cache)
+        missing_mut = sorted(f"mean_{a}_{b}_{m}" for a, b, m in unique_muts
+                             if f"mean_{a}_{b}_{m}" not in cache)
         msg = (
-            f"MINT mean MUT hit rate {mut_rate:.1%} is below "
-            f"--min-mint-hit-rate {min_hit_rate:.1%}. "
-            f"Run precompute_mint_embeddings.py --dataset {cfg.name} "
-            f"and pass its output via --mint-cache."
+            f"MINT cache is incomplete: {len(missing_wt)} WT and "
+            f"{len(missing_mut)} mutant mean-keys missing "
+            f"(mutant hit rate {mut_rate:.1%}, required {min_hit_rate:.1%}). "
+            f"Every method is scored on the same rows, so a partial cache is an "
+            f"error. Run precompute_mint_embeddings.py --dataset {cfg.name} "
+            f"to fill it.\n  missing WT : {missing_wt[:10]}"
+            f"\n  missing MUT: {missing_mut[:10]}"
         )
         if require:
             raise SystemExit("ABORT: " + msg)
@@ -139,109 +136,28 @@ def run(args: argparse.Namespace) -> None:
         MINTSeqDiff._cache_path  = args.mint_cache
         MINTSiteDiff._cache_path = args.mint_cache
         print(f"MINT cache path overridden: {args.mint_cache}", flush=True)
+    else:
+        canonical = DATASETS_DIR / "mapped090826" / f"{args.dataset}_mint.pkl"
+        if canonical.exists():
+            _mint_mod.CACHE_PATH = str(canonical)
+            MINTSeqDiff._cache_path  = str(canonical)
+            MINTSiteDiff._cache_path = str(canonical)
+            print(f"MINT cache: {canonical}", flush=True)
 
     cfg       = DATASET_CONFIGS[args.dataset]
-    data_root = Path(args.data_root)
     outdir    = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     PredictorClass = _PREDICTOR_MAP[args.predictor]
     print(f"Predictor: {PredictorClass().name}", flush=True)
 
-    # ── load and align dataset ────────────────────────────────────────────────
-    print(f"Loading dataset: {cfg.name}", flush=True)
-    df = load_data(cfg, data_root)
-    print(f"  {len(df)} rows after filtering", flush=True)
-
-    ordered_df = align_to_vt_ids(df, cfg)
-    print(f"  {len(ordered_df)} rows after vt_ids alignment", flush=True)
-
-    audit_mint_cache(ordered_df, cfg, args.predictor, args.min_mint_hit_rate, args.require_mint)
-
-    labels = ordered_df["Y2H_score"].fillna(0).astype(int).values  # NaN rows excluded via valid_mask
-
-    # ── GCV iterations ────────────────────────────────────────────────────────
-    macro_aucs: list[np.ndarray] = []
-    micro_aucs: list[list]       = []
-    detailed_results             = {"iterations": {}}
-
-    for gcv_seed in range(args.n_gcv):
-        print(f"\n{'='*60}", flush=True)
-        print(f"GCV seed {gcv_seed}/{args.n_gcv - 1}", flush=True)
-
-        with open(_CV_DIR / cfg.fold_splits_pat.format(seed=gcv_seed), "rb") as f:
-            fold_splits = pickle.load(f)
-        fold_n_test = [len(test_idx) for _, _, test_idx in fold_splits]
-
-        pair_test_classes = np.load(
-            str(_CV_DIR / cfg.pair_test_classes_pat.format(seed=gcv_seed))
-        )
-
-        all_preds:  list[float] = []
-        all_labels: list[int]   = []
-
-        for fold, train_idx, test_idx in fold_splits:
-            # Filter NaN rows (unmatched vt_ids) from both train and test;
-            # insert NaN predictions for missing test rows so pair_test_classes aligns.
-            train_slice = ordered_df.iloc[train_idx]
-            train_slice = train_slice[train_slice["Target_Seq"].notna()].reset_index(drop=True)
-            train_df = swing_to_esignet(train_slice)
-
-            test_slice  = ordered_df.iloc[test_idx].reset_index(drop=True)
-            test_valid  = test_slice["Target_Seq"].notna()
-            test_df     = swing_to_esignet(test_slice[test_valid].reset_index(drop=True))
-
-            print(
-                f"\nFold {fold}: {len(train_idx)} train / {len(test_idx)} test — "
-                f"fitting {args.predictor}...",
-                flush=True,
-            )
-
-            predictor = PredictorClass(seed=args.seed)
-            predictor.fit(train_df)
-            pred_valid = predictor.predict(test_df)
-
-            # Re-expand to full test_idx length, NaN for unmatched rows
-            pred_proba = np.full(len(test_idx), np.nan)
-            pred_proba[test_valid.values] = pred_valid
-
-            all_preds.extend(pred_proba.tolist())
-            all_labels.extend(labels[test_idx].tolist())
-
-            print(f"  Fold {fold} done", flush=True)
-
-        all_preds_arr  = np.array(all_preds)
-        all_labels_arr = np.array(all_labels)
-
-        print(f"\nGCV seed {gcv_seed} — per-class AUROCs:", flush=True)
-        micro_auc, macro_auc, fold_results = _compute_class_aucs(
-            all_preds_arr, all_labels_arr, pair_test_classes, fold_n_test
-        )
-        print(f"micro AUC (c1/c2/c3): {micro_auc}", flush=True)
-        print(f"macro AUC (c1/c2/c3): {macro_auc}", flush=True)
-
-        micro_aucs.append(micro_auc)
-        macro_aucs.append(macro_auc)
-        detailed_results["iterations"][gcv_seed] = {
-            "folds":     fold_results,
-            "micro_auc": micro_auc,
-            "macro_auc": macro_auc,
-        }
-
-    # ── save results ──────────────────────────────────────────────────────────
-    stem = f"MINT_{args.predictor}_{cfg.name}"
-    np.save(outdir / f"{stem}_micro_aucs.npy", np.array(micro_aucs))
-    np.save(outdir / f"{stem}_macro_aucs.npy", np.array(macro_aucs))
-    with open(outdir / f"{stem}_detailed_results.pkl", "wb") as f:
-        pickle.dump(detailed_results, f)
-
-    print(f"\nResults saved to {outdir}/", flush=True)
-    print(f"  {stem}_micro_aucs.npy  shape={np.array(micro_aucs).shape}", flush=True)
-    print(f"  {stem}_macro_aucs.npy  shape={np.array(macro_aucs).shape}", flush=True)
-    print(f"  {stem}_detailed_results.pkl", flush=True)
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
+    run_gcv(
+        cfg, args,
+        result_stem=f"MINT_{args.predictor}_{cfg.name}",
+        make_predictor=lambda a: PredictorClass(seed=a.seed),
+        preflight=lambda odf, c_, a: audit_mint_cache(
+            odf, c_, a.predictor, a.min_mint_hit_rate, a.require_mint),
+    )
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -260,11 +176,6 @@ def _parse_args() -> argparse.Namespace:
         help="MINT predictor variant (default: seq_diff)",
     )
     p.add_argument(
-        "--data-root",
-        default="/data/ross/ppi_lossgain/interaction_loss/home/data_interaction_loss",
-        help="Root directory containing pos/neg/extra files",
-    )
-    p.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -278,7 +189,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--outdir",
-        default=str(_CV_DIR),
+        default=str(GCV_RESULTS_DIR),
         help="Output directory for results (default: CV splits dir)",
     )
     p.add_argument(
@@ -293,8 +204,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--min-mint-hit-rate",
         type=float,
-        default=0.9,
-        help="Minimum sep-MUT key hit rate before --require-mint aborts (default: 0.9).",
+        default=1.0,
+        help="Minimum MUT key hit rate before --require-mint aborts (default: 1.0, "
+             "i.e. every key must be present -- all methods score the same rows).",
     )
     p.add_argument(
         "--require-mint",
@@ -305,6 +217,11 @@ def _parse_args() -> argparse.Namespace:
             "--min-mint-hit-rate (default: True). "
             "Pass --no-require-mint to run with missing-key rows falling back to prior."
         ),
+    )
+    p.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=True,
+        help="Resume from an existing checkpoint, continuing after the last "
+             "completed GCV seed (default: True).",
     )
     return p.parse_args()
 

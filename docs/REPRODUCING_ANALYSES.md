@@ -2,30 +2,79 @@
 
 Cross-validation benchmarking, the VarChAMP blind test, variant-repository inference/classification/
 charts, and supplementary analyses. For training the model from scratch, see
-[`docs/TRAINING.md`](TRAINING.md). Pre-computed prediction/label tables that reconstruct every
-figure's curves without rerunning anything are in
-[`datasets/reconstruction_tables/`](../datasets/reconstruction_tables/README.md).
+[`docs/TRAINING.md`](TRAINING.md). Pre-computed prediction/label tables that reconstruct every figure's curves without rerunning
+anything are in `datasets/reconstruction_tables/`. `datasets/` is gitignored and delivered via the
+Zenodo bundle -- see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md).
+
+## The canonical data layer
+
+Everything reads two tables per dataset from `datasets/mapped090826/`, built from the 090826
+mapping by `repro_test/build_canonical_tables.py`:
+
+```
+<dataset>_rows.csv.gz    row_index, interactor, partner, mutation, position, wt_aa, mut_aa,
+                         perturbed, dataset, dataset_tier, fragoza_source, source_row_id, cluster
+<dataset>_splits.csv.gz  seed, row_index, test_fold, test_class
+sequences.csv.gz         accession, sequence
+af3_index.csv.gz         seq_a_sha, seq_b_sha, len_a, len_b, path, chain_a_is_first
+```
+
+Guarantees, asserted at build time: every `mutation` is 1-based and validated against its
+sequence, accessions are UniProt (isoform suffix only where the sequence differs from canonical),
+no duplicate `(interactor, partner, mutation)`, no null labels, `row_index` contiguous and never
+renumbered. **The pipeline is 1-based end to end** -- mutation strings, embedding-cache keys and
+the tables all agree, so nothing converts between conventions. Node indices (`mutation_idx`) stay
+0-based because they address a graph row, not a residue in a mutation string.
+
+There is no `--data-root`: the tables locate themselves.
+
+The five live datasets:
+
+| `--dataset` | rows |
+|---|---|
+| `sahni_fragoza_varchamp_all_mapped090826` | 23,320 |
+| `varchamp_all_mapped090826` | 17,376 |
+| `sahni_fragoza_mapped090826` | 6,219 |
+| `fragoza_only_mapped090826` | 4,729 |
+| `sahni_only_mapped090826` | 1,595 |
+
+Rebuild them with:
+
+```bash
+conda run -n ppi python repro_test/build_canonical_tables.py          # rows + splits + sequences
+conda run -n ppi python repro_test/build_af3_index.py                 # structure index, by sequence
+```
 
 ## Grouped Cross-Validation (Fig 3, S1)
 
-```bash
-# MutPred-PPI GCV (30 seeds, Sahni+Fragoza dataset)
-conda run -n ppi python src/evaluation/mutpred_ppi_cv.py \
-    --dataset sahni_fragoza --ablation megascale_all --device cuda:0
+Every trained method runs through one shared runner (`gcv_common.run_gcv`); only the training loop
+differs per method.
 
-# Comparator methods (require external installations)
-conda run -n ppi python src/evaluation/swing_cv.py    --dataset sahni_fragoza
-conda run -n ppi python src/evaluation/esignet_cv.py  --dataset sahni_fragoza
-conda run -n ppi python src/evaluation/mint_cv.py     --dataset sahni_fragoza
-conda run -n ppi python src/evaluation/pplm_cv.py     --dataset sahni_fragoza
-conda run -n ppi python src/evaluation/saambe3d_cv.py --dataset sahni_fragoza
+```bash
+DS=sahni_fragoza_varchamp_all_mapped090826
+
+# MutPred-PPI (graph + ProtT5). --ablation selects the freeze strategy;
+# megascale_all (default) freezes nothing.
+conda run -n ppi python src/evaluation/mutpred_ppi_gcv.py --dataset $DS --device cuda:0
+
+# Comparator methods
+conda run -n ppi python src/evaluation/swing_gcv.py   --dataset $DS                  # blind test
+conda run -n ppi python src/evaluation/swing_gcv.py   --dataset $DS --test-pretrain  # leaky variant
+conda run -n ppi python src/evaluation/esignet_cv.py  --dataset $DS --device cuda:1
+# MINT/PPLM each have two predictor variants; roc_plots expects BOTH.
+for pred in seq_diff site_diff; do
+  conda run -n ppi python src/evaluation/mint_cv.py --dataset $DS --predictor $pred
+  conda run -n ppi python src/evaluation/pplm_cv.py --dataset $DS --predictor $pred
+done
 ```
 
-MINT/PPLM sequence embeddings must be precomputed first:
+Embedding caches must be precomputed first. All caches are keyed on the **1-based** mutation
+exactly as the tables store it:
 
 ```bash
-conda run -n ppi python src/evaluation/precompute_mint_embeddings.py
-conda run -n ppi python src/evaluation/precompute_pplm_embeddings.py
+conda run -n ppi python src/data_processing/precompute_prott5_datasets.py --dataset $DS --device cuda:0
+conda run -n ppi python src/evaluation/precompute_mint_embeddings.py      --dataset $DS --compute-residue
+conda run -n ppi python src/evaluation/precompute_pplm_embeddings.py      --dataset $DS
 # eSIG-Net: use eSIG-Net's own precompute script (see its repository)
 ```
 
@@ -163,8 +212,13 @@ conda run -n ppi python src/analysis/extract_variant_db_stats.py   # figures/var
 
 ## ROC/AUC Figures
 
+`roc_plots.py` is a library plus a notebook-style driver, not the entry point --
+importing it executes both the ROC generation and the separate ipTM analysis.
+Use the wrappers:
+
 ```bash
-conda run -n ppi python src/analysis/roc_plots.py
+conda run -n ppi python src/analysis/run_roc_comparison.py   # Fig 3, S1, S3, S-new
+conda run -n ppi python src/analysis/run_roc_ablation.py     # S-abl
 ```
 
 ## Ablation figure (S-abl)

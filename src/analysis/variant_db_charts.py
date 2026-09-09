@@ -25,8 +25,8 @@ All outputs go to --output-dir (default: same directory as --data-dir).
 
 Usage:
     python variant_db_charts.py \
-        --data-dir /data/ross/ppi_lossgain/interaction_loss/publication/results/variant_dbs_sufficient_partners \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/publication/results/variant_dbs_sufficient_partners \
+        --data-dir $MUTPRED_REPO/results/variant_dbs_sufficient_partners \
+        --output-dir $MUTPRED_REPO/results/variant_dbs_sufficient_partners \
         --n-bootstrap 100000 \
         --score-histograms \
         --edgotype-bootstrap \
@@ -45,7 +45,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.offsetbox import AnchoredText
-from matplotlib.patches import Patch
 from joblib import Parallel, delayed
 
 warnings.filterwarnings("ignore")

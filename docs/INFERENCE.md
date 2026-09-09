@@ -112,45 +112,45 @@ The pipeline accepts mmCIF files with flexible naming:
 
 ## Full Example Workflow
 
-A complete minimal example using 10 test variants is provided in `example/`.
-
-**Note:** Example AlphaFold3 structures are subject to AlphaFold 3 Output Terms of Use and provided for non-commercial research only. See: https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
+A runnable end-to-end example ships in
+[`examples/inference_quickstart/`](../examples/inference_quickstart/) — three protein pairs
+with their AlphaFold 3 structures bundled, so it needs no download and no cluster:
 
 ```bash
-conda activate mutpred-ppi
-
-# 1. Generate AlphaFold3 inputs (if using AlphaFold3)
-python src/inference/00_make_af3_json_input.py \
-    example/test_proteins.fasta \
-    example/test_variants.tsv \
-    example/
-
-# NOTE: For this example, structure generation is already done
-# Example structure: example/af3_models/fold_o00548_p46531_model_0.cif
-
-# 2. Process structures to generate contact graphs
-python src/inference/01_make_contact_graphs_and_fasta.py \
-    example/ \
-    example/af3_models/ \
-    example/test_variants.tsv \
-    1  # Limit to 1 parallel job
-
-# 3. Run predictions
-python src/inference/02_run_mutpred-ppi_inference.py \
-    example/ \
-    --device cuda:0
-
-# View results
-cat example/results/MutPred-PPI_preds.tsv
+conda activate ppi
+bash examples/inference_quickstart/run_example.sh                # GPU
+bash examples/inference_quickstart/run_example.sh --device cpu   # CPU, a few minutes
 ```
 
-**Expected output:**
+It runs steps 2 and 3 of the real pipeline and prints the predictions, then copies them to
+`expected_output/` so you can diff against the committed reference.
+
+**Note:** the bundled AlphaFold 3 structures are subject to the AlphaFold 3 Output Terms of
+Use and are provided for non-commercial research only. See
+https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
+
+### Step 1 separately (only if you are generating your own structures)
+
+The quickstart starts from precomputed structures, so it skips step 1. To build AlphaFold 3
+job inputs for your own pairs:
+
+```bash
+python src/inference/00_make_af3_json_input.py \
+    examples/inference_quickstart/test_proteins.fasta \
+    examples/inference_quickstart/test_variants.tsv \
+    my_af3_inputs/
+```
+
+Submit those JSONs to AlphaFold 3 (or AlphaFold Server), put the returned mmCIF files in a
+directory, and then run steps 2 and 3 as the quickstart does.
+
+**Expected output** (from the quickstart's `expected_output/MutPred-PPI_preds.tsv`):
+
 ```
 complex_id	variant	score
-O00548_P46531	A653T	0.08524392545223236
-O00548_P46531	R661S	0.06803165376186371
-O00548_P46531	N34I	0.35405662655830383
-...
+Q4ACX1_O43765	L171R	0.9620879888534546
+O75603_Q96LI6	G63S	0.6895588040351868
+P40259_O43765	G137S	0.972222626209259
 ```
 
 ## Performance
@@ -199,7 +199,42 @@ pip install -r src/inference/requirements.txt --upgrade
 # If having package conflicts, create fresh environment
 conda deactivate
 conda env remove -n mutpred-ppi
-conda create -n mutpred-ppi python=3.9 -y
-conda activate mutpred-ppi
+conda create -n ppi python=3.10 -y
+conda activate ppi
 # Then reinstall following Installation steps in the main README
 ```
+
+## AlphaFold3 input dialects
+
+`src/inference/00_make_af3_json_input.py` emits **either** AF3 input dialect. They are not
+interchangeable — a file in one will not run under the other.
+
+| | `--format local` (default) | `--format server` |
+|---|---|---|
+| target | open-source AlphaFold3 executable | AlphaFold Server web UI |
+| chain key | `"protein"` | `"proteinChain"` |
+| chain identity | `"id": "A"` (a bare string or a list are both accepted) | `"count": 1` |
+
+Use `local` for anything run through `run_af3_ross4.sh` on this machine. Verified on disk: 1,813 of
+the JSONs in `2026/af3_inputs_all_pairs`, written in the local dialect, produced models.
+
+Two input modes:
+
+```bash
+# FASTA + triplet TSV
+python src/inference/00_make_af3_json_input.py <fasta> <triplets.tsv> <out_dir>
+
+# a rows CSV carrying sequences inline (the 090826 mapping layout)
+python src/inference/00_make_af3_json_input.py --csv rows.csv <out_dir> [--format server]
+```
+
+**Non-standard residues are substituted, not rejected.** AF3 accepts only the 20 standard letters
+inside a `sequence` string, so `U` (selenocysteine) becomes `C` and `O` (pyrrolysine) becomes `K` —
+each is structurally near-identical to its replacement at the resolution AF3 models, and every
+substitution is logged. Ambiguity codes (`BJXZ`) have no sensible substitute and still fail loudly.
+On the 090826 master this affects exactly one protein, `P59797` (one `U` in 346 aa).
+
+**Isoform accessions are preserved.** Hyphens are sanitised to underscores in the *filename* only.
+Do not canonicalise a trailing `-1`: the mapping keeps a suffix only where the isoform sequence
+genuinely differs from canonical, and both `Q9BRI3-1` and bare `Q9BRI3` are present — collapsing
+them pairs an accession with the wrong sequence.

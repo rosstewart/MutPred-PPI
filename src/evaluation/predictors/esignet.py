@@ -8,7 +8,7 @@ Model:  SdnnModel — dual-channel 573-dim sequence feature network with an
         ESM-2-powered mutation discriminator.
 Score:  P(interaction change) = softmax(discriminator_esm output)[:,1].
 
-573-dim features: AAC (20) + CTD (343) + zeros (210).
+573-dim features: AAC (20) + Conjoint Triad (343) + auto-covariance (210).
 ESM diff:         |emb_mut[pos0] - emb_wt[pos0]|, falls back to zeros on miss.
 """
 
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -31,22 +30,20 @@ from .nn_base import load_cache, parse_mutation
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-from paths import REVISIONS_DIR  # noqa: E402
+from paths import EXTERNAL_DIR, REVISIONS_DIR  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
 
-_SDNN_MODEL_PATH = Path(
-    "/data/ross/ppi_lossgain/interaction_loss/2026/eSIG-Net/backbones/sdnn/sdnn_model.py"
-)
+# Upstream eSIG-Net source, imported by file path (see docs/METHOD_PROVENANCE.md).
+# Resolved via external/esignet -> the pristine clone; run scripts/link_external.sh.
+_SDNN_MODEL_PATH = EXTERNAL_DIR / "esignet" / "backbones" / "sdnn" / "sdnn_model.py"
 _ESM_CACHE_PATH = str(REVISIONS_DIR / "esm2_residue_embeddings.pkl")
 # Sequence → 573-dim feature vector (None on error).  Shared across all folds.
 _FEAT_CACHE: dict[str, Optional[np.ndarray]] = {}
 
 # Detected once from the cache keys: True = 1-based mutation suffix ("E80K"),
 # False = 0-based ("E79K").
-_ESM_ONE_BASED: Optional[bool] = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -59,8 +56,9 @@ def _load_sdnn_class():
     return mod.SdnnModel
 
 
-# ── Conjoint Triad (verbatim port of LightGBM-PPI/Feature_extraction/CT/CTriad.py) ──
-# Shen 2007 7-group mapping; normalization: (count - min) / max over 343 features.
+# ── Conjoint Triad (Shen 2007 7-group mapping, 343 features) ─────────────────
+# Frequency-normalized (count / total) to match upstream eSIG-Net's shipped
+# features; see _conjoint_triad and repro_test/validate_esignet_features.py.
 
 _CT_GROUPS = {
     "g1": "AGV", "g2": "ILFP", "g3": "YMTS",
@@ -79,7 +77,16 @@ _CT_FEATURES: list[str] = [
 
 
 def _conjoint_triad(seq: str) -> np.ndarray:
-    """LightGBM-PPI CTriad with gap=0, normalized as (count - min) / max."""
+    """Shen 2007 conjoint triad, 7 groups, gap=0, frequency-normalized.
+
+    Normalization is `count / total`, matching upstream eSIG-Net's shipped
+    features (`datasets/embeddings/sdnn_corrected_ppi.h5`): rowsum 1.0000,
+    max 0.10256, frac_zero 0.495.  This block previously used LightGBM-PPI's
+    `(count - min) / max`, which gives rowsum 44.5 and max 1.0 -- i.e. the CT
+    block (343 of the 573 features) entered the SDNN ~45x larger than upstream's
+    while AAC and AC matched, distorting the block balance the model sees.
+    Verified by `repro_test/validate_esignet_features.py`.
+    """
     counts = {f: 0 for f in _CT_FEATURES}
     L = len(seq)
     for i in range(L):
@@ -94,15 +101,19 @@ def _conjoint_triad(seq: str) -> np.ndarray:
                 continue  # non-canonical residue: skip
             counts[key] += 1
     arr = np.array([counts[f] for f in _CT_FEATURES], dtype=np.float32)
-    cmax = float(arr.max())
-    cmin = float(arr.min())
-    if cmax == 0:
+    total = float(arr.sum())
+    if total == 0:
         return arr
-    return (arr - cmin) / cmax
+    return arr / total
 
 
 # ── Auto-covariance (verbatim port of SDNN-PPI/Feature Extraction/ac.py) ──────
-# Y has NCI=117.3, V=0.023599 — preserved verbatim from their reference impl.
+# Y has NCI=117.3, V=0.023599.  These look transposed (every other residue has
+# NCI in [0.003, 0.24] and V in [29, 145]) but they are NOT a transcription
+# error: reproducing upstream's shipped features requires them exactly as-is.
+# Per-property variance profile vs upstream's h5 correlates +0.99 with this
+# table and -0.25 with the 'corrected' one.  Do not 'fix' this.
+# See repro_test/validate_esignet_features.py.
 
 _AC_PROPERTIES = ["H1", "H2", "NCI", "P1", "P2", "SASA", "V"]
 _AC_AA_PROPS: dict[str, dict[str, float]] = {
@@ -169,7 +180,7 @@ def _compute_573(seq: str) -> Optional[np.ndarray]:
     """AAC (20) + Conjoint Triad (343) + Auto-Covariance (210) = 573-dim.
 
     AAC: protlearn frequency-normalized (paper: "normalized frequency of occurrence").
-    CT:  Shen 2007 7-group, gap=0, (count-min)/max — verbatim LightGBM-PPI/CTriad.py.
+    CT:  Shen 2007 7-group, gap=0, frequency-normalized to match upstream's h5.
     AC:  7 physicochemical properties × 30 lags — verbatim SDNN-PPI/ac.py.
     """
     if seq in _FEAT_CACHE:
@@ -189,42 +200,23 @@ def _compute_573(seq: str) -> Optional[np.ndarray]:
         return None
 
 
-def _zero_based_variant(mutation: str) -> str:
-    """'E80K' (1-based) → 'E79K' (0-based)."""
-    wt_aa, pos0, mut_aa = parse_mutation(mutation)
-    return f"{wt_aa}{pos0}{mut_aa}"
-
-
 def _apply_mutation(seq: str, mutation: str) -> str:
     """Apply a point mutation to a sequence string (1-based notation)."""
     _, pos0, mut_aa = parse_mutation(mutation)
     return seq[:pos0] + mut_aa + seq[pos0 + 1:]
 
 
-def _detect_one_based(cache: dict, df: pd.DataFrame) -> bool:
-    """Probe the cache to determine whether mutant keys use 1-based labels."""
-    global _ESM_ONE_BASED
-    if _ESM_ONE_BASED is not None:
-        return _ESM_ONE_BASED
-    rows = [r for _, r in df.head(20).iterrows()]
-    hits_1 = sum(1 for r in rows if f"{r['interactor']}_{r['mutation']}" in cache)
-    hits_0 = sum(1 for r in rows if f"{r['interactor']}_{_zero_based_variant(r['mutation'])}" in cache)
-    _ESM_ONE_BASED = hits_1 >= hits_0
-    logger.info("ESigNet: ESM-2 keys %s-based (%d vs %d hits)",
-                "1" if _ESM_ONE_BASED else "0", hits_1, hits_0)
-    return _ESM_ONE_BASED
-
-
-def _esm_diff(cache: dict, interactor: str, mutation: str, one_based: bool) -> np.ndarray:
+def _esm_diff(cache: dict, interactor: str, mutation: str) -> np.ndarray:
     """Absolute ESM-2 embedding diff at mutation site; zeros on cache miss.
 
     Supports windowed embeddings: if the cache holds a {key}_offset entry the
     mutant embedding was computed on a window starting at that offset, so the
     lookup index is pos0 - offset rather than pos0.
     """
+    # Cache keys are 1-based, matching the canonical tables. There is no base
+    # detection: a miss is a miss, not a cue to try the other convention.
     _, pos0, _ = parse_mutation(mutation)
-    suffix = mutation if one_based else _zero_based_variant(mutation)
-    mt_key = f"{interactor}_{suffix}"
+    mt_key = f"{interactor}_{mutation}"
 
     wt = cache.get(interactor)
     mt = cache.get(mt_key)
@@ -249,7 +241,6 @@ def _esm_diff(cache: dict, interactor: str, mutation: str, one_based: bool) -> n
 def _build_tensors(
     df: pd.DataFrame,
     esm_cache: Optional[dict],
-    one_based: bool,
 ) -> tuple:
     """Build eight tensors (n0, n1, y, n0_2, n1_2, y_2, same, esm_feat)."""
     n = len(df)
@@ -276,7 +267,7 @@ def _build_tensors(
         y_2_arr[i] = int(1 - row["perturbed"])
 
         if esm_cache is not None:
-            esm_arr[i] = _esm_diff(esm_cache, row["interactor"], row["mutation"], one_based)
+            esm_arr[i] = _esm_diff(esm_cache, row["interactor"], row["mutation"])
 
     return (
         torch.from_numpy(n0_arr),
@@ -366,11 +357,10 @@ class ESigNetPredictor(BasePredictor):
 
         device = self._device_of()
         esm_cache = load_cache(_ESM_CACHE_PATH)
-        one_based = _detect_one_based(esm_cache, train_df) if esm_cache is not None else True
 
         logger.info("ESigNet: building features for %d training rows", len(train_df))
         n0, n1, y, n0_2, n1_2, y_2, same, esm_feat = _build_tensors(
-            train_df, esm_cache, one_based
+            train_df, esm_cache
         )
 
         loader = DataLoader(
@@ -430,10 +420,9 @@ class ESigNetPredictor(BasePredictor):
 
         device = self._device_of()
         esm_cache = load_cache(_ESM_CACHE_PATH)
-        one_based = _ESM_ONE_BASED if _ESM_ONE_BASED is not None else True
 
         n0, n1, _, n0_2, n1_2, _, _, esm_feat = _build_tensors(
-            test_df, esm_cache, one_based
+            test_df, esm_cache
         )
 
         scores: list[np.ndarray] = []

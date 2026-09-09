@@ -1,12 +1,12 @@
 """PPLM embedding-based MLP predictors.
 
-Cache: /data/ross/ppi_lossgain/interaction_loss/2026/pplm_cache.pkl
+Cache: $MUTPRED_DATA_ROOT/2026/pplm_cache.pkl
 
   "{id_a}_{id_b}"            → WT entry:
       mean:    (1280,) float32      full-pair mean (all La+Lb residues)
       embed_A: (La, 1280) float16   per-residue chain-A embeddings
       embed_B: (Lb, 1280) float16   per-residue chain-B embeddings
-  "{id_a}_{id_b}_{var_zero}" → MUT entry:
+  "{id_a}_{id_b}_{var}" → MUT entry:
       mean:    (1280,) float32
       embed_A: (La, 1280) float16
       embed_B: (Lb, 1280) float16
@@ -30,7 +30,6 @@ from . import register
 from .nn_base import (
     CacheMLPPredictor,
     parse_mutation,
-    zero_based_variant,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +39,6 @@ from pathlib import Path as _Path
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from paths import cache_file  # noqa: E402
 
 CACHE_PATH = str(cache_file("pplm_cache.pkl"))
@@ -50,8 +48,8 @@ def _pplm_keys(row: pd.Series):
     """Return (wt_key, mut_key) for this row."""
     id_a = row["interactor"]
     id_b = row["partner"]
-    var_zero = zero_based_variant(row["mutation"])
-    return f"{id_a}_{id_b}", f"{id_a}_{id_b}_{var_zero}"
+    var = str(row["mutation"])          # 1-based, as stored in the tables
+    return f"{id_a}_{id_b}", f"{id_a}_{id_b}_{var}"
 
 
 def _get_embeds(cache: dict, key: str):

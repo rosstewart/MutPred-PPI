@@ -23,7 +23,6 @@ import os
 import re
 import pickle
 import numpy as np
-import scipy.io as sio
 from sklearn.metrics import roc_curve
 import matplotlib
 matplotlib.use("Agg")
@@ -32,51 +31,66 @@ import matplotlib.pyplot as plt
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import CV_DIR as _P_CV_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir  # noqa: E402
+from paths import DATA_ROOT, REPO_ROOT, cv_reference_dir
+from variant_db_inference import variant_rows as vr
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
-GRAPH_DIR = f"{_BASE}/2026/graphs"
+TRAIN_EVAL_STORE = f"{_PUB}/datasets/mapped090826/contact_graphs.h5"
 GCV_RESULTS = f"{_PUB}/results_revisions/macro_aucs/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
 VT_IDS_FILE = f"{CV_DIR}/sahni_fragoza_train_all_vt_ids.pkl"
 OUT_DIR = f"{_PUB}/results_revisions/robustness_analyses"
 N_SEEDS = 30
 MIN_N = 5  # matches roc_plots.py spirit: just require both label classes per fold
-N_SEM_DIVISOR = 10  # matches hardcoded value in roc_plots.py compute_roc_with_variance
-FPR_GRID = np.linspace(0, 1, 100)  # module-level: shared by compute_curves() and plot_on_axes()
+from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def parse_variant_pos(variant: str) -> int:
-    """Return 0-indexed residue position from e.g. 'M603V'."""
-    m = re.search(r"(\d+)", variant)
-    if not m:
-        raise ValueError(f"Cannot parse position from variant: {variant}")
-    return int(m.group(1)) - 1
+    """Return the residue position from e.g. 'M603V' in CANONICAL 1-BASED form.
 
+    The vt_ids on disk are **0-based** — verified against the interactor
+    sequences in training_data_internal.csv: 5,894 / 5,894 rows of
+    `sahni_fragoza_train_all_vt_ids.pkl` are consistent as 0-based and only 439
+    coincidentally fit 1-based. (An earlier version subtracted 1 from an already
+    0-based position, so every interface flag was computed one residue too low.)
 
-def is_interface(graph_path: str, pos: int):
-    """Return True if residue pos (0-indexed) makes cross-chain contacts.
-
-    Returns None if the graph file is missing or the position is out of range.
+    That 0-based form is a storage detail, not the pipeline's representation.
+    It is converted here, at the read boundary, through the same named function
+    the rest of the pipeline uses -- so everything downstream of this line is
+    1-based, like the triplet tables and the `{db}_rows.csv.gz` `mutation`
+    column. The only remaining 0-based value is the numpy row index, produced at
+    one named place in `is_interface`.
     """
-    if not os.path.exists(graph_path):
+    if not re.search(r"\d", variant):
+        raise ValueError(f"Cannot parse position from variant: {variant}")
+    return int(re.search(r"(\d+)", vr.to_one_based(variant)).group(1))
+
+
+def is_interface(store, interactor_seq: str, partner_seq: str, pos1: int):
+    """True if residue `pos1` (1-BASED, in the INTERACTOR) contacts the partner.
+
+    Resolved by sequence content, not by filename. The store returns the graph
+    already oriented to the requested interactor, so the interactor always
+    occupies rows `[0, len(interactor_seq))` and the partner the rest — whereas
+    the previous `.mat` path read `NRR` and *assumed* chain A was the interactor,
+    which is false for the 121 clinvar / 121 cosmic / 116 gnomad / 29 hgmd graphs
+    whose stored chain order contradicts their own filename.
+
+    Returns None when the pair has no graph or the position is out of range.
+    """
+    if pos1 < 1 or pos1 > len(interactor_seq):
         return None
-    try:
-        mat = sio.loadmat(graph_path)
-        G = mat["G"].toarray()
-        NRR = int(mat["NRR"][0, 0])
-        if pos >= NRR or pos < 0:
-            return None
-        inter_row = G[pos, NRR:]
-        return bool(np.any(inter_row > 0))
-    except Exception:
+    G = store.load_dense(interactor=interactor_seq, partner=partner_seq)
+    if G is None:                       # pair absent from the store
         return None
+    n_inter = len(interactor_seq)
+    row = pos1 - 1          # the one 1-based -> array-index conversion
+    return bool(np.any(G[row, n_inter:] > 0))
 
 
 def complex_id_from_vt(vt_id: str) -> str:
@@ -87,21 +101,66 @@ def variant_from_vt(vt_id: str) -> str:
     return vt_id.split(" ")[1]
 
 
-def build_interface_cache(vt_ids: list) -> dict:
-    """Precompute interface status for every unique (complex_id, variant) pair."""
-    cache = {}
-    for vt_id in vt_ids:
-        if vt_id in cache:
-            continue
-        cid = complex_id_from_vt(vt_id)
-        variant = variant_from_vt(vt_id)
-        graph_path = os.path.join(GRAPH_DIR, f"{cid}.mat")
-        try:
-            pos = parse_variant_pos(variant)
-        except ValueError:
-            cache[vt_id] = None
-            continue
-        cache[vt_id] = is_interface(graph_path, pos)
+def _complex_id_sequences(dataset: str = "sahni_fragoza_mapped090826") -> dict:
+    """`'{interactor}-{partner}'` -> (interactor_sequence, partner_sequence).
+
+    The key is CONSTRUCTED from the canonical table's own columns and matched
+    whole. It is never produced by splitting a `complex_id` on `-`: 261 of the
+    2,785 complex_ids in the CV reference contain more than one `-` (e.g.
+    `O43889-2-J3QKU0`, an isoform accession), so a split silently mis-assigns
+    both accessions for ~9% of pairs.
+    """
+    from evaluation.gcv_common import DATASET_CONFIGS, load_data
+    df = load_data(DATASET_CONFIGS[dataset])
+    return {f"{i}-{p}": (a, b)
+            for i, p, a, b in zip(df["interactor"], df["partner"],
+                                  df["interactor_sequence"], df["partner_sequence"])}
+
+
+def build_interface_cache(vt_ids: list, store=None, seq_map=None) -> dict:
+    """Interface status per vt_id, resolved by sequence through the graph store.
+
+    Unresolved rows are counted and reported rather than silently becoming
+    `None` — a vt_id whose pair is absent from the canonical table is a coverage
+    gap worth seeing, not a non-interface residue.
+    """
+    from contact_graphs import ContactGraphStore
+
+    if seq_map is None:
+        seq_map = _complex_id_sequences()
+    own_store = store is None
+    if own_store:
+        store = ContactGraphStore(TRAIN_EVAL_STORE)
+
+    cache, unresolved, no_graph = {}, set(), set()
+    try:
+        for vt_id in vt_ids:
+            if vt_id in cache:
+                continue
+            cid = complex_id_from_vt(vt_id)
+            seqs = seq_map.get(cid)
+            if seqs is None:
+                unresolved.add(cid)
+                cache[vt_id] = None
+                continue
+            try:
+                pos = parse_variant_pos(variant_from_vt(vt_id))
+            except ValueError:
+                cache[vt_id] = None
+                continue
+            v = is_interface(store, seqs[0], seqs[1], pos)
+            if v is None:
+                no_graph.add(cid)
+            cache[vt_id] = v
+    finally:
+        if own_store:
+            store.close()
+
+    if unresolved:
+        print(f"  {len(unresolved)} complex_ids absent from the canonical table "
+              f"(no sequences, cannot resolve): e.g. {sorted(unresolved)[:3]}")
+    if no_graph:
+        print(f"  {len(no_graph)} complex_ids resolved but have no graph in the store")
     return cache
 
 

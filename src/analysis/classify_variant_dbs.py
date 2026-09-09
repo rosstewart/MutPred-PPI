@@ -21,7 +21,7 @@ Output directory structure:
 ar_pathogenic/ad_pathogenic and ar_hgmd/ad_hgmd stratify Pathogenic/HGMD variants by
 whether their gene has an autosomal-recessive-only or autosomal-dominant-only mode of
 inheritance (ClinGen Gene-Disease Validity curations; see build_ar_ad_gene_sets.py).
-These require /data/ross/ppi_lossgain/interaction_loss/clingen_ar_ad_uniprot_sets.pkl.
+These require $MUTPRED_DATA_ROOT/clingen_ar_ad_uniprot_sets.pkl.
 """
 
 import argparse
@@ -34,8 +34,7 @@ import numpy as np
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT, RESULTS_REV_DIR  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, RESULTS_REV_DIR  # noqa: E402
 
 
 # ── paths ──────────────────────────────────────────────────────────────────────
@@ -52,31 +51,31 @@ DEFAULT_PRED_DIR = RESULTS_REV_DIR / "variant_dbs_sfvfp"
 
 SUBSET_FILES = {
     "clinvar": {
-        "pathogenic": f"{_HOME}/clinvar/pathogenic_dirbind_variant_subset.pkl",
-        "benign":     f"{_HOME}/clinvar/benign_dirbind_variant_subset.pkl",
-        "vus":        f"{_HOME}/clinvar/vus_dirbind_variant_subset.pkl",
+        "pathogenic": str(ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"),
+        "benign":     str(ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl"),
+        "vus":        str(ANNOTATIONS_DIR / "clinvar" / "vus_dirbind_variant_subset.pkl"),
     },
     "hgmd": {
-        "hgmd":       f"{_HOME}/hgmd/variant_subset.pkl",
+        "hgmd":       str(ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl"),
     },
     "fu_autism": {
-        "fu_autism":  f"{_HOME}/autism/variant_subset.pkl",
+        "fu_autism":  str(ANNOTATIONS_DIR / "autism" / "variant_subset.pkl"),
     },
 }
 
-NEURODEV_LABEL_FILE = f"{_HOME}/autism/variant_label_dict.pkl"  # {uniprot} {variant} -> 0 (control) or 1 (case)
+NEURODEV_LABEL_FILE = str(ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl")  # {uniprot} {variant} -> 0 (control) or 1 (case)
 
-GNOMAD_AF_FILE = f"{_BASE}/gnomad/gnomad_allele_frequencies.tsv"
+GNOMAD_AF_FILE = str(ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv")
 GNOMAD_AF_THRESHOLDS = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1]  # upper bounds of exclusive bins
 
-BENIGN_AF_FILE = "/data/ross/clinvar/benign_allele_frequencies.tsv"
+BENIGN_AF_FILE = str(ANNOTATIONS_DIR / "benign_allele_frequencies.tsv")
 RARE_BENIGN_AF_THRESHOLD = 0.01
 
-COSMIC_TUMOR_SITE_FILE = f"{_BASE}/cosmic/vt_to_tumor_site.pkl"  # recurrence = len(sites)
-COSMIC_ONCO_TSG_FILE   = f"{_BASE}/cosmic_mutations/onco_tsg_dict.pkl"
+COSMIC_TUMOR_SITE_FILE = str(ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl")  # recurrence = len(sites)
+COSMIC_ONCO_TSG_FILE   = str(ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl")
 COSMIC_RECURRENCE_BINS = [1, 2, 4, 8, 16, 32]  # "single" = 1; "2+" = >=2, etc.
 
-AR_AD_UNIPROT_FILE = f"{_BASE}/clingen_ar_ad_uniprot_sets.pkl"  # {"AR": set[uniprot], "AD": set[uniprot]}
+AR_AD_UNIPROT_FILE = str(ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl")  # {"AR": set[uniprot], "AD": set[uniprot]}
 
 
 # ── core helpers ───────────────────────────────────────────────────────────────

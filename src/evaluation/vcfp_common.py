@@ -37,7 +37,7 @@ _CV_MOD = Path(__file__).resolve().parent  # src/evaluation
 if str(_CV_MOD) not in sys.path:
     sys.path.insert(0, str(_CV_MOD))
 
-from mutpred_ppi_cv import (  # noqa: E402
+from evaluation.mutpred_ppi_cv import (  # noqa: E402
 
     _load_varchamp1p_raw, _load_cava_raw,
     get_gene_name, split_wt_id_underscore,
@@ -46,7 +46,6 @@ from mutpred_ppi_cv import (  # noqa: E402
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 from paths import HOME_DIR, REPO_ROOT  # noqa: E402
 
 _PUB = REPO_ROOT

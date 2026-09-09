@@ -13,7 +13,7 @@ Usage:
         --cv-splits cv_splits/sahni_fragoza_train_fold_splits.pkl \
         --vt-ids cv_splits/sahni_fragoza_train_all_vt_ids.pkl \
         --pair-test-classes cv_splits/swing_train_pair_test_classes.npy \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss \
+        --output-dir $MUTPRED_DATA_ROOT \
         --train-doc2vec \
         --train-xgboost
 """

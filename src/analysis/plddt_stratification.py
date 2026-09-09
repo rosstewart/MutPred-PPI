@@ -33,22 +33,20 @@ import matplotlib.pyplot as plt
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import CV_DIR as _P_CV_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir  # noqa: E402
+from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
-PLDDT_CACHE = f"{_BASE}/2026/plddt_cache.pkl"
+PLDDT_CACHE = str(ANNOTATIONS_DIR / "plddt_cache.pkl")
 GCV_RESULTS = f"{_PUB}/results_revisions/macro_aucs/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
 VT_IDS_FILE = f"{CV_DIR}/sahni_fragoza_train_all_vt_ids.pkl"
 OUT_DIR = f"{_PUB}/results_revisions/robustness_analyses"
 N_SEEDS = 30
 MIN_N = 5  # matches roc_plots.py spirit: just require both label classes per fold
-N_SEM_DIVISOR = 10  # matches hardcoded value in roc_plots.py compute_roc_with_variance
-FPR_GRID = np.linspace(0, 1, 100)  # module-level: shared by compute_curves() and plot_on_axes()
+from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 PLDDT_BINS = [
     ("low",    0,    70),
@@ -61,19 +59,42 @@ BIN_LABELS = {"low": "Low (<70)", "medium": "Medium (70–85)", "high": "High (�
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def complex_mean_plddt(complex_id: str, plddt_cache: dict):
-    """Return mean pLDDT for both chains in the complex, or None if missing."""
-    parts = complex_id.split("-")
-    if len(parts) < 2:
-        return None
-    prot1, prot2 = parts[0], "-".join(parts[1:])
-    entry1 = plddt_cache.get(prot1)
-    entry2 = plddt_cache.get(prot2)
-    if entry1 is None or entry2 is None:
-        return None
-    arr1 = entry1["plddt"] if isinstance(entry1, dict) else entry1
-    arr2 = entry2["plddt"] if isinstance(entry2, dict) else entry2
-    return float(np.mean(np.concatenate([arr1, arr2])))
+def complex_id_pairs(dataset: str = "sahni_fragoza_mapped090826") -> dict:
+    """`'{interactor}-{partner}'` -> (interactor, partner), built by JOIN not split.
+
+    `complex_id` welds two accessions with `-`, but `-` also introduces an isoform
+    suffix, so the string is ambiguous: 261 of the 2,785 complex_ids here contain
+    more than one `-` and `split("-")` mis-assigns both proteins for every one of
+    them (`P60891-1-B4DP31` becomes `('P60891', '1-B4DP31')`). Constructing the
+    key from the canonical table's own columns and matching it whole is exact.
+    """
+    from evaluation.gcv_common import DATASET_CONFIGS, load_data
+    df = load_data(DATASET_CONFIGS[dataset])
+    return {f"{i}-{p}": (i, p) for i, p in zip(df["interactor"], df["partner"])}
+
+
+def complex_mean_plddt(complex_id: str, plddt_cache: dict, pairs: dict | None = None):
+    """Mean pLDDT across both chains of the complex, or None if unavailable."""
+    prots = (pairs or {}).get(complex_id)
+    if prots is None:
+        # Unjoinable complex_id: fall back to the historical split, which is only
+        # correct when neither accession carries an isoform suffix.
+        parts = complex_id.split("-")
+        if len(parts) < 2:
+            return None
+        prots = (parts[0], "-".join(parts[1:]))
+
+    arrays = []
+    for prot in prots:
+        entry = plddt_cache.get(prot)
+        if entry is None:
+            # The cache is keyed on bare accessions, so an isoform falls back to
+            # its parent -- the AlphaFold DB model is per-accession, not per-isoform.
+            entry = plddt_cache.get(prot.split("-")[0])
+        if entry is None:
+            return None
+        arrays.append(entry["plddt"] if isinstance(entry, dict) else entry)
+    return float(np.mean(np.concatenate(arrays)))
 
 
 def bin_plddt(val: float) -> str:
@@ -84,15 +105,20 @@ def bin_plddt(val: float) -> str:
 
 
 def build_plddt_bin_cache(vt_ids: list, plddt_cache: dict) -> dict:
-    """Map each vt_id to its pLDDT bin (or None)."""
-    seen = {}
-    result = {}
+    """Map each vt_id to its pLDDT bin (or None), reporting what could not resolve."""
+    pairs = complex_id_pairs()
+    seen, result, unjoined = {}, {}, set()
     for vt_id in vt_ids:
         cid = vt_id.split(" ")[0]
         if cid not in seen:
-            mean_val = complex_mean_plddt(cid, plddt_cache)
+            if cid not in pairs:
+                unjoined.add(cid)
+            mean_val = complex_mean_plddt(cid, plddt_cache, pairs)
             seen[cid] = bin_plddt(mean_val) if mean_val is not None else None
         result[vt_id] = seen[cid]
+    n_missing = sum(1 for v in seen.values() if v is None)
+    print(f"  {len(seen)} complex_ids: {len(seen) - n_missing} binned, {n_missing} "
+          f"without pLDDT; {len(unjoined)} not in the canonical table", flush=True)
     return result
 
 

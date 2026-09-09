@@ -13,7 +13,7 @@ precompute_pplm_embeddings.py to generate the cache.
 
 Usage:
     conda run -n ppi python pplm_gcv_iter.py --dataset sahni_fragoza \\
-        --pplm-cache /data/ross/.../pplm_sahni_fragoza.pkl
+        --pplm-cache $MUTPRED_CACHE_DIR/pplm_cache.pkl
 
     conda run -n ppi python pplm_gcv_iter.py \\
         --dataset sahni_fragoza_varchamp1p_cava \\
@@ -26,28 +26,19 @@ from __future__ import annotations
 
 import argparse
 import logging
-import pickle
 import sys
 from pathlib import Path
 
-import numpy as np
 
-# ── shared code (vendored in-repo, see src/evaluation/esignet_gcv_iter_legacy.py
-#    and src/evaluation/predictors/) ───────────────────────────────────────────
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from esignet_gcv_iter_legacy import (    # noqa: E402
-    DATASET_CONFIGS,
-    DatasetConfig,
-    _CV_DIR,
-    load_data,
-    align_to_vt_ids,
-    swing_to_esignet,
-    _compute_class_aucs,
-)
+# ── shared code (see src/evaluation/esignet_cv.py and
+#    src/evaluation/predictors/) ───────────────────────────────────────────────
+from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
+# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
+from evaluation.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
-import predictors.pplm_mlp as _pplm_mod   # noqa: E402
-from predictors.pplm_mlp import PPLMSeqDiff, PPLMSiteDiff  # noqa: E402
-from predictors.nn_base import load_cache, zero_based_variant  # noqa: E402
+import evaluation.predictors.pplm_mlp as _pplm_mod   # noqa: E402
+from evaluation.predictors.pplm_mlp import PPLMSeqDiff, PPLMSiteDiff  # noqa: E402
+from evaluation.predictors.nn_base import load_cache  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -91,10 +82,10 @@ def audit_pplm_cache(
     print(f"entries: {len(cache)}", flush=True)
 
     # Filter out NaN rows (unmatched vt_ids produce NaN mutations)
-    valid_df    = ordered_df.dropna(subset=["Mutation"])
-    interactors = valid_df["refseq_id"].astype(str)
+    valid_df    = ordered_df
+    interactors = valid_df["interactor"].astype(str)
     partners    = valid_df["partner"].astype(str)
-    mutations   = valid_df["Mutation"].astype(str)
+    mutations   = valid_df["mutation"].astype(str)
 
     unique_pairs = set(zip(interactors, partners))
     unique_muts  = set(zip(interactors, partners, mutations))
@@ -110,18 +101,25 @@ def audit_pplm_cache(
 
     wt_hits  = sum(1 for a, b    in unique_pairs if _has_embeds(f"{a}_{b}"))
     mut_hits = sum(1 for a, b, m in unique_muts
-                   if _has_embeds(f"{a}_{b}_{zero_based_variant(m)}"))
+                   if _has_embeds(f"{a}_{b}_{m}"))
 
     print(f"WT  entries with embeds: {_rate(wt_hits,  len(unique_pairs))}", flush=True)
     print(f"MUT entries with embeds: {_rate(mut_hits, len(unique_muts))}", flush=True)
 
     mut_rate = mut_hits / max(len(unique_muts), 1)
-    if mut_rate < min_hit_rate:
+    if wt_hits < len(unique_pairs) or mut_rate < min_hit_rate:
+        missing_wt = sorted(f"{a}_{b}" for a, b in unique_pairs
+                            if not _has_embeds(f"{a}_{b}"))
+        missing_mut = sorted(f"{a}_{b}_{m}" for a, b, m in unique_muts
+                             if not _has_embeds(f"{a}_{b}_{m}"))
         msg = (
-            f"PPLM MUT embed hit rate {mut_rate:.1%} is below "
-            f"--min-pplm-hit-rate {min_hit_rate:.1%}. "
-            f"Run precompute_pplm_embeddings.py --dataset {cfg.name} "
-            f"and pass its output via --pplm-cache."
+            f"PPLM cache is incomplete: {len(missing_wt)} WT and "
+            f"{len(missing_mut)} mutant entries missing embeddings "
+            f"(mutant hit rate {mut_rate:.1%}, required {min_hit_rate:.1%}). "
+            f"Every method is scored on the same rows, so a partial cache is an "
+            f"error. Run precompute_pplm_embeddings.py --dataset {cfg.name} "
+            f"to fill it.\n  missing WT : {missing_wt[:10]}"
+            f"\n  missing MUT: {missing_mut[:10]}"
         )
         if require:
             raise SystemExit("ABORT: " + msg)
@@ -136,107 +134,28 @@ def run(args: argparse.Namespace) -> None:
         PPLMSeqDiff._cache_path  = args.pplm_cache
         PPLMSiteDiff._cache_path = args.pplm_cache
         print(f"PPLM cache path overridden: {args.pplm_cache}", flush=True)
+    else:
+        canonical = DATASETS_DIR / "mapped090826" / f"{args.dataset}_pplm.pkl"
+        if canonical.exists():
+            _pplm_mod.CACHE_PATH     = str(canonical)
+            PPLMSeqDiff._cache_path  = str(canonical)
+            PPLMSiteDiff._cache_path = str(canonical)
+            print(f"PPLM cache: {canonical}", flush=True)
 
     cfg       = DATASET_CONFIGS[args.dataset]
-    data_root = Path(args.data_root)
     outdir    = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     PredictorClass = _PREDICTOR_MAP[args.predictor]
     print(f"Predictor: {PredictorClass().name}", flush=True)
 
-    # ── load and align dataset ────────────────────────────────────────────────
-    print(f"Loading dataset: {cfg.name}", flush=True)
-    df = load_data(cfg, data_root)
-    print(f"  {len(df)} rows after filtering", flush=True)
-
-    ordered_df = align_to_vt_ids(df, cfg)
-    print(f"  {len(ordered_df)} rows after vt_ids alignment", flush=True)
-
-    audit_pplm_cache(ordered_df, cfg, args.predictor, args.min_pplm_hit_rate, args.require_pplm)
-
-    labels = ordered_df["Y2H_score"].fillna(0).astype(int).values  # NaN rows excluded via valid_mask
-
-    # ── GCV iterations ────────────────────────────────────────────────────────
-    macro_aucs: list[np.ndarray] = []
-    micro_aucs: list[list]       = []
-    detailed_results             = {"iterations": {}}
-
-    for gcv_seed in range(args.n_gcv):
-        print(f"\n{'='*60}", flush=True)
-        print(f"GCV seed {gcv_seed}/{args.n_gcv - 1}", flush=True)
-
-        with open(_CV_DIR / cfg.fold_splits_pat.format(seed=gcv_seed), "rb") as f:
-            fold_splits = pickle.load(f)
-        fold_n_test = [len(test_idx) for _, _, test_idx in fold_splits]
-
-        pair_test_classes = np.load(
-            str(_CV_DIR / cfg.pair_test_classes_pat.format(seed=gcv_seed))
-        )
-
-        all_preds:  list[float] = []
-        all_labels: list[int]   = []
-
-        for fold, train_idx, test_idx in fold_splits:
-            # Filter NaN rows (unmatched vt_ids) from train; NaN → NaN pred for test
-            train_slice = ordered_df.iloc[train_idx]
-            train_slice = train_slice[train_slice["Target_Seq"].notna()].reset_index(drop=True)
-            train_df    = swing_to_esignet(train_slice)
-
-            test_slice  = ordered_df.iloc[test_idx].reset_index(drop=True)
-            test_valid  = test_slice["Target_Seq"].notna()
-            test_df     = swing_to_esignet(test_slice[test_valid].reset_index(drop=True))
-
-            print(
-                f"\nFold {fold}: {len(train_slice)} train / {test_valid.sum()} test — "
-                f"fitting {args.predictor}...",
-                flush=True,
-            )
-
-            predictor = PredictorClass(seed=args.seed)
-            predictor.fit(train_df)
-            pred_valid = predictor.predict(test_df)
-
-            pred_proba = np.full(len(test_idx), np.nan)
-            pred_proba[test_valid.values] = pred_valid
-
-            all_preds.extend(pred_proba.tolist())
-            all_labels.extend(labels[test_idx].tolist())
-
-            print(f"  Fold {fold} done", flush=True)
-
-        all_preds_arr  = np.array(all_preds)
-        all_labels_arr = np.array(all_labels)
-
-        print(f"\nGCV seed {gcv_seed} — per-class AUROCs:", flush=True)
-        micro_auc, macro_auc, fold_results = _compute_class_aucs(
-            all_preds_arr, all_labels_arr, pair_test_classes, fold_n_test
-        )
-        print(f"micro AUC (c1/c2/c3): {micro_auc}", flush=True)
-        print(f"macro AUC (c1/c2/c3): {macro_auc}", flush=True)
-
-        micro_aucs.append(micro_auc)
-        macro_aucs.append(macro_auc)
-        detailed_results["iterations"][gcv_seed] = {
-            "folds":     fold_results,
-            "micro_auc": micro_auc,
-            "macro_auc": macro_auc,
-        }
-
-    # ── save results ──────────────────────────────────────────────────────────
-    stem = f"PPLM_{args.predictor}_{cfg.name}"
-    np.save(outdir / f"{stem}_micro_aucs.npy", np.array(micro_aucs))
-    np.save(outdir / f"{stem}_macro_aucs.npy", np.array(macro_aucs))
-    with open(outdir / f"{stem}_detailed_results.pkl", "wb") as f:
-        pickle.dump(detailed_results, f)
-
-    print(f"\nResults saved to {outdir}/", flush=True)
-    print(f"  {stem}_micro_aucs.npy  shape={np.array(micro_aucs).shape}", flush=True)
-    print(f"  {stem}_macro_aucs.npy  shape={np.array(macro_aucs).shape}", flush=True)
-    print(f"  {stem}_detailed_results.pkl", flush=True)
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
+    run_gcv(
+        cfg, args,
+        result_stem=f"PPLM_{args.predictor}_{cfg.name}",
+        make_predictor=lambda a: PredictorClass(seed=a.seed),
+        preflight=lambda odf, c_, a: audit_pplm_cache(
+            odf, c_, a.predictor, a.min_pplm_hit_rate, a.require_pplm),
+    )
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -255,11 +174,6 @@ def _parse_args() -> argparse.Namespace:
         help="PPLM predictor variant (default: seq_diff)",
     )
     p.add_argument(
-        "--data-root",
-        default="/data/ross/ppi_lossgain/interaction_loss/home/data_interaction_loss",
-        help="Root directory containing pos/neg/extra files",
-    )
-    p.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -273,7 +187,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--outdir",
-        default=str(_CV_DIR),
+        default=str(GCV_RESULTS_DIR),
         help="Output directory for results (default: CV splits dir)",
     )
     p.add_argument(
@@ -288,8 +202,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--min-pplm-hit-rate",
         type=float,
-        default=0.9,
-        help="Minimum MUT embed hit rate before --require-pplm aborts (default: 0.9).",
+        default=1.0,
+        help="Minimum MUT embed hit rate before --require-pplm aborts (default: 1.0, "
+             "i.e. every key must be present -- all methods score the same rows).",
     )
     p.add_argument(
         "--require-pplm",
@@ -300,6 +215,11 @@ def _parse_args() -> argparse.Namespace:
             "--min-pplm-hit-rate (default: True). "
             "Pass --no-require-pplm to run with cache-miss rows falling back to prior."
         ),
+    )
+    p.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=True,
+        help="Resume from an existing checkpoint, continuing after the last "
+             "completed GCV seed (default: True).",
     )
     return p.parse_args()
 

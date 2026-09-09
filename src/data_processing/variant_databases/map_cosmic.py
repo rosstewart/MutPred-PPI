@@ -25,20 +25,20 @@ The pipeline:
 
 Usage:
     python map_cosmic.py \
-        --cosmic-file /data/ross/ppi_lossgain/cosmic_mutations/Cosmic_GenomeScreensMutant_Missense_v101_GRCh38.tsv.gz \
-        --cmc-file /data/ross/ppi_lossgain/cosmic_mutations/CancerMutationCensus_AllData_v101_GRCh37.tsv.gz \
+        --cosmic-file $MUTPRED_DATA_ROOT/cosmic_mutations/Cosmic_GenomeScreensMutant_Missense_v101_GRCh38.tsv.gz \
+        --cmc-file $MUTPRED_DATA_ROOT/cosmic_mutations/CancerMutationCensus_AllData_v101_GRCh37.tsv.gz \
         --biogrid-dir biogrid \
         --uniprot-fasta cosmic/all_uniprot_ids.fasta \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/cosmic \
-        --gene-symbol-to-uniprot /data/ross/ppi_lossgain/cosmic_mutations/gene_symbol_to_uniprot.pkl
+        --output-dir $MUTPRED_DATA_ROOT/cosmic \
+        --gene-symbol-to-uniprot $MUTPRED_DATA_ROOT/cosmic_mutations/gene_symbol_to_uniprot.pkl
 """
 
 import argparse
 import os
 import pickle
-import numpy as np
 import pandas as pd
 import requests
+from biogrid_common import load_biogrid
 
 
 # ---------------------------------------------------------------------------
@@ -110,14 +110,6 @@ def build_gene_symbol_to_uniprot(df_hgnc):
 # BioGRID helpers
 # ---------------------------------------------------------------------------
 
-def load_biogrid(biogrid_dir):
-    with open(f"{biogrid_dir}/biogrid_dirbind_uniprot_to_interactors.pkl", "rb") as f:
-        uniprot_to_interactors = pickle.load(f)
-    with open(f"{biogrid_dir}/uniprot_dirbind_to_seq.pkl", "rb") as f:
-        uniprot_to_seq = pickle.load(f)
-    return uniprot_to_interactors, uniprot_to_seq
-
-
 def get_complexes_in_biogrid(gene_symbol_to_uniprot, uniprot_to_interactors, uniprot_to_seq):
     wt_complexes = set()
     for uid in gene_symbol_to_uniprot.values():
@@ -148,14 +140,6 @@ def read_fasta(file_path):
         if header:
             fasta_dict[header] = "".join(seq)
     return fasta_dict
-
-
-def clean_complexes(all_complexes):
-    cleaned = set()
-    for a, b in all_complexes:
-        if (b, a) not in cleaned:
-            cleaned.add((a, b))
-    return cleaned
 
 
 def build_variant_triplets_with_recurrence(id_to_seq, complexes, recurrence_dict):

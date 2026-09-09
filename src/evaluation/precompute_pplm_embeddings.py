@@ -11,13 +11,13 @@ Cache format (.pkl dict) — nested, one entry per key:
       embed_A: (La, 1280) float16   per-residue chain-A embeddings
       embed_B: (Lb, 1280) float16   per-residue chain-B embeddings
 
-  "{id_a}_{id_b}_{var_zero}"  → MUT entry:
+  "{id_a}_{id_b}_{var}"  → MUT entry:
       mean:    (1280,) float32
       embed_A: (La, 1280) float16
       embed_B: (Lb, 1280) float16
 
 Variant positions are 0-based in all keys (e.g. 'E79K' for 1-based 'E80K'),
-matching pplm_mlp.py's zero_based_variant() convention.
+Cache keys use the 1-based mutation exactly as the canonical tables store it.
 
 PPLM uses gated cross-chain attention via a learned per-head scalar
 (inter_attn_weight) in each TransformerLayer. The inter-chain mask separates
@@ -40,7 +40,7 @@ Usage:
     conda run -n ppi python precompute_pplm_embeddings.py \\
         --dataset sahni_fragoza_varchamp1p_cava --device cuda:0
 
-Model weights: /data/ross/ppi_lossgain/interaction_loss/2026/PPLM/weights/pplm_t33_650M.pt
+Model weights: $MUTPRED_DATA_ROOT/2026/PPLM/weights/pplm_t33_650M.pt
 """
 
 from __future__ import annotations
@@ -52,19 +52,17 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 # ── dataset configs (vendored in-repo) ───────────────────────────────────────
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from esignet_gcv_iter_legacy import DATASET_CONFIGS, load_data  # noqa: E402
+# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
+from evaluation.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
 
 # ── PPLM package ─────────────────────────────────────────────────────────────
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import REVISIONS_DIR, cache_file# noqa: E402
+from paths import DATASETS_DIR, EXTERNAL_DIR, REVISIONS_DIR, cache_file  # noqa: E402
 
 _PPLM_DIR = REVISIONS_DIR / "PPLM"
 _WEIGHTS_PATH = str(_PPLM_DIR / "weights" / "pplm_t33_650M.pt")
@@ -76,10 +74,6 @@ from pplm.pplm import PPLM, Alphabet  # noqa: E402
 
 # ── mutation helper ───────────────────────────────────────────────────────────
 
-def _zero_based_variant(mutation: str) -> str:
-    """'E80K' (1-based) → 'E79K' (0-based), matching pplm_mlp.py convention."""
-    pos_1based = int("".join(filter(str.isdigit, mutation)))
-    return f"{mutation[0]}{pos_1based - 1}{mutation[-1]}"
 
 
 # ── PPLM model loading ────────────────────────────────────────────────────────
@@ -154,16 +148,16 @@ def build_cache(
     Skips keys already present in existing_cache (incremental update).
     OOM pairs are skipped with a warning; they will fall back to prior in pplm_mlp.py.
 
-    df must have columns: refseq_id, partner, Mutation, Target_Seq, Interactor_Seq, Mutated_Seq
+    df must have columns: interactor, partner, mutation, interactor_sequence, partner_sequence, mutated_sequence
     """
     cache = dict(existing_cache)
 
     # ── unique WT pairs ───────────────────────────────────────────────────────
     wt_pairs: dict[tuple, tuple] = {}  # (id_a, id_b) → (wt_seq_a, partner_seq)
     for _, row in df.iterrows():
-        key = (str(row["refseq_id"]), str(row["partner"]))
+        key = (str(row["interactor"]), str(row["partner"]))
         if key not in wt_pairs:
-            wt_pairs[key] = (str(row["Target_Seq"]), str(row["Interactor_Seq"]))
+            wt_pairs[key] = (str(row["interactor_sequence"]), str(row["partner_sequence"]))
 
     wt_to_embed = [
         (id_a, id_b, seq_a, seq_b)
@@ -197,26 +191,26 @@ def build_cache(
     print(f"  WT done. Cache now has {len(cache)} entries.", flush=True)
 
     # ── unique MUT triplets ───────────────────────────────────────────────────
-    mut_triplets: dict[tuple, tuple] = {}  # (id_a, id_b, var_zero) → (mut_seq_a, partner_seq)
+    mut_triplets: dict[tuple, tuple] = {}  # (id_a, id_b, var) → (mut_seq_a, partner_seq)
     for _, row in df.iterrows():
-        id_a = str(row["refseq_id"])
+        id_a = str(row["interactor"])
         id_b = str(row["partner"])
-        var_zero = _zero_based_variant(str(row["Mutation"]))
-        key = (id_a, id_b, var_zero)
+        var = str(row["mutation"])      # 1-based, as stored in the tables
+        key = (id_a, id_b, var)
         if key not in mut_triplets:
-            mut_triplets[key] = (str(row["Mutated_Seq"]), str(row["Interactor_Seq"]))
+            mut_triplets[key] = (str(row["mutated_sequence"]), str(row["partner_sequence"]))
 
     mut_to_embed = [
-        (id_a, id_b, var_zero, seq_a_mut, seq_b)
-        for (id_a, id_b, var_zero), (seq_a_mut, seq_b) in mut_triplets.items()
-        if not _entry_has_embeds(cache, f"{id_a}_{id_b}_{var_zero}")
+        (id_a, id_b, var, seq_a_mut, seq_b)
+        for (id_a, id_b, var), (seq_a_mut, seq_b) in mut_triplets.items()
+        if not _entry_has_embeds(cache, f"{id_a}_{id_b}_{var}")
     ]
 
     print(f"\nMUT triplets: {len(mut_triplets)} unique, {len(mut_to_embed)} to embed",
           flush=True)
     n_skipped = 0
-    for i, (id_a, id_b, var_zero, seq_a_mut, seq_b) in enumerate(mut_to_embed):
-        key = f"{id_a}_{id_b}_{var_zero}"
+    for i, (id_a, id_b, var, seq_a_mut, seq_b) in enumerate(mut_to_embed):
+        key = f"{id_a}_{id_b}_{var}"
         try:
             emb_a, emb_b = _pplm_forward(model, batch_converter, seq_a_mut, seq_b, device)
             mean = (emb_a.sum(0) + emb_b.sum(0)) / (len(emb_a) + len(emb_b))
@@ -258,17 +252,19 @@ def run(args: argparse.Namespace) -> None:
 
     # ── load dataset ──────────────────────────────────────────────────────────
     print(f"Loading dataset '{cfg.name}'...", flush=True)
-    df = load_data(cfg, Path(args.data_root))
+    df = add_mutated_sequence(load_data(cfg))
     print(f"  {len(df)} rows loaded", flush=True)
 
-    required_cols = {"refseq_id", "partner", "Mutation",
-                     "Target_Seq", "Interactor_Seq", "Mutated_Seq"}
+    required_cols = {"interactor", "partner", "mutation",
+                     "interactor_sequence", "partner_sequence", "mutated_sequence"}
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"DataFrame missing columns: {missing}")
 
     # ── load or initialise existing cache ─────────────────────────────────────
-    output_path = Path(args.output)
+    # Default: one cache per dataset, beside the canonical tables.
+    output_path = Path(args.output or
+                       DATASETS_DIR / "mapped090826" / f"{args.dataset}_pplm.pkl")
     existing_cache: dict = {}
     if output_path.exists():
         print(f"Loading existing cache from {output_path}...", flush=True)
@@ -331,13 +327,8 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--output",
-        default=str(cache_file("pplm_cache.pkl")),
+        default=None,
         help="Output .pkl cache file path (created or extended if it exists)",
-    )
-    p.add_argument(
-        "--data-root",
-        default="/data/ross/ppi_lossgain/interaction_loss/home/data_interaction_loss",
-        help="Root directory containing pos/neg/extra files",
     )
     p.add_argument(
         "--device",

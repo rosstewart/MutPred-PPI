@@ -12,14 +12,13 @@ Usage:
         --refseq-to-uniprot refseq_to_uniprot.tsv \
         --biogrid-interactors biogrid/biogrid_dirbind_uniprot_to_interactors.pkl \
         --biogrid-seqs biogrid/uniprot_dirbind_to_seq.pkl \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/home/sahni \
+        --output-dir $MUTPRED_DATA_ROOT/home/sahni \
         --email your@email.com
 """
 
 import argparse
 import os
 import pickle
-import numpy as np
 import pandas as pd
 from Bio import Entrez, SeqIO
 

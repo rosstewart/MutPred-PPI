@@ -17,12 +17,12 @@ The script produces:
 
 Usage:
     python map_hgmd.py \
-        --hgmd-file /data/ross/annovar/hgmd_pedja_ethnicity/hgmd_pedja_ethnicity_proteins.fasta \
-        --hgmd-dm-wts /data/ross/annovar/hgmd_pedja_ethnicity/all_wts_dm.pkl \
-        --hgmd-dm-vts /data/ross/annovar/hgmd_pedja_ethnicity/all_vts_dm.pkl \
+        --hgmd-file /path/to/annovar/hgmd_pedja_ethnicity/hgmd_pedja_ethnicity_proteins.fasta \
+        --hgmd-dm-wts /path/to/annovar/hgmd_pedja_ethnicity/all_wts_dm.pkl \
+        --hgmd-dm-vts /path/to/annovar/hgmd_pedja_ethnicity/all_vts_dm.pkl \
         --refseq-to-uniprot hgmd/hgmd_refseq_to_uniprot.tsv \
         --biogrid-dir biogrid \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/hgmd \
+        --output-dir $MUTPRED_DATA_ROOT/hgmd \
         --max-complex-subset 600
 """
 
@@ -30,6 +30,12 @@ import argparse
 import os
 import pickle
 from Bio import SeqIO
+from biogrid_common import (  # shared verbatim helpers
+    build_variant_triplets,
+    clean_complexes,
+    get_complexes_in_biogrid,
+    load_biogrid,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -50,33 +56,6 @@ def load_refseq_to_uniprot(tsv_path):
     return mapping
 
 
-def load_biogrid(biogrid_dir):
-    with open(f"{biogrid_dir}/biogrid_dirbind_uniprot_to_interactors.pkl", "rb") as f:
-        uniprot_to_interactors = pickle.load(f)
-    with open(f"{biogrid_dir}/uniprot_dirbind_to_seq.pkl", "rb") as f:
-        uniprot_to_seq = pickle.load(f)
-    return uniprot_to_interactors, uniprot_to_seq
-
-
-def get_complexes_in_biogrid(uniprot_wts, uniprot_to_interactors, uniprot_to_seq):
-    wt_complexes = set()
-    for uid in uniprot_wts:
-        if uid not in uniprot_to_interactors:
-            continue
-        for partner in uniprot_to_interactors[uid]:
-            if partner in uniprot_to_seq:
-                wt_complexes.add((uid, partner))
-    return wt_complexes
-
-
-def clean_complexes(all_complexes):
-    cleaned = set()
-    for a, b in all_complexes:
-        if (b, a) not in cleaned:
-            cleaned.add((a, b))
-    return cleaned
-
-
 def build_complex_subset(all_complexes, max_size):
     complex_subset = set()
     cleaned = set()
@@ -92,20 +71,6 @@ def build_complex_subset(all_complexes, max_size):
                     if len(complex_subset) == max_size:
                         return complex_subset
     return complex_subset
-
-
-def build_variant_triplets(id_to_seq, complexes):
-    variants = set()
-    for key in id_to_seq:
-        if " " not in key:
-            continue
-        uid, variant = key.split(" ")
-        for u, p in complexes:
-            if uid == u:
-                variants.add((uid, variant, p))
-            if uid == p:
-                variants.add((uid, variant, u))
-    return variants
 
 
 def apply_variants(uniprot_seq_dict, id_to_seq):

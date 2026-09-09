@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppi-interaction-loss"
+version = "0.1.0"
+description = "MutPred-PPI and interaction-loss analysis codebase"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+# src/ is the package root.  All subdirectories with __init__.py are installed
+# as top-level packages (evaluation, analysis, …) and the standalone modules
+# (paths, ids, model) are listed explicitly.
+package-dir = {"" = "src"}
+py-modules = ["paths", "ids", "model", "contact_graphs"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

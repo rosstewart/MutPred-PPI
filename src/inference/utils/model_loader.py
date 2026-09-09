@@ -1,45 +1,13 @@
 import torch
-import torch.nn as nn
-from torch_geometric.nn import GATConv
 from torch_geometric.utils import dense_to_sparse
 import glob
 import numpy as np
 
 
-class MutPred_PPI(nn.Module):
-    """GAT_mut_processor — canonical hidden_dim=64 architecture."""
-    def __init__(self, input_dim, hidden_dim=64, output_dim=1,
-                 num_heads=4, mutation_diff_dim=1024):
-        super(MutPred_PPI, self).__init__()
-
-        self.mutation_diff_processor = nn.Sequential(
-            nn.Linear(mutation_diff_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 32),
-        )
-
-        self.complex_gat1 = GATConv(input_dim, hidden_dim, heads=num_heads, concat=True)
-        self.complex_gat2 = GATConv(hidden_dim * num_heads, hidden_dim // 2, heads=1, concat=False)
-
-        self.binding_predictor = nn.Sequential(
-            nn.Linear(hidden_dim // 2 + 32, 16),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(16, output_dim),
-        )
-
-    def forward(self, x, edge_index, mutation_idx, mutation_site_diff):
-        if mutation_site_diff.dim() == 1:
-            mutation_site_diff = mutation_site_diff.unsqueeze(0)
-        processed_mut_diff = self.mutation_diff_processor(mutation_site_diff)
-
-        h = torch.relu(self.complex_gat1(x, edge_index))
-        h = torch.relu(self.complex_gat2(h, edge_index))
-
-        features_at_mutation = h[mutation_idx:mutation_idx + 1]
-        combined = torch.cat([features_at_mutation, processed_mut_diff], dim=-1)
-        return self.binding_predictor(combined)
+# Single definition lives in src/model.py; see its docstring for why.
+import sys as _sys
+from pathlib import Path as _Path
+from model import MutPred_PPI  # noqa: E402,F401
 
 
 def get_models(model_dir, device):

@@ -30,23 +30,21 @@ import matplotlib.pyplot as plt
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import CV_DIR as _P_CV_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir  # noqa: E402
+from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
-PFAM_CACHE = f"{_BASE}/2026/pfam_domains_cache.pkl"
+PFAM_CACHE = str(ANNOTATIONS_DIR / "pfam_domains_cache.pkl")
 GCV_RESULTS = f"{_PUB}/results_revisions/macro_aucs/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
 VT_IDS_FILE = f"{CV_DIR}/sahni_fragoza_train_all_vt_ids.pkl"
 OUT_DIR   = f"{_PUB}/results_revisions/robustness_analyses"
 
 N_SEEDS       = 30
 MIN_N         = 5
-N_SEM_DIVISOR = 10
-FPR_GRID = np.linspace(0, 1, 100)  # module-level: shared by compute_curves() and plot_on_axes()
+from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 GROUPS  = ["single", "multi"]
 COLORS  = {"single": "#1a9641", "multi": "#a6d96a"}

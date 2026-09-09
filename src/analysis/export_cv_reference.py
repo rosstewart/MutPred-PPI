@@ -23,11 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
-_SRC = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_SRC))
-sys.path.insert(0, str(_SRC / "evaluation"))
 from paths import DATASETS_DIR  # noqa: E402
-import mutpred_ppi_cv as cv  # noqa: E402
+import evaluation.mutpred_ppi_cv as cv  # noqa: E402
+from variant_db_inference import variant_rows as vr  # noqa: E402
 
 OUT_DIR = DATASETS_DIR / "cv_reference"
 
@@ -46,6 +44,43 @@ NAMING = {
     "sahni_fragoza_varchamp_full_pooled": ("sahni_fragoza_varchamp_full_pooled_train_",
                                            "combined_sahni_fragoza_varchamp_full_pooled_"),
 }
+
+
+def _write_canonical_rows(path: Path, ordered: dict) -> None:
+    """The CV ordering in canonical columns, replacing the `vt_id` composite.
+
+        row_index, interactor, partner, mutation
+
+    `vt_id` is a `'{interactor}-{partner} {mutation}'` string with a 0-based
+    mutation: two identifiers welded together with `-`, which is ambiguous the
+    moment an accession is an isoform (261 of 2,785 `complex_id`s in the
+    sahni_fragoza reference contain more than one `-`, e.g. `O43889-2-J3QKU0`).
+    Consumers should read THIS file and join on explicit columns.
+
+    `row_index` is the position in the canonical ordering, so it indexes
+    `fold_splits_{seed}.pkl` and `pair_test_classes_{seed}.npy` directly -- that
+    alignment is the reason the ordering may never be re-derived.
+
+    The `.pkl` outputs are still written unchanged: they are what every existing
+    consumer and every published number depend on. This is an additional view,
+    not a replacement, until those consumers are migrated.
+    """
+    import csv
+    import gzip
+
+    vt_ids, pairs = ordered["all_vt_ids"], ordered["all_pairs"]
+    with gzip.open(path, "wt", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["row_index", "interactor", "partner", "mutation"])
+        for idx, (vt_id, (inter, partner)) in enumerate(zip(vt_ids, pairs)):
+            # Split on the SPACE, which is unambiguous; never on the '-'.
+            mut0 = vt_id.split(" ")[1] if " " in vt_id else ""
+            try:
+                mut = vr.to_one_based(mut0)      # canonical 1-based
+            except ValueError:
+                mut = mut0
+            w.writerow([idx, inter, partner, mut])
+    print(f"  canonical rows -> {path.name}", flush=True)
 
 
 def export(dataset: str, n_seeds: int = 30) -> None:
@@ -71,6 +106,8 @@ def export(dataset: str, n_seeds: int = 30) -> None:
     for s in range(n_seeds):
         with open(OUT_DIR / f"{prefix}all_vt_ids_{s}.pkl", "wb") as f:
             pickle.dump(vt_ids, f)
+
+    _write_canonical_rows(OUT_DIR / f"{prefix}rows.csv.gz", ordered)
 
     for s in range(n_seeds):
         fold_splits = cv.make_fold_splits(ordered, s)

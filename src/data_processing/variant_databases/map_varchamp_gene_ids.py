@@ -16,12 +16,12 @@ mapping genes the pipeline actually consumes, not a full raw-data superset.
 
 Usage:
     conda run -n ppi python src/data_processing/variant_databases/map_varchamp_gene_ids.py \\
-        --graph-dir /data/ross/ppi_lossgain/interaction_loss/varchamp1p/af3_graphs \\
-        --output /data/ross/ppi_lossgain/interaction_loss/home/varchamp1p/gene_symbol_to_uniprot.pkl
+        --graph-dir $MUTPRED_DATA_ROOT/varchamp1p/af3_graphs \\
+        --output $MUTPRED_DATA_ROOT/home/varchamp1p/gene_symbol_to_uniprot.pkl
 
     conda run -n ppi python src/data_processing/variant_databases/map_varchamp_gene_ids.py \\
-        --graph-dir /data/ross/ppi_lossgain/interaction_loss/cava/af3_graphs \\
-        --output /data/ross/ppi_lossgain/interaction_loss/home/cava/gene_symbol_to_uniprot.pkl
+        --graph-dir $MUTPRED_DATA_ROOT/cava/af3_graphs \\
+        --output $MUTPRED_DATA_ROOT/home/cava/gene_symbol_to_uniprot.pkl
 """
 from __future__ import annotations
 
@@ -34,7 +34,13 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-_AF_STRUCT_DIR = "/data/ross/alphafold_v4_human"
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from pathlib import Path as _Path
+from paths import EXTERNAL_DIR  # noqa: E402
+
+# AFDB v4 human monomers, resolved via external/ (run scripts/link_external.sh).
+_AF_STRUCT_DIR = str(EXTERNAL_DIR / "alphafold_v4_human")
 
 
 def genes_from_graph_dir(graph_dir: str) -> list[str]:

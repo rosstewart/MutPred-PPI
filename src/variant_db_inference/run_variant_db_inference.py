@@ -1,101 +1,71 @@
 #!/usr/bin/env python
 """Run MutPred-PPI inference on a variant database using precomputed ProtT5 embeddings.
 
+Rows come from `datasets/variant_dbs/{db}_rows.csv.gz` — one
+`(interactor, partner, mutation)` triplet per prediction — and contact graphs
+from the content-addressed store, fetched by the two chain SEQUENCES. The
+previous version globbed `{db}/af3_graphs/*.mat`, called the first token of the
+filename the interactor and sliced at the stored `NRR`; for 121 clinvar / 121
+cosmic / 116 gnomad / 29 hgmd files the stored chain order contradicts the
+filename, so those complexes were scored on the wrong chain. The store returns
+the graph already oriented to the requested interactor, so `NRR` is gone.
+
 Prerequisites:
-1. ProtT5 embeddings precomputed with precompute_prott5.py
-2. AlphaFold3 contact graphs in af3_graphs/ (.mat files + all_variants.labels)
+1. ProtT5 embeddings precomputed with precompute_prott5.py (and, for the large
+   databases, compressed with compress_to_subgraphs.py)
+2. `datasets/variant_dbs/contact_graphs.h5` and `{db}_rows.csv.gz`
+   (build_variant_db_tables.py)
 3. Trained model checkpoints in weights/ (the SFVCFP model — variant-DB inference
    is not a blind test, so the model trained on the most data is used)
+
+Output TSV is unchanged: `complex_id`, `variant` (1-BASED), `score`, where
+`complex_id` is `{interactor}_{partner}`.
 
 Usage (nohup recommended for large datasets):
     nohup conda run -n ppi python run_variant_db_inference.py \\
         --dataset gnomad --device cuda:0 \\
-        --embeddings-h5 /data/ross/ppi_lossgain/interaction_loss/gnomad/prott5_embeddings.h5 \\
+        --embeddings-h5 $MUTPRED_DATA_ROOT/gnomad/prott5_embeddings.h5 \\
         >> inference_gnomad.log 2>&1 &
 
-    # Or with explicit paths:
-    nohup conda run -n ppi python run_variant_db_inference.py \\
-        --graph-dir /path/to/af3_graphs \\
-        --embeddings-h5 /path/to/embeddings.h5 \\
-        --out /path/to/results.tsv \\
-        --device cuda:0 >> inference.log 2>&1 &
-
 NOTE: HGMD and COSMIC datasets require licensed input data that cannot be
-redistributed.  The scripts that generate their graph directories take the
-licensed source files as input.
+redistributed.  The scripts that generate their inputs take the licensed source
+files as input.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
+from collections import Counter
 from pathlib import Path
 
-import glob
 import h5py
 import joblib
 import numpy as np
-import scipy.sparse as sp
 import torch
-from scipy.io import loadmat
 
 # Resolve the models directory relative to this file
 _THIS_DIR = Path(__file__).resolve().parent
 _MODELS_DIR = _THIS_DIR.parent.parent / "weights"
 _SCALER_PATH = _MODELS_DIR / "mutation_diff_scaler.pkl"
 
-# Add inference/utils to path so we can import model_loader
-sys.path.insert(0, str(_THIS_DIR.parent / "inference"))
-from utils.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
-
-# --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT  # noqa: E402
+from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
+from inference.utils.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
+from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
+from variant_db_inference import variant_rows as vr  # noqa: E402
 
 
 # ── dataset path registry ─────────────────────────────────────────────────────
 
 _BASE = DATA_ROOT
+STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
 DATASET_CONFIGS = {
-    "clinvar": {
-        "graph_dir":          _BASE / "clinvar" / "af3_graphs",
-        "default_emb_h5":     _BASE / "clinvar" / "prott5_embeddings.h5",
-        "default_subgraph_h5": _BASE / "clinvar" / "prott5_subgraphs.h5",
-        "default_out":        _BASE / "clinvar" / "mutpred_ppi_predictions.tsv",
-    },
-    "gnomad": {
-        "graph_dir":          _BASE / "gnomad" / "af3_graphs",
-        "default_emb_h5":     _BASE / "gnomad" / "prott5_embeddings.h5",
-        "default_subgraph_h5": _BASE / "gnomad" / "prott5_subgraphs.h5",
-        "default_out":        _BASE / "gnomad" / "mutpred_ppi_predictions.tsv",
-    },
-    "hgmd": {
-        "graph_dir":          _BASE / "hgmd" / "af3_graphs",
-        "default_emb_h5":     _BASE / "hgmd" / "prott5_embeddings.h5",
-        "default_subgraph_h5": _BASE / "hgmd" / "prott5_subgraphs.h5",
-        "default_out":        _BASE / "hgmd" / "mutpred_ppi_predictions.tsv",
-    },
-    "cosmic": {
-        "graph_dir":          _BASE / "cosmic" / "af3_graphs",
-        "default_emb_h5":     _BASE / "cosmic" / "prott5_embeddings.h5",
-        "default_subgraph_h5": _BASE / "cosmic" / "prott5_subgraphs.h5",
-        "default_out":        _BASE / "cosmic" / "mutpred_ppi_predictions.tsv",
-    },
-    "autism": {
-        "graph_dir":          _BASE / "autism" / "af3_graphs",
-        "default_emb_h5":     _BASE / "autism" / "prott5_embeddings.h5",
-        "default_subgraph_h5": _BASE / "autism" / "prott5_subgraphs.h5",
-        "default_out":        _BASE / "autism" / "mutpred_ppi_predictions.tsv",
-    },
-    "neurodev": {
-        "graph_dir":          _BASE / "neurodev" / "af3_graphs",
-        "default_emb_h5":     _BASE / "neurodev" / "prott5_embeddings.h5",
-        "default_subgraph_h5": _BASE / "neurodev" / "prott5_subgraphs.h5",
-        "default_out":        _BASE / "neurodev" / "mutpred_ppi_predictions.tsv",
-    },
+    db: {
+        "default_emb_h5":      _BASE / db / "prott5_embeddings.h5",
+        "default_subgraph_h5": _BASE / db / "prott5_subgraphs.h5",
+        "default_out":         _BASE / db / "mutpred_ppi_predictions.tsv",
+    }
+    for db in ("clinvar", "gnomad", "hgmd", "cosmic", "autism", "neurodev")
 }
 
 
@@ -109,21 +79,6 @@ def _load_embeddings_h5(h5_path: str) -> dict[str, np.ndarray]:
             embs[key] = f[key][:]
     print(f"  {len(embs)} sequences loaded", flush=True)
     return embs
-
-
-def _parse_variants_labels(labels_path: str) -> dict[str, list[str]]:
-    """Parse all_variants.labels → {complex_id: [variant, ...]}."""
-    wt_to_vt: dict[str, list[str]] = {}
-    with open(labels_path) as f:
-        for line in f:
-            if not line.startswith(">"):
-                continue
-            entry = line[1:].strip()
-            # format: REFSEQ_PARTNER_interaction_loss_variant_G89R
-            pdb_id = entry.split("_interaction_loss")[0]
-            variant = entry.split("_")[-1]
-            wt_to_vt.setdefault(pdb_id, []).append(variant)
-    return wt_to_vt
 
 
 def _load_done(out_path: str) -> set[str]:
@@ -140,10 +95,34 @@ def _load_done(out_path: str) -> set[str]:
     return done
 
 
+def _count_reason(stats: Counter, examples: dict, reason: str, n: int = 1) -> None:
+    """Bucket a `check_embedding_lengths` reason, keeping one full example.
+
+    The reason carries the offending lengths, which would give the Counter a key
+    per complex; the text before them is the class of failure.
+    """
+    bucket = reason.split(" has ", 1)[0]
+    stats[f"{bucket} length disagrees with its sequence"] += n
+    examples.setdefault(bucket, reason)
+
+
+def _report(stats: Counter, examples: dict, out_path: str) -> None:
+    print(f"\nDone. {stats['scored']} new predictions written to {out_path}", flush=True)
+    print(f"  skipped (already done): {stats['skipped']}", flush=True)
+    print("  not scored, by reason:", flush=True)
+    for k, v in stats.most_common():
+        if k not in ("scored", "skipped", "rows read"):
+            print(f"    {k}: {v:,}", flush=True)
+    for ex in examples.values():
+        print(f"    e.g. {ex}", flush=True)
+
+
 # ── inference ─────────────────────────────────────────────────────────────────
 
 def run_inference(
-    graph_dir: str,
+    db: str,
+    rows_path: str,
+    store_path: str,
     emb_h5: str,
     out_path: str,
     models_dir: str,
@@ -168,7 +147,7 @@ def run_inference(
         print(f"Subgraph H5 found: {subgraph_h5} — using compact 2-hop inference mode",
               flush=True)
     elif not Path(emb_h5).exists():
-        print(f"[ERROR] Neither subgraph H5 nor embedding H5 found", flush=True)
+        print("[ERROR] Neither subgraph H5 nor embedding H5 found", flush=True)
         sys.exit(1)
     else:
         print(f"Using full embedding H5: {emb_h5}", flush=True)
@@ -176,156 +155,147 @@ def run_inference(
     done = _load_done(out_path)
     print(f"  {len(done)} already scored — skipping", flush=True)
 
+    stats: Counter = Counter()
+    examples: dict[str, str] = {}
+    print(f"Rows: {rows_path}", flush=True)
+    rows = vr.iter_table_rows(db, rows_path, stats=stats)
+
     out_file = open(out_path, "a")
     if len(done) == 0:
         out_file.write("complex_id\tvariant\tscore\n")
 
-    mat_files = sorted(glob.glob(str(Path(graph_dir) / "*.mat")))
-    print(f"  {len(mat_files)} .mat files in {graph_dir}", flush=True)
-
-    total_scored = 0
-    total_skipped = 0
-    total_missing_emb = 0
-
     if use_subgraph:
-        _run_inference_subgraph(
-            mat_files, subgraph_h5, scaler, models, device,
-            done, out_file, out_path,
-        )
+        # The 2-hop subgraphs already carry their own graph, so the store is only
+        # needed on the full-embedding path.
+        _run_inference_subgraph(rows, subgraph_h5, scaler, models, device,
+                                done, out_file, stats, examples)
     else:
         # Legacy path: bulk-load full embeddings (only feasible for small datasets)
         embs = _load_embeddings_h5(emb_h5)
-        _run_inference_full_emb(
-            mat_files, embs, scaler, models, device,
-            done, out_file, out_path,
-        )
+        store = ContactGraphStore(store_path)
+        _run_inference_full_emb(rows, embs, store, scaler, models, device,
+                                done, out_file, stats, examples)
+        store.close()
 
     out_file.close()
+    _report(stats, examples, out_path)
 
 
-def _run_inference_subgraph(mat_files, subgraph_h5, scaler, models, device,
-                             done, out_file, out_path):
+def _run_inference_subgraph(rows, subgraph_h5, scaler, models, device,
+                            done, out_file, stats, examples):
     """Inference using pre-computed 2-hop subgraph H5 (compact, low RAM)."""
-    total_scored = 0
-    total_skipped = 0
-    total_missing = 0
-
     sg_file = h5py.File(subgraph_h5, "r")
 
-    for mat_idx, mat_path in enumerate(mat_files):
-        complex_id = Path(mat_path).stem
-
-        if complex_id not in sg_file:
+    for n_rows, r in enumerate(rows, 1):
+        complex_id = f"{r['interactor']}_{r['partner']}"
+        mut_1b = r["mutation"]
+        if f"{complex_id}\t{mut_1b}" in done:
+            stats["skipped"] += 1
             continue
 
-        cgrp = sg_file[complex_id]
+        variant = vr.to_zero_based(mut_1b)   # subgraph H5 variant keys are 0-based
+        cgrp = sg_file.get(complex_id)
+        if cgrp is None:
+            stats["pair absent from the subgraph H5"] += 1
+            continue
+        vgrp = cgrp.get(variant)
+        if vgrp is None:
+            stats["variant absent from the subgraph H5"] += 1
+            continue
+        if "node_emb" not in vgrp or "mut_diff" not in vgrp:
+            stats["subgraph entry incomplete"] += 1
+            continue
 
-        for variant in cgrp.keys():
-            key_1b = _variant_0b_to_1b(variant)
-            tsv_key = f"{complex_id}\t{key_1b}"
-            if tsv_key in done:
-                total_skipped += 1
-                continue
+        node_emb      = vgrp["node_emb"][:]
+        edge_index_np = vgrp["edge_index"][:]
+        mut_diff_raw  = vgrp["mut_diff"][:].reshape(1, -1)
+        mut_local_idx = int(vgrp.attrs["mut_local_idx"])
 
-            vgrp = cgrp[variant]
-            if "node_emb" not in vgrp or "mut_diff" not in vgrp:
-                total_missing += 1
-                continue
+        mutation_site_diff = scaler.transform(mut_diff_raw).squeeze()
 
-            node_emb      = vgrp["node_emb"][:]
-            edge_index_np = vgrp["edge_index"][:]
-            mut_diff_raw  = vgrp["mut_diff"][:].reshape(1, -1)
-            mut_local_idx = int(vgrp.attrs["mut_local_idx"])
+        score = model_predict_subgraph(
+            node_emb, edge_index_np, models, mut_local_idx,
+            mutation_site_diff, device,
+        )
+        if score is None:
+            stats["model returned no score"] += 1
+            continue
 
-            mutation_site_diff = scaler.transform(mut_diff_raw).squeeze()
+        out_file.write(f"{complex_id}\t{mut_1b}\t{float(score):.6f}\n")
+        out_file.flush()
+        stats["scored"] += 1
 
-            score = model_predict_subgraph(
-                node_emb, edge_index_np, models, mut_local_idx,
-                mutation_site_diff, device,
-            )
-            if score is None:
-                print(f"[WARN] model returned None for {complex_id} {variant}",
-                      flush=True)
-                continue
-
-            out_file.write(f"{complex_id}\t{key_1b}\t{float(score):.6f}\n")
-            out_file.flush()
-            total_scored += 1
-
-        if (mat_idx + 1) % 500 == 0:
-            print(f"[{mat_idx + 1}/{len(mat_files)}] "
-                  f"scored={total_scored}  skipped={total_skipped}  "
-                  f"missing={total_missing}", flush=True)
+        if n_rows % 50000 == 0:
+            print(f"[{n_rows} rows] scored={stats['scored']}  "
+                  f"skipped={stats['skipped']}", flush=True)
 
     sg_file.close()
-    print(f"\nDone. {total_scored} new predictions written to {out_path}", flush=True)
-    print(f"  skipped (already done): {total_skipped}", flush=True)
-    print(f"  missing subgraphs:      {total_missing}", flush=True)
 
 
-def _variant_0b_to_1b(variant_0b: str) -> str:
-    """Convert 0-based variant string to 1-based: 'A822V' → 'A823V'."""
-    aa_from = variant_0b[0]
-    aa_to   = variant_0b[-1]
-    pos_1b  = int(variant_0b[1:-1]) + 1
-    return f"{aa_from}{pos_1b}{aa_to}"
+def _run_inference_full_emb(rows, embs, store, scaler, models, device,
+                            done, out_file, stats, examples):
+    """Legacy inference path using bulk-loaded full embeddings.
 
+    Rows are grouped by pair so each contact graph is fetched once, as the
+    file-driven loop did.
+    """
+    grouped: dict[tuple[str, str], list[str]] = {}
+    pair_seqs: dict[tuple[str, str], tuple[str, str]] = {}
+    for r in rows:
+        k = (r["interactor"], r["partner"])
+        grouped.setdefault(k, []).append(r["mutation"])
+        pair_seqs.setdefault(k, (r["interactor_sequence"], r["partner_sequence"]))
+    print(f"  {sum(len(v) for v in grouped.values()):,} rows over "
+          f"{len(grouped):,} pairs", flush=True)
 
-def _run_inference_full_emb(mat_files, embs, scaler, models, device,
-                             done, out_file, out_path):
-    """Legacy inference path using bulk-loaded full embeddings."""
-    # Infer variants from emb keys (no all_variants.labels required)
-    inter_to_variants: dict[str, list[str]] = {}
-    for k in embs:
-        if " " in k:
-            inter, var = k.split(" ", 1)
-            inter_to_variants.setdefault(inter, []).append(var)
+    for pair_idx, (key, muts) in enumerate(sorted(grouped.items()), 1):
+        interactor, partner = key
+        complex_id = f"{interactor}_{partner}"
+        iseq, pseq = pair_seqs[key]
 
-    total_scored = 0
-    total_skipped = 0
-    total_missing_emb = 0
+        if interactor not in embs:
+            stats["interactor WT embedding missing"] += len(muts)
+            continue
+        if partner not in embs:
+            stats["partner WT embedding missing"] += len(muts)
+            continue
+        wt_emb, partner_emb = embs[interactor], embs[partner]
 
-    for mat_idx, mat_path in enumerate(mat_files):
-        complex_id = Path(mat_path).stem
-        parts = complex_id.split("_")
-        refseq_id  = parts[0]
-        partner_id = "_".join(parts[1:])
-
-        if refseq_id not in embs or partner_id not in embs:
-            total_missing_emb += 1
+        reason = check_embedding_lengths(
+            interactor_seq=iseq, partner_seq=pseq,
+            interactor_emb=wt_emb, partner_emb=partner_emb)
+        if reason:
+            _count_reason(stats, examples, reason, len(muts))
             continue
 
-        variants = inter_to_variants.get(refseq_id, [])
-        if not variants:
+        # self_loops=False reproduces the .mat exactly: those matrices carry a
+        # zero diagonal and model_predict never added one.
+        edge_mat = store.load_dense(interactor=iseq, partner=pseq,
+                                    self_loops=False)
+        if edge_mat is None:
+            stats["pair has no graph in the contact-graph store"] += len(muts)
             continue
 
-        data = loadmat(mat_path)
-        adj = sp.csr_matrix(data["G"])
-        edge_mat = adj.toarray()
-        n_refseq = int(data["NRR"].flat[0])
-
-        wt_emb      = embs[refseq_id]
-        partner_emb = embs[partner_id]
-
-        for variant in variants:
-            key_1b = _variant_0b_to_1b(variant)
-            tsv_key = f"{complex_id}\t{key_1b}"
-            if tsv_key in done:
-                total_skipped += 1
+        for mut_1b in sorted(muts):
+            if f"{complex_id}\t{mut_1b}" in done:
+                stats["skipped"] += 1
                 continue
 
+            variant = vr.to_zero_based(mut_1b)   # ProtT5 keys are 0-based
             mut_idx = int(variant[1:-1])
-            vt_id   = f"{refseq_id} {variant}"
-
+            vt_id = f"{interactor} {variant}"
             if vt_id not in embs:
-                total_missing_emb += 1
+                stats["variant embedding missing"] += 1
                 continue
-
             vt_emb = embs[vt_id]
 
-            if vt_emb.shape[0] != n_refseq or partner_emb.shape[0] != (edge_mat.shape[0] - n_refseq):
+            reason = check_embedding_lengths(
+                interactor_seq=iseq, partner_seq=pseq, interactor_emb=vt_emb)
+            if reason:
+                _count_reason(stats, examples, reason)
                 continue
             if mut_idx >= wt_emb.shape[0]:
+                stats["mutation position past the end of the interactor"] += 1
                 continue
 
             combined_emb = np.concatenate([vt_emb, partner_emb], axis=0)
@@ -336,46 +306,48 @@ def _run_inference_full_emb(mat_files, embs, scaler, models, device,
                 combined_emb, edge_mat, models, mut_idx, mutation_site_diff, device
             )
             if score is None:
+                stats["model returned no score"] += 1
                 continue
 
-            out_file.write(f"{complex_id}\t{key_1b}\t{float(score):.6f}\n")
+            out_file.write(f"{complex_id}\t{mut_1b}\t{float(score):.6f}\n")
             out_file.flush()
-            total_scored += 1
+            stats["scored"] += 1
 
-        if (mat_idx + 1) % 100 == 0:
-            print(f"[{mat_idx + 1}/{len(mat_files)}] "
-                  f"scored={total_scored}  skipped={total_skipped}  "
-                  f"missing={total_missing_emb}", flush=True)
-
-    print(f"\nDone. {total_scored} new predictions written to {out_path}", flush=True)
-    print(f"  skipped (already done): {total_skipped}", flush=True)
-    print(f"  missing embeddings:     {total_missing_emb}", flush=True)
+        if pair_idx % 100 == 0:
+            print(f"[{pair_idx}/{len(grouped)}] scored={stats['scored']}  "
+                  f"skipped={stats['skipped']}", flush=True)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main(args: argparse.Namespace) -> None:
-    if args.dataset:
-        cfg = DATASET_CONFIGS[args.dataset]
-        graph_dir    = str(args.graph_dir    or cfg["graph_dir"])
-        emb_h5       = str(args.embeddings_h5 or cfg["default_emb_h5"])
-        subgraph_h5  = str(args.subgraphs_h5 or cfg["default_subgraph_h5"])
-        out_path     = str(args.out          or cfg["default_out"])
-    else:
-        if not args.graph_dir or not args.out:
-            print("ERROR: --graph-dir and --out are required when --dataset is not specified.",
-                  file=sys.stderr)
-            sys.exit(1)
-        graph_dir   = str(args.graph_dir)
-        emb_h5      = str(args.embeddings_h5 or "")
-        subgraph_h5 = str(args.subgraphs_h5  or "")
-        out_path    = str(args.out)
+    if args.graph_dir:
+        print("[note] --graph-dir is ignored: graphs now come from --store, "
+              "addressed by sequence", flush=True)
+
+    # --dataset is now required: rows and WT sequences are per-database.
+    if not args.dataset:
+        print("ERROR: --dataset is required (explicit path args still override "
+              "the defaults it sets).", file=sys.stderr)
+        sys.exit(1)
+
+    cfg = DATASET_CONFIGS[args.dataset]
+    emb_h5      = str(args.embeddings_h5 or cfg["default_emb_h5"])
+    subgraph_h5 = str(args.subgraphs_h5  or cfg["default_subgraph_h5"])
+    out_path    = str(args.out           or cfg["default_out"])
+    rows_path   = str(args.rows          or vr.table_path(args.dataset))
+    if not Path(rows_path).exists():
+        print(f"ERROR: {rows_path} not found — run build_variant_db_tables.py "
+              f"--db {args.dataset}", file=sys.stderr)
+        sys.exit(1)
 
     models_dir = str(args.models_dir or _MODELS_DIR)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     run_inference(
-        graph_dir=graph_dir,
+        db=args.dataset,
+        rows_path=rows_path,
+        store_path=str(args.store),
         emb_h5=emb_h5,
         out_path=out_path,
         models_dir=models_dir,
@@ -388,8 +360,10 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Run MutPred-PPI inference on variant databases")
     p.add_argument("--dataset", choices=list(DATASET_CONFIGS),
                    help="Named dataset (sets default paths; overridden by explicit path args)")
-    p.add_argument("--graph-dir",
-                   help="Directory containing .mat files and all_variants.labels")
+    p.add_argument("--rows",
+                   help="Row table (default: datasets/variant_dbs/{dataset}_rows.csv.gz)")
+    p.add_argument("--store", default=str(STORE),
+                   help=f"Contact-graph HDF5 store (default: {STORE})")
     p.add_argument("--embeddings-h5",
                    help="Path to full per-protein ProtT5 H5 (legacy; not needed when subgraphs H5 exists)")
     p.add_argument("--subgraphs-h5",
@@ -400,4 +374,5 @@ if __name__ == "__main__":
                    help=f"Directory containing .pt model files and scaler (default: {_MODELS_DIR})")
     p.add_argument("--device", default="",
                    help="PyTorch device string (e.g. 'cuda:0'). Defaults to auto-detect.")
+    p.add_argument("--graph-dir", help=argparse.SUPPRESS)  # accepted, ignored
     main(p.parse_args())

@@ -1,6 +1,5 @@
 """Run roc_plots.py in comparison mode (ABLATION=False, BOXPLOT=False)."""
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
 import roc_plots
 roc_plots.ABLATION = False
 roc_plots.BOXPLOT  = False

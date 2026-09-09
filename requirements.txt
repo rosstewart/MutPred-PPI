@@ -1,0 +1,50 @@
+# Environment that produced the published results.
+#
+# Pinned exactly, because several numbers depend on library internals:
+#   scikit-learn  — MLPClassifier drives the MINT and PPLM baseline heads
+#   xgboost       — SWING's classifier, and SAAMBE-3D's shipped .model files
+#                   fail to load on some versions (see docs/METHOD_PROVENANCE.md)
+#   gensim        — SWING's Doc2Vec
+#   numpy         — pinned <2.0 for torch_geometric / protlearn compatibility
+#
+# NOTE: src/inference/requirements.txt is the narrower inference-only set and
+# previously pinned biopython==1.83 and pandas<2.0.0, neither of which matches the
+# environment the results were produced in.  This file is authoritative.
+#
+#   conda create -n ppi python=3.10 -y
+#   conda activate ppi
+#   conda install -c conda-forge sentencepiece -y
+#   conda install -c bioconda cd-hit -y        # supplies the GroupKFold groups
+#   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+
+# --- core numerics -----------------------------------------------------------
+numpy==1.26.4
+scipy==1.15.3
+pandas==2.3.3
+joblib==1.4.2
+h5py==3.14.0
+
+# --- machine learning --------------------------------------------------------
+torch==2.5.1
+torch_geometric==2.6.1
+scikit-learn==1.6.1
+xgboost==3.0.2
+gensim==4.4.0
+
+# --- protein language models --------------------------------------------------
+transformers==4.48.1
+sentencepiece==0.2.0
+
+# --- sequence / structure handling -------------------------------------------
+biopython==1.85
+protlearn==0.0.3
+
+# --- plotting and misc -------------------------------------------------------
+matplotlib==3.10.3
+tqdm==4.67.1
+requests==2.32.4
+
+# --- not installed via pip ---------------------------------------------------
+# cd-hit          conda install -c bioconda cd-hit
+# prody           only needed by SAAMBE-3D, which has its own environment

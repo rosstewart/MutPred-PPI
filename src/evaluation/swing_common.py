@@ -1,32 +1,33 @@
 #!/usr/bin/env python
-"""Vendored SWING blind-test internals (feature encoding + SF/VCFP benchmark loading).
+"""Shared SWING internals: feature encoding, DataFrame builders, Doc2Vec, benchmark loading.
+
+Single source for everything SWING-specific in this repo. Used by both the
+blind-test supplement (`supplement_swing_vc1pcava.py`) and the cross-validation
+driver (`swing_gcv.py`), so the feature pipeline and hyperparameters cannot
+drift between them.
 
 Vendored from (external, non-repo path):
-    /home/rcstewart/ppi_lossgain/SWING_scripts/blind_test/run_swing_blind_test_vcfp.py
+    /path/to/upstream-scripts/SWING_scripts/blind_test/run_swing_blind_test_vcfp.py
 
-Kept here so the repo is self-contained (no dependency on an external,
-non-versioned path). Only the pieces actually needed by
-supplement_swing_vc1pcava.py are vendored: the window-encoding / k-mer /
-Doc2Vec-corpus feature pipeline, the SWING-format DataFrame builder, and the
-Sahni+Fragoza training-benchmark loader. `_TRAINING_DATA_CSV` is repointed to
-the repo's internal training data cache (matching the sed fix applied to the
-other supplement_*_vc1pcava.py scripts this session); all other logic is
-unchanged from the original.
+Vendored from the external SWING scripts so the repo is self-contained. The
+window-encoding / k-mer / Doc2Vec-corpus pipeline here was checked against the
+external SFVCFP GCV script's own copies on 200 real benchmark rows: the amino-acid
+score dictionary, the window encodings, the k-mers and the tagged corpus are all
+identical, so the external copies were redundant rather than divergent.
+
+`_TRAINING_DATA_CSV` points at the repo's internal training data cache.
 """
 from __future__ import annotations
 
 import sys as _sys
-from pathlib import Path
 
 import gensim
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 from paths import REPO_ROOT  # noqa: E402
 
 
@@ -151,3 +152,48 @@ def load_benchmark() -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
     test_df  = _build_swing_df(test_raw)
     print(f"  Train (SF): {len(train_df)}  Test (VCFP): {len(test_df)}", flush=True)
     return train_df, test_df, sf_proteins
+
+
+def build_wt_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of a SWING-format df with `Mutated_Seq` reverted to wild type.
+
+    Doc2Vec is trained on mutant and wild-type sequences together, so each row
+    needs its WT counterpart. Raises rather than silently correcting when the
+    sequence does not carry the expected mutant residue -- a mismatch means the
+    row's sequence and its `Position`/`After_AA` annotation disagree, which would
+    otherwise produce a quietly wrong WT sequence.
+    """
+    wt_seqs = []
+    for i in df.index:
+        seq   = df.at[i, "Mutated_Seq"]
+        bef   = df.at[i, "Before_AA"]
+        aft   = df.at[i, "After_AA"]
+        pos_0 = int(df.at[i, "Position"]) - 1
+        if seq[pos_0] != aft:
+            raise ValueError(
+                f"After_AA mismatch at index {i}: sequence has {seq[pos_0]!r} "
+                f"at position {pos_0 + 1}, annotation says {aft!r}"
+            )
+        wt_seqs.append(seq[:pos_0] + bef + seq[pos_0 + 1:])
+    out = df.copy()
+    out["Mutated_Seq"] = wt_seqs
+    out["Type"] = "WildType"
+    return out
+
+
+def build_d2v(df_combined: pd.DataFrame):
+    """Train Doc2Vec on a combined mutant+wild-type frame.
+
+    Hyperparameters are upstream SWING's and must not be tuned -- see
+    docs/METHOD_PROVENANCE.md.
+    """
+    from gensim.models.doc2vec import Doc2Vec
+
+    encodings = _get_window_encodings(df_combined)
+    kmers     = _get_kmers(encodings)
+    corpus    = list(_get_corpus(kmers))
+    model = Doc2Vec(vector_size=_D2V_DIM, min_count=1, alpha=_D2V_ALPHA,
+                    dm=_D2V_DM, window=_D2V_WINDOW)
+    model.build_vocab(corpus)
+    model.train(corpus, total_examples=model.corpus_count, epochs=_D2V_EPOCHS)
+    return model

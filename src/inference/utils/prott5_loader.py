@@ -6,13 +6,10 @@ Created on Wed Sep 23 18:33:22 2020
 @author: mheinzinger --> rstewart
 """
 
-import argparse
 import time
-from pathlib import Path
 import torch
 import h5py
 from transformers import T5EncoderModel, T5Tokenizer
-import sys
 
 
 def get_T5_model(model_dir, device, transformer_link = "Rostlab/prot_t5_xl_half_uniref50-enc"):

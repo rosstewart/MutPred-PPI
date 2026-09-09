@@ -37,24 +37,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from scipy.io import loadmat
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
-from torch_geometric.nn import GATConv
 from torch_geometric.utils import dense_to_sparse
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from paths import (  # noqa: E402
-    REPO_ROOT as _REPO_ROOT,
-    WEIGHTS_DIR as _MODEL_WEIGHTS_DIR,
-    DATA_ROOT as _DATA_ROOT,
-    HOME_DIR as _HOME_DIR,
-    REVISIONS_DIR as _REVISIONS_DIR,
-    GCV_RESULTS_DIR as _GCV_RESULTS_DIR,
-    DATA_CACHES_DIR as _DATA_CACHES_DIR,
-    cdhit_binary,
-    cv_reference_dir,
-)
+from evaluation.gcv_common import _compute_class_aucs  # noqa: E402
+from paths import ANNOTATIONS_DIR, REPO_ROOT as _REPO_ROOT, WEIGHTS_DIR as _MODEL_WEIGHTS_DIR, DATA_ROOT as _DATA_ROOT, HOME_DIR as _HOME_DIR, REVISIONS_DIR as _REVISIONS_DIR, DATA_CACHES_DIR as _DATA_CACHES_DIR, cdhit_binary, cv_reference_dir
+from ids import get_gene_name  # noqa: E402  (single definition, see src/ids.py)
 
 _V1_0_SCALER_PATH          = _MODEL_WEIGHTS_DIR / "v1_0" / "mutation_diff_scaler_v1_0.pkl"
 _MEGASCALE_SCALER_PATH     = _MODEL_WEIGHTS_DIR / "mutation_diff_scaler.pkl"
@@ -63,81 +52,14 @@ _MEGASCALE_PRETRAINED_PATH = _MODEL_WEIGHTS_DIR / "MutPred-PPI_stability_pretrai
 _METHOD                    = "interaction_loss"
 
 
-# ── model — verbatim from predictors/mutpredppi.py ────────────────────────────
-
-class GAT_mut_processor(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, output_dim: int = 1,
-                 num_heads: int = 4, mutation_diff_dim: int = 1024):
-        super().__init__()
-        self.mutation_diff_processor = nn.Sequential(
-            nn.Linear(mutation_diff_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 32),
-        )
-        self.complex_gat1 = GATConv(input_dim, hidden_dim, heads=num_heads, concat=True)
-        self.complex_gat2 = GATConv(hidden_dim * num_heads, hidden_dim // 2, heads=1, concat=False)
-        self.binding_predictor = nn.Sequential(
-            nn.Linear(hidden_dim // 2 + 32, 16),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(16, output_dim),
-        )
-
-    def forward(self, x, edge_index, mutation_idx, num_mut_res, mutation_site_diff):
-        if mutation_site_diff.dim() == 1:
-            mutation_site_diff = mutation_site_diff.unsqueeze(0)
-        processed_mut_diff = self.mutation_diff_processor(mutation_site_diff)
-        h = torch.relu(self.complex_gat1(x, edge_index))
-        h = torch.relu(self.complex_gat2(h, edge_index))
-        features_at_mutation = h[mutation_idx:mutation_idx + 1]
-        combined = torch.cat([features_at_mutation, processed_mut_diff], dim=-1)
-        return self.binding_predictor(combined)
-
-
-# ── ablation model variants ───────────────────────────────────────────────────
-
-class GAT_mut_processor_no_gat(nn.Module):
-    """Ablation (2): structural GAT removed — mutation diff processor + predictor only."""
-    def __init__(self, output_dim: int = 1, mutation_diff_dim: int = 1024):
-        super().__init__()
-        self.mutation_diff_processor = nn.Sequential(
-            nn.Linear(mutation_diff_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 32),
-        )
-        self.binding_predictor = nn.Sequential(
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(16, output_dim),
-        )
-
-    def forward(self, x, edge_index, mutation_idx, num_mut_res, mutation_site_diff):
-        if mutation_site_diff.dim() == 1:
-            mutation_site_diff = mutation_site_diff.unsqueeze(0)
-        return self.binding_predictor(self.mutation_diff_processor(mutation_site_diff))
-
-
-class GAT_mut_processor_no_mut(nn.Module):
-    """Ablation (3): mutation diff processor removed — structural GAT + predictor only."""
-    def __init__(self, input_dim: int, hidden_dim: int = 64, output_dim: int = 1,
-                 num_heads: int = 4):
-        super().__init__()
-        self.complex_gat1 = GATConv(input_dim, hidden_dim, heads=num_heads, concat=True)
-        self.complex_gat2 = GATConv(hidden_dim * num_heads, hidden_dim // 2, heads=1, concat=False)
-        self.binding_predictor = nn.Sequential(
-            nn.Linear(hidden_dim // 2, 16),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(16, output_dim),
-        )
-
-    def forward(self, x, edge_index, mutation_idx, num_mut_res, mutation_site_diff):
-        h = torch.relu(self.complex_gat1(x, edge_index))
-        h = torch.relu(self.complex_gat2(h, edge_index))
-        return self.binding_predictor(h[mutation_idx:mutation_idx + 1])
+# ── model ────────────────────────────────────────────────────────────────────
+# Single definition lives in src/model.py; see its docstring for why.
+from model import (  # noqa: E402
+    apply_freeze_strategy,
+    GAT_mut_processor,
+    GAT_mut_processor_no_gat,
+    GAT_mut_processor_no_mut,
+)
 
 
 # ── dataset configuration ─────────────────────────────────────────────────────
@@ -231,13 +153,6 @@ def split_wt_id_underscore(wt_id: str) -> Tuple[str, str]:
         except ValueError:
             continue
     raise ValueError(f"Could not split: {wt_id}")
-
-
-def get_gene_name(gene_and_orf: str) -> str:
-    """Strip numeric ORF suffix: 'BRCA1_1' → 'BRCA1'."""
-    if "_" not in gene_and_orf:
-        return gene_and_orf
-    return "_".join(gene_and_orf.split("_")[:-1])
 
 
 # ── CD-HIT clustering ─────────────────────────────────────────────────────────
@@ -442,7 +357,7 @@ def load_sahni(use_wt_emb: bool = False) -> dict:
     # The interactor is a RefSeq accession but the partner is a gene symbol.
     # C1/C2/C3 asks whether a protein was seen in training, so both sides must
     # live in one namespace: map the interactor to its symbol.
-    with open(str(_HOME_DIR / "sahni" / "refseq_to_symbol.pkl"), "rb") as f:
+    with open(str(ANNOTATIONS_DIR / "refseq_to_symbol.pkl"), "rb") as f:
         refseq_to_symbol = pickle.load(f)
     data["all_pairs"] = [(refseq_to_symbol.get(a, a), b) for a, b in data["all_pairs"]]
     clusters = [str(c) for c in cluster_sequences(data["wt_seqs"])]
@@ -470,7 +385,7 @@ def _load_varchamp1p_raw(use_wt_emb: bool = False) -> dict:
     graph_dir = str(_DATA_ROOT / "varchamp1p" / "af3_graphs")
     with open(str(_DATA_ROOT / "varchamp1p" / "varchamp1p_t5_embs.pkl"), "rb") as f:
         t5 = pickle.load(f)
-    seq_conf = _load_seq_confirmed_set(str(_HOME_DIR / "varchamp1p" / "seq_confirmed_variants.pkl"))
+    seq_conf = _load_seq_confirmed_set(str(ANNOTATIONS_DIR / "varchamp1p" / "seq_confirmed_variants.pkl"))
     # varchamp1p: complex_id is GENE1_orf_GENE2_orf, split at position 1
     emb_dict, len_dict, pair_dict = _build_emb_dict(
         graph_dir, t5,
@@ -488,7 +403,7 @@ def _load_cava_raw(use_wt_emb: bool = False) -> dict:
     graph_dir = str(_DATA_ROOT / "cava" / "af3_graphs")
     with open(str(_DATA_ROOT / "cava" / "cava_t5_embs.pkl"), "rb") as f:
         t5 = pickle.load(f)
-    seq_conf = _load_seq_confirmed_set(str(_HOME_DIR / "cava" / "seq_confirmed_variants.pkl"))
+    seq_conf = _load_seq_confirmed_set(str(ANNOTATIONS_DIR / "cava" / "seq_confirmed_variants.pkl"))
     emb_dict, len_dict, pair_dict = _build_emb_dict(
         graph_dir, t5,
         lambda cid: ("_".join(cid.split("_")[:1]), "_".join(cid.split("_")[1:])),
@@ -567,9 +482,9 @@ def load_sahni_fragoza_varchamp1p_cava(use_wt_emb: bool = False) -> dict:
     vc  = _load_varchamp1p_raw(use_wt_emb=use_wt_emb)
     cava = _load_cava_raw(use_wt_emb=use_wt_emb)
 
-    with open(str(_HOME_DIR / "varchamp1p" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
+    with open(str(ANNOTATIONS_DIR / "varchamp1p" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
         vc_gs2u = pickle.load(f)
-    with open(str(_HOME_DIR / "cava" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
+    with open(str(ANNOTATIONS_DIR / "cava" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
         cava_gs2u = pickle.load(f)
 
     # sahni_fragoza: "A-B" → "A_B"
@@ -614,12 +529,26 @@ def _load_varchamp2026_raw(use_wt_emb: bool = False) -> dict:
     _CSV      = str(_REVISIONS_DIR / "sfvc2026_labeled_data.csv")
     _T5_PKL   = str(_REVISIONS_DIR / "all_labeled_prott5_embeddings.pkl")
     _GRAPH_DIR = str(_REVISIONS_DIR / "graphs")
+    # Secondary sources, mirroring _load_varchamp_pooled_raw (see _find_pair_graph).
+    # MEASURED: on the current data this changes nothing -- 1487 variants both
+    # before and after, 0 gained, 0 lost.  It is kept only so the two VarChAMP
+    # loaders have identical lookup semantics; without it, data landing in the
+    # pooled dir would be silently dropped here but not there.  The ~54 VarChAMP
+    # variants the blind test scored and this loader still omits are gated by one
+    # of the two length checks below, not by graph or embedding lookup.
+    _POOLED_GRAPH_DIR = str(_DATA_ROOT / "varchamp_pooled" / "af3_graphs")
+    _POOLED_T5_PKL    = str(_DATA_ROOT / "varchamp_pooled" / "varchamp_pooled_t5_embs.pkl")
 
     df = pd.read_csv(_CSV)
     vc_df = df[df["dataset"].str.contains("VarChAMP", na=False)]
 
     with open(_T5_PKL, "rb") as f:
-        t5 = pickle.load(f)
+        t5_vc2026 = pickle.load(f)
+    try:
+        with open(_POOLED_T5_PKL, "rb") as f:
+            t5_pool = pickle.load(f)
+    except FileNotFoundError:
+        t5_pool = {}
 
     data: dict = {k: [] for k in _DATA_KEYS}
 
@@ -630,17 +559,19 @@ def _load_varchamp2026_raw(use_wt_emb: bool = False) -> dict:
         perturbed = bool(row["perturbed"])
         mut_idx   = int("".join(c for c in mut_1b if c.isdigit())) - 1  # 0-based
 
-        fwd = os.path.join(_GRAPH_DIR, f"{inter}-{partner}.mat")
-        rev = os.path.join(_GRAPH_DIR, f"{partner}-{inter}.mat")
-        if os.path.exists(fwd):
-            mat_path, reversed_graph = fwd, False
-        elif os.path.exists(rev):
-            mat_path, reversed_graph = rev, True
-        else:
+        mat_path, reversed_graph, _src = _find_pair_graph(
+            inter, partner, _POOLED_GRAPH_DIR, _GRAPH_DIR)
+        if mat_path is None:
             continue
 
         vt_key = f"{inter}_{mut_1b}"
-        if inter not in t5 or vt_key not in t5 or partner not in t5:
+        # Embeddings may live in either pkl; pick whichever has all three keys.
+        t5 = None
+        for cand in (t5_vc2026, t5_pool):
+            if inter in cand and vt_key in cand and partner in cand:
+                t5 = cand
+                break
+        if t5 is None:
             continue
 
         mat = loadmat(mat_path)
@@ -648,12 +579,7 @@ def _load_varchamp2026_raw(use_wt_emb: bool = False) -> dict:
         G = sp.csr_matrix(mat["G"]).toarray()
         nrr = int(mat["NRR"].flat[0])  # residues in chain A of the stored .mat
 
-        if reversed_graph:
-            # stored as (partner, inter); permute so interactor is chain A
-            n_total = G.shape[0]
-            perm = list(range(nrr, n_total)) + list(range(nrr))
-            G = G[np.ix_(perm, perm)]
-            wt_seq_full = wt_seq_full[nrr:] + wt_seq_full[:nrr]
+        G, wt_seq_full = _orient_graph(G, wt_seq_full, nrr, reversed_graph)
 
         wt_emb   = t5[inter]    # (L_inter, 1024)
         vt_emb   = t5[vt_key]   # (L_inter, 1024)
@@ -702,6 +628,7 @@ def _load_varchamp2026_raw(use_wt_emb: bool = False) -> dict:
             data["pos_labels"].append([])
             data["neg_labels"].append([mut_idx])
 
+    print(f"  _load_varchamp2026_raw: {len(data['all_vt_ids'])} variants loaded", flush=True)
     return data
 
 
@@ -724,6 +651,44 @@ def load_sahni_fragoza_varchamp_full(use_wt_emb: bool = False) -> dict:
     return data
 
 
+def _find_pair_graph(inter: str, partner: str, pooled_dir: str, vc2026_dir: str):
+    """Locate a complex's contact graph, trying both dirs and both orientations.
+
+    Returns (path, reversed_flag, source) or (None, False, None).
+
+    The pooled loader used to try `{inter}_{partner}.mat` in the pooled directory
+    only.  The VCFP blind test has always tried four locations plus a cross-pkl
+    ProtT5 fallback, so it scored 715 rows -- 658 tagged VarChAMP_pooled, 57
+    VarChAMP -- whose AF3 graph exists only under `2026/graphs/`.  Those rows were
+    therefore in the blind test but absent from the dataset.  Mirroring the
+    lookup here closes that gap.
+    """
+    cands = [
+        (os.path.join(vc2026_dir, f"{inter}-{partner}.mat"), False, "vc2026"),
+        (os.path.join(vc2026_dir, f"{partner}-{inter}.mat"), True,  "vc2026"),
+        (os.path.join(pooled_dir, f"{inter}_{partner}.mat"), False, "pooled"),
+        (os.path.join(pooled_dir, f"{partner}_{inter}.mat"), True,  "pooled"),
+    ]
+    for path, rev, src in cands:
+        if os.path.exists(path):
+            return path, rev, src
+    return None, False, None
+
+
+def _orient_graph(G, wt_seq_full: str, nrr: int, reversed_graph: bool):
+    """Rotate a reversed graph so the interactor is chain A.
+
+    When the stored graph has the partner first, both the adjacency matrix and
+    the concatenated sequence must be rotated by `nrr`, or the mutation index
+    would address the wrong chain.
+    """
+    if not reversed_graph:
+        return G, wt_seq_full
+    n_total = G.shape[0]
+    perm = list(range(nrr, n_total)) + list(range(nrr))
+    return G[np.ix_(perm, perm)], wt_seq_full[nrr:] + wt_seq_full[:nrr]
+
+
 def _load_varchamp_pooled_raw(use_wt_emb: bool = False) -> dict:
     """Load VarChAMP_pooled variants from training_data.csv.
 
@@ -734,12 +699,20 @@ def _load_varchamp_pooled_raw(use_wt_emb: bool = False) -> dict:
     _CSV      = str(_DATA_CACHES_DIR / "training_data_internal.csv")
     _T5_PKL   = str(_DATA_ROOT / "varchamp_pooled" / "varchamp_pooled_t5_embs.pkl")
     _GRAPH_DIR = str(_DATA_ROOT / "varchamp_pooled" / "af3_graphs")
+    # Secondary sources, mirroring the blind test's fallbacks (see _find_pair_graph).
+    _VC2026_GRAPH_DIR = str(_REVISIONS_DIR / "graphs")
+    _VC2026_T5_PKL    = str(_REVISIONS_DIR / "all_labeled_prott5_embeddings.pkl")
 
     df = pd.read_csv(_CSV)
     pool_df = df[df["dataset"].str.contains("VarChAMP_pooled", na=False)].copy()
 
     with open(_T5_PKL, "rb") as f:
-        t5 = pickle.load(f)
+        t5_pool = pickle.load(f)
+    try:
+        with open(_VC2026_T5_PKL, "rb") as f:
+            t5_vc2026 = pickle.load(f)
+    except FileNotFoundError:
+        t5_vc2026 = {}
 
     data: dict = {k: [] for k in _DATA_KEYS}
 
@@ -750,18 +723,26 @@ def _load_varchamp_pooled_raw(use_wt_emb: bool = False) -> dict:
         perturbed = bool(row["perturbed"])
         mut_idx   = int("".join(c for c in mut_1b if c.isdigit())) - 1  # 0-based
 
-        mat_path = os.path.join(_GRAPH_DIR, f"{inter}_{partner}.mat")
-        if not os.path.exists(mat_path):
+        mat_path, reversed_graph, _src = _find_pair_graph(
+            inter, partner, _GRAPH_DIR, _VC2026_GRAPH_DIR)
+        if mat_path is None:
             continue
 
         vt_key = f"{inter}_{mut_1b}"
-        if inter not in t5 or vt_key not in t5 or partner not in t5:
+        # Embeddings may live in either pkl; pick whichever has all three keys.
+        t5 = None
+        for cand in (t5_pool, t5_vc2026):
+            if inter in cand and vt_key in cand and partner in cand:
+                t5 = cand
+                break
+        if t5 is None:
             continue
 
         mat = loadmat(mat_path)
         wt_seq_full = "".join(mat["L"])
         G = sp.csr_matrix(mat["G"]).toarray()
         nrr = int(mat["NRR"].flat[0])
+        G, wt_seq_full = _orient_graph(G, wt_seq_full, nrr, reversed_graph)
 
         wt_emb   = t5[inter]    # (L_inter, 1024)
         vt_emb   = t5[vt_key]   # (L_inter, 1024)
@@ -831,19 +812,56 @@ def load_sahni_fragoza_varchamp_pooled(use_wt_emb: bool = False) -> dict:
 
 
 def load_sahni_fragoza_varchamp_full_pooled(use_wt_emb: bool = False) -> dict:
-    """sahni_fragoza + VarChAMP2026 + VarChAMP1p + CAVA + VarChAMP_pooled."""
+    """sahni_fragoza + VarChAMP2026 + VarChAMP1p + CAVA + VarChAMP_pooled.
+
+    Every source is normalized to UniProt_UniProt complex ids before merging, so
+    the dataset lives in a single ID namespace.
+
+    This previously remapped only `sf`, leaving VC1p and CAVA in gene-symbol+ORF
+    space (`RAD51D_7201_CCNL1_5716`) while everything else was UniProt
+    (`Q5TD97_O96015`) -- 2,936 of 22,321 rows, 13.2%.  Downstream code that works
+    in UniProt space, notably the VCFP blind test, could not match those rows and
+    silently dropped them, which is why a per-method
+    `supplement_*_vc1pcava.py` + merge + restratify pipeline existed to bolt them
+    back on afterwards.  Normalizing here removes the split namespace and that
+    entire workaround.
+
+    Consequence, measured rather than assumed: 1,028 of the 2,936 remapped rows
+    turn out to be the *same* complex+variant as an existing UniProt row, i.e.
+    duplicate measurements the old code could not see because the two names
+    looked distinct.  `_dedup_and_merge` now collapses them, so n drops
+    22,321 -> ~21,293 and the canonical ordering, clusters, splits and every
+    SFVCFP result change accordingly.  See docs/METHOD_PROVENANCE.md.
+    """
     sf   = load_sahni_fragoza(use_wt_emb=use_wt_emb)
     vc26 = _load_varchamp2026_raw(use_wt_emb=use_wt_emb)
     vc1p = _load_varchamp1p_raw(use_wt_emb=use_wt_emb)
     cava = _load_cava_raw(use_wt_emb=use_wt_emb)
     pool = _load_varchamp_pooled_raw(use_wt_emb=use_wt_emb)
 
+    with open(str(ANNOTATIONS_DIR / "varchamp1p" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
+        vc_gs2u = pickle.load(f)
+    with open(str(ANNOTATIONS_DIR / "cava" / "gene_symbol_to_uniprot.pkl"), "rb") as f:
+        cava_gs2u = pickle.load(f)
+
+    # sahni_fragoza: "A-B" → "A_B"
     sf_new_wt, sf_new_pairs = [], []
     for wt_id in sf["all_wt_ids"]:
         a, b = split_complex_id_hyphen(wt_id)
         sf_new_wt.append(f"{a}_{b}")
         sf_new_pairs.append((a, b))
     _remap_vt_ids(sf, sf_new_wt, sf_new_pairs)
+
+    # varchamp1p / cava: gene+orf → UniProt_UniProt (same mapping and same code
+    # as load_sahni_fragoza_varchamp1p_cava, which has always done this).
+    for src, gs2u in ((vc1p, vc_gs2u), (cava, cava_gs2u)):
+        new_wt, new_pairs = [], []
+        for wt_id in src["all_wt_ids"]:
+            a, b = split_wt_id_underscore(wt_id)
+            ua, ub = gs2u[get_gene_name(a)], gs2u[get_gene_name(b)]
+            new_wt.append(f"{ua}_{ub}")
+            new_pairs.append((ua, ub))
+        _remap_vt_ids(src, new_wt, new_pairs)
 
     data = _dedup_and_merge([sf, vc26, vc1p, cava, pool], drop_conflicts=True)
     data["clusters"] = [str(c) for c in cluster_sequences(data["wt_seqs"])]
@@ -856,7 +874,7 @@ def load_sahni_varchamp1p_cava(use_wt_emb: bool = False) -> dict:
     vc    = _load_varchamp1p_raw(use_wt_emb=use_wt_emb)
     cava  = _load_cava_raw(use_wt_emb=use_wt_emb)
 
-    with open(str(_HOME_DIR / "sahni" / "refseq_to_symbol.pkl"), "rb") as f:
+    with open(str(ANNOTATIONS_DIR / "refseq_to_symbol.pkl"), "rb") as f:
         refseq_to_symbol = pickle.load(f)
 
     # For dedup comparison: convert sahni NP_ → gene_symbol (NP_ ids never match
@@ -1136,36 +1154,7 @@ def train_fold(
         model = model.to(device)
 
         # ── freeze strategy ────────────────────────────────────────────────
-        if ablation in ("full", "megascale"):
-            # Freeze the large embedding-projection layer; fine-tune everything else.
-            for param in model.parameters():
-                param.requires_grad = False
-            for param in model.mutation_diff_processor[-1].parameters():
-                param.requires_grad = True
-            for param in model.binding_predictor.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat1.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat2.parameters():
-                param.requires_grad = True
-        elif ablation == "megascale_freeze_diff":
-            # Keep the entire learned mutation representation frozen; only adapt
-            # the structural (GAT) and prediction layers.
-            for param in model.parameters():
-                param.requires_grad = False
-            for param in model.binding_predictor.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat1.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat2.parameters():
-                param.requires_grad = True
-        elif ablation == "megascale_head":
-            # Freeze everything; only retrain the classification head.
-            for param in model.parameters():
-                param.requires_grad = False
-            for param in model.binding_predictor.parameters():
-                param.requires_grad = True
-        # full_all / megascale_all / scratch / wt-emb: all params trainable
+        apply_freeze_strategy(model, ablation)
 
     # AMP GradScaler (no-op when use_amp=False)
     amp_scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -1327,52 +1316,9 @@ def train_fold(
 
 # ── AUC reporting ─────────────────────────────────────────────────────────────
 
-def _compute_class_aucs(
-    all_preds: np.ndarray,
-    all_labels: np.ndarray,
-    pair_test_classes: np.ndarray,
-    fold_n_test: list,
-) -> Tuple[list, np.ndarray, dict]:
-    micro_auc = []
-    for ptc in (1, 2, 3):
-        mask = pair_test_classes == ptc
-        print(f"  c{ptc}: {mask.sum()} preds", flush=True)
-        if mask.sum() > 0 and len(np.unique(all_labels[mask])) > 1:
-            micro_auc.append(roc_auc_score(all_labels[mask], all_preds[mask]))
-        else:
-            micro_auc.append(float("nan"))
-
-    class_auc_avgs = np.zeros(3)
-    class_counts   = np.zeros(3, dtype=int)
-    fold_results: dict = {}
-
-    curr_idx = 0
-    for fold, n_test in enumerate(fold_n_test):
-        preds  = all_preds[curr_idx:curr_idx + n_test]
-        labels = all_labels[curr_idx:curr_idx + n_test]
-        ptcs   = pair_test_classes[curr_idx:curr_idx + n_test]
-        curr_idx += n_test
-
-        fold_res = {}
-        print(f"\nfold {fold}", flush=True)
-        for ptc in (1, 2, 3):
-            mask  = ptcs == ptc
-            cp, cl = preds[mask], labels[mask]
-            n_pos, n_neg = int((cl == 1).sum()), int((cl == 0).sum())
-            fold_res[f"class_{ptc}"] = {"preds": cp, "labels": cl, "auc": None}
-            if n_pos > 0 and n_neg > 0:
-                auc = roc_auc_score(cl, cp)
-                fold_res[f"class_{ptc}"]["auc"] = auc
-                class_auc_avgs[ptc - 1] += len(cp) * auc
-                class_counts[ptc - 1]   += len(cp)
-                print(f"  c{ptc} (n={len(cp)}): AUC-ROC={auc:.4f}", flush=True)
-            else:
-                print(f"  c{ptc} (n={len(cp)}): SKIPPED (pos={n_pos}, neg={n_neg})",
-                      flush=True)
-        fold_results[fold] = fold_res
-
-    macro_auc = np.where(class_counts > 0, class_auc_avgs / class_counts, np.nan)
-    return micro_auc, macro_auc, fold_results
+# _compute_class_aucs now lives in gcv_common (imported below). The copy that
+# was here masked no NaNs at all; the shared version does. Verified equivalent
+# on all historical outputs (zero NaN predictions).
 
 
 # ── main GCV loop — mirrors esignet_gcv_iter.py ───────────────────────────────

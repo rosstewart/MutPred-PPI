@@ -27,15 +27,11 @@ from pathlib import Path
 import numpy as np
 
 _ANALYSIS_DIR = Path(__file__).resolve().parent  # src/analysis
-sys.path.insert(0, str(_ANALYSIS_DIR))
 
-from merge_vc1pcava_into_main import merge_method              # noqa: E402
-from restratify_vcfp_blind_test import restratify_one_method   # noqa: E402
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 from paths import VCFP_RESULTS_DIR  # noqa: E402
 
 
@@ -176,15 +172,14 @@ def main() -> None:
     method = run(Path(args.csv), dry_run=args.dry_run)
 
     if method is None:
-        print("\nNo supplement entries written — skipping merge/restratify.")
+        print("\nNo entries written.")
         return
 
-    print(f"\n=== Merging '{method}' vc1pcava supplement into main VCFP arrays ===")
-    merge_method(method, dry_run=args.dry_run)
-
-    print(f"\n=== Restratifying '{method}' C1/C2/C3 classification ===")
-    restratify_one_method(method, dry_run=args.dry_run)
-
+    # The merge + restratify steps that used to run here are obsolete.  Every row
+    # now carries its blind_test_class in datasets/sfvcfp_rows.csv.gz, and the
+    # canonical class assignment was verified identical to what restratify wrote
+    # (16,277/16,277).  Scores are aligned to canonical rows by
+    # repro_test/map_old_vcfp_preds_to_canonical.py instead.
     print("\nDone.")
 
 

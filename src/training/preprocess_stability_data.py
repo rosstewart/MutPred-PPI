@@ -10,10 +10,10 @@ normalises by replacing '|' -> ':' in all PDB lookups.
 
 Usage (MegaScale):
     python preprocess_stability_data.py \\
-        --csv     /data/tools/SPURS/data/dataset/megascale/Tsuboyama2023_Dataset2_Dataset3_20230416.csv \\
-        --pdb-dir /data/tools/SPURS/data/dataset/megascale/AlphaFold_model_PDBs \\
-        --splits  /data/tools/SPURS/data/dataset/megascale/mega_splits.pkl \\
-        --outdir  /data/ross/ppi_lossgain/interaction_loss/megascale_preprocessed \\
+        --csv     /path/to/tools/SPURS/data/dataset/megascale/Tsuboyama2023_Dataset2_Dataset3_20230416.csv \\
+        --pdb-dir /path/to/tools/SPURS/data/dataset/megascale/AlphaFold_model_PDBs \\
+        --splits  /path/to/tools/SPURS/data/dataset/megascale/mega_splits.pkl \\
+        --outdir  $MUTPRED_DATA_ROOT/megascale_preprocessed \\
         --device  cuda:0 --n-jobs 16
 
 Usage (generic, no splits pkl — random 80/10/10 split):

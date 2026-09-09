@@ -24,7 +24,7 @@ import pickle
 import random
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import joblib
 import numpy as np
@@ -36,9 +36,8 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.utils import dense_to_sparse
 
 # ── import data loading infrastructure from the CV script ────────────────────
-_EVAL_DIR = Path(__file__).resolve().parent.parent / "evaluation"
-sys.path.insert(0, str(_EVAL_DIR))
-from mutpred_ppi_cv import (  # noqa: E402
+from evaluation.mutpred_ppi_cv import (  # noqa: E402
+    apply_freeze_strategy,
     DATASET_CONFIGS,
     load_dataset,
     shuffle_data,
@@ -93,31 +92,7 @@ def _build_model(ablation: str, input_dim: int, device: torch.device) -> nn.Modu
             _load_ckpt(_MEGASCALE_PRETRAINED_PATH, model, device)
         model = model.to(device)
 
-        if ablation in ("full", "megascale"):
-            for param in model.parameters():
-                param.requires_grad = False
-            for param in model.mutation_diff_processor[-1].parameters():
-                param.requires_grad = True
-            for param in model.binding_predictor.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat1.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat2.parameters():
-                param.requires_grad = True
-        elif ablation == "megascale_freeze_diff":
-            for param in model.parameters():
-                param.requires_grad = False
-            for param in model.binding_predictor.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat1.parameters():
-                param.requires_grad = True
-            for param in model.complex_gat2.parameters():
-                param.requires_grad = True
-        elif ablation == "megascale_head":
-            for param in model.parameters():
-                param.requires_grad = False
-            for param in model.binding_predictor.parameters():
-                param.requires_grad = True
+        apply_freeze_strategy(model, ablation)
 
     return model
 

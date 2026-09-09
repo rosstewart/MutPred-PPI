@@ -21,14 +21,12 @@ import gzip
 import pickle
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT  # noqa: E402
 
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -52,33 +50,48 @@ SFVCFP_TSV = {
 }
 
 CLINVAR_PKL = {
-    "pathogenic": _HOME / "clinvar" / "pathogenic_dirbind_variant_subset.pkl",
-    "benign":     _HOME / "clinvar" / "benign_dirbind_variant_subset.pkl",
-    "vus":        _HOME / "clinvar" / "vus_dirbind_variant_subset.pkl",
+    "pathogenic": ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl",
+    "benign":     ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl",
+    "vus":        ANNOTATIONS_DIR / "clinvar" / "vus_dirbind_variant_subset.pkl",
 }
-GNOMAD_AF_TSV      = _BASE / "gnomad" / "gnomad_allele_frequencies.tsv"
-BENIGN_AF_TSV      = Path("/data/ross/clinvar/benign_allele_frequencies.tsv")
+GNOMAD_AF_TSV      = ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv"
+BENIGN_AF_TSV      = ANNOTATIONS_DIR / "benign_allele_frequencies.tsv"
 RARE_BLB_AF_THRESH = 0.01
-ASD_SUBSET_PKL     = _HOME / "autism" / "variant_subset.pkl"
-NDD_LABEL_PKL   = _HOME / "autism" / "variant_label_dict.pkl"
+ASD_SUBSET_PKL     = ANNOTATIONS_DIR / "autism" / "variant_subset.pkl"
+NDD_LABEL_PKL   = ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl"
 
 # COSMIC (only used with --include-cosmic)
-COSMIC_ONCO_TSG_PKL = _BASE / "cosmic_mutations" / "onco_tsg_dict.pkl"
-COSMIC_VT_SITE_PKL  = _BASE / "cosmic" / "vt_to_tumor_site.pkl"
+COSMIC_ONCO_TSG_PKL = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
+COSMIC_VT_SITE_PKL  = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
 
 
 def load_tsv(path: Path) -> pd.DataFrame:
+    """Read a prediction TSV into explicit interactor / partner / variant columns.
+
+    Prefers explicit `interactor` and `partner` columns. Falls back to splitting
+    the legacy `complex_id` composite for TSVs written before the schema change;
+    that branch exists only to keep already-published artifacts readable and
+    should go once they are regenerated.
+    """
     if not path.exists():
         print(f"  [skip] {path.name} not found")
         return pd.DataFrame(columns=["interactor_uniprot", "variant", "partner_uniprot", "score"])
     df = pd.read_csv(path, sep="\t")
-    # complex_id is {interactor}_{partner}; split on last underscore only if
-    # interactor has a hyphen (isoform), else on first underscore.
-    # UniProt IDs never contain underscore, so any _ is the delimiter.
-    split = df["complex_id"].str.split("_", n=1, expand=True)
-    df["interactor_uniprot"] = split[0]
-    df["partner_uniprot"] = split[1]
-    df = df.drop(columns=["complex_id"])
+
+    if {"interactor", "partner"}.issubset(df.columns):
+        df["interactor_uniprot"] = df["interactor"]
+        df["partner_uniprot"] = df["partner"]
+    else:
+        # `complex_id` is '{interactor}_{partner}'. Split on the FIRST underscore:
+        # UniProt accessions never contain one, so it is the unambiguous
+        # delimiter even for isoforms like 'O14787-2', whose separator is '-'.
+        # (A previous comment here described splitting on the last underscore for
+        # isoforms; the code never did that, and doing so would be wrong.)
+        split = df["complex_id"].str.split("_", n=1, expand=True)
+        df["interactor_uniprot"] = split[0]
+        df["partner_uniprot"] = split[1]
+        df = df.drop(columns=["complex_id"])
+
     return df[["interactor_uniprot", "variant", "partner_uniprot", "score"]]
 
 

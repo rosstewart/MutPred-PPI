@@ -9,7 +9,7 @@ into either autosomal bucket). AD-only is defined analogously. Genes with both a
 AR and an AD curation (for different diseases) are excluded from both sets.
 
 Input:
-    /data/ross/ppi_lossgain/interaction_loss/ClinGen_MOI.csv
+    $MUTPRED_DATA_ROOT/ClinGen_MOI.csv
     Curated per: Chen Y, Fayer S, Jain S, Benazouz M, Sverchkov Y, Stone J, Sharma H,
     Bergquist T, Stewart R, Mooney SD, Craven M, Radivojac P, Starita LM, Fowler DM,
     Pejaver V. Gene- and domain-aware calibration increases the clinical utility of
@@ -17,7 +17,7 @@ Input:
     doi: 10.64898/2026.02.17.706269. PMID: 41756877; PMCID: PMC12934735.
 
 Output:
-    /data/ross/ppi_lossgain/interaction_loss/clingen_ar_ad_uniprot_sets.pkl
+    $MUTPRED_DATA_ROOT/clingen_ar_ad_uniprot_sets.pkl
     {"AR": set[uniprot_str], "AD": set[uniprot_str]}
 
 Usage:
@@ -34,15 +34,14 @@ import pandas as pd
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, DATA_ROOT  # noqa: E402
 
 
 _BASE = DATA_ROOT
-CLINGEN_CSV       = _BASE / "ClinGen_MOI.csv"
+CLINGEN_CSV       = ANNOTATIONS_DIR / "ClinGen_MOI.csv"
 GENE_TO_UNIPROT    = _BASE / "cosmic_mutations" / "gene_symbol_to_uniprot.pkl"
-UNIPROT_TO_GENE_TSV = _BASE / "gnomad" / "gnomad_uniprot_to_gene.tsv"
-OUT_PKL            = _BASE / "clingen_ar_ad_uniprot_sets.pkl"
+UNIPROT_TO_GENE_TSV = ANNOTATIONS_DIR / "gnomad_uniprot_to_gene.tsv"
+OUT_PKL            = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
 
 
 def load_gene_moi(csv_path: Path) -> dict[str, set[str]]:

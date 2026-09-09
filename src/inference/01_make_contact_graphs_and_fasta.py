@@ -9,10 +9,8 @@ Usage:
     python 01_make_contact_graphs_and_fasta.py <working_dir> <mmcif_dir> <variants_file> <n_jobs>
 """
 
-import sys
 import os
 import glob
-import pickle
 import argparse
 import numpy as np
 import scipy.sparse as sp

@@ -32,7 +32,10 @@ main.tex
 supplement.tex
 ANALYSIS_STATUS.md
 REPRODUCIBILITY.md
-run_*.sh
+# Root-anchored: these are the ad hoc drivers at the repo root.  Unanchored,
+# this also swallowed examples/*/run_example.sh -- the exact file both quickstart
+# READMEs tell the reader to run.
+/run_*.sh
 
 # Generated figure images (symlinks or PNGs)
 figures/*.png
@@ -51,11 +54,14 @@ archive/
 # Internal Zenodo packaging checklist (not for public docs/)
 ZENODO_CHECKLIST.md
 
-# Example CIF (large binary — download from Zenodo)
-example/af3_models/
-
-# Figures
-figures/
-
 # Reproducibility test scratch (generated)
 repro_test/
+
+# Symlinks to large machine-local data (scripts/link_external.sh)
+external/
+archive/
+figures/
+brca1/
+brca1_extra/
+scripts/
+*.egg-info/

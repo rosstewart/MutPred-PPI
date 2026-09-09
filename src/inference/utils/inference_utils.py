@@ -2,18 +2,15 @@ from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 import h5py
-import os, sys
-import subprocess
+import os
 import numpy as np
 import pickle
 from scipy.io import loadmat
 import scipy.sparse as sp
 import glob
 import h5py
-import pickle
 import torch
 from .model_loader import get_models, model_predict
-import random
 import tempfile
 import joblib # for mutation diff scaler
 

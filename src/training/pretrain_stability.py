@@ -27,42 +27,17 @@ import torch
 from preprocess_stability_data import expand_emb
 import torch.nn as nn
 import torch.optim as optim
-from torch_geometric.nn import GATConv
 from torch_geometric.utils import dense_to_sparse
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
-# ── model — verbatim from mutpred_ppi_gcv_iter.py ────────────────────────────
+# ── model ────────────────────────────────────────────────────────────────────
+# Single definition lives in src/model.py; see its docstring for why.
 
-class GAT_mut_processor(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, output_dim: int = 1,
-                 num_heads: int = 4, mutation_diff_dim: int = 1024):
-        super().__init__()
-        self.mutation_diff_processor = nn.Sequential(
-            nn.Linear(mutation_diff_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 32),
-        )
-        self.complex_gat1 = GATConv(input_dim, hidden_dim, heads=num_heads, concat=True)
-        self.complex_gat2 = GATConv(hidden_dim * num_heads, hidden_dim // 2, heads=1, concat=False)
-        self.binding_predictor = nn.Sequential(
-            nn.Linear(hidden_dim // 2 + 32, 16),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(16, output_dim),
-        )
-
-    def forward(self, x, edge_index, mutation_idx, num_mut_res, mutation_site_diff):
-        if mutation_site_diff.dim() == 1:
-            mutation_site_diff = mutation_site_diff.unsqueeze(0)
-        processed_mut_diff = self.mutation_diff_processor(mutation_site_diff)
-        h = torch.relu(self.complex_gat1(x, edge_index))
-        h = torch.relu(self.complex_gat2(h, edge_index))
-        features_at_mutation = h[mutation_idx:mutation_idx + 1]
-        combined = torch.cat([features_at_mutation, processed_mut_diff], dim=-1)
-        return self.binding_predictor(combined)
+import sys as _sys
+from pathlib import Path as _Path
+from model import GAT_mut_processor  # noqa: E402
 
 
 # ── training ──────────────────────────────────────────────────────────────────

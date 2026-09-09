@@ -1,164 +1,191 @@
 #!/usr/bin/env python3
-"""
-AlphaFold3 Input Preprocessing
-Generate JSON input files for AlphaFold3 from FASTA files and variant triplet TSV.
-Author: Ross Stewart, September 2025
+"""AlphaFold3 input generation.
 
-Usage:
-    python 00_make_af3_input_file.py <fasta_file> <triplet_tsv> <output_directory>
+Emits one JSON per unordered protein pair, in either of the two AlphaFold3 input
+dialects:
+
+  --format local   (default)  the open-source AlphaFold3 executable
+      {"name", "modelSeeds": [...],
+       "sequences": [{"protein": {"sequence": ..., "id": "A"}}, ...]}
+      `id` may be a bare string or a list; both are accepted by AF3. This is the
+      format `run_af3_ross4.sh` consumes.
+
+  --format server             the AlphaFold Server web UI
+      {"name", "modelSeeds": [...],
+       "sequences": [{"proteinChain": {"sequence": ..., "count": 1}}, ...]}
+      Note the different chain key (`proteinChain`) and the use of `count`
+      instead of `id`. A file in this dialect will NOT run under the local
+      executable, and vice versa.
+
+Two input modes:
+
+  1. FASTA + triplet TSV (the original interface)
+         00_make_af3_json_input.py <fasta> <triplets.tsv> <out_dir>
+  2. A single CSV carrying sequences inline (the 090826 mapping layout)
+         00_make_af3_json_input.py --csv rows.csv <out_dir>
+     Required columns: interactor, partner, interactor_sequence, partner_sequence
+
+Non-standard residues are substituted rather than rejected (see NONSTANDARD_AA);
+AF3 accepts only the 20 standard letters inside a `sequence` string.
+
+Author: Ross Stewart, September 2025
 """
 
 import argparse
+import csv
 import json
 import os
 import sys
-import csv
+
 from Bio import SeqIO
+
+VALID_AAS = set("ACDEFGHIKLMNPQRSTVWY")
+
+# AF3 rejects anything outside the 20 standard letters in a `sequence` string.
+# Substitute the chemically closest standard residue instead of dropping the
+# complex: U (selenocysteine) is cysteine with Se in place of S, and O
+# (pyrrolysine) is a lysine derivative. Both are structurally near-identical to
+# their replacement at the resolution AF3 models.
+NONSTANDARD_AA = {"U": "C", "O": "K"}
+# Genuinely unknown/ambiguous codes have no sensible substitute.
+UNKNOWN_AA = set("BJXZ")
+
+
+def normalize_sequence(uid, seq):
+    """Upper-case, substitute known non-standard residues, reject the rest."""
+    seq = seq.upper()
+    subs = {}
+    for src, dst in NONSTANDARD_AA.items():
+        if src in seq:
+            subs[src] = (dst, seq.count(src))
+            seq = seq.replace(src, dst)
+    bad = set(seq) - VALID_AAS
+    if bad:
+        raise ValueError(f"{uid}: unsupported residues {sorted(bad)}")
+    if subs:
+        detail = ", ".join(f"{s}->{d} x{n}" for s, (d, n) in subs.items())
+        print(f"  {uid}: substituted {detail}")
+    return seq
+
+
+def pair_name(id_a, id_b):
+    """`{A}__{B}`, with accessions left exactly as UniProt writes them.
+
+    The previous scheme joined the pair with `-` and so had to rewrite isoform
+    hyphens as underscores, turning `O14787-2` into `O14787_2` and making
+    `o14787_2-q13207` impossible to split back into two accessions. `__` needs no
+    such rewrite: no accession in the namespace contains an underscore, so the
+    delimiter stays unambiguous even for isoforms and for RefSeq-style ids.
+    """
+    return f"{id_a}__{id_b}"
 
 
 def parse_fasta(fasta_file):
-    """Parse FASTA file and return dictionary of all sequences."""
     sequences = {}
-    
     for record in SeqIO.parse(fasta_file, "fasta"):
-        seq_id = record.id.split('|')[0]
-        seq = str(record.seq).upper()
-        
-        # Check that IDs don't contain hyphens (reserved for complex naming)
-        if '-' in seq_id:
-            raise ValueError(f"Sequence ID '{seq_id}' cannot contain hyphens (-)")
-        
-        # Sequence validation
-        valid_aas = set('ACDEFGHIKLMNPQRSTVWY')
-        invalid_chars = set(seq) - valid_aas
-        if invalid_chars:
-            raise ValueError(f"Sequence {seq_id} contains invalid characters: {invalid_chars}")
-        
-        sequences[seq_id] = seq
-    
+        seq_id = record.id.split("|")[0]
+        sequences[seq_id] = normalize_sequence(seq_id, str(record.seq))
     return sequences
 
 
 def parse_triplet_tsv(tsv_file):
-    """Parse TSV file containing triplets (id_a, variant, id_b)."""
-    complex_ids = set()
-    
-    with open(tsv_file, 'r') as f:
-        reader = csv.reader(f, delimiter='\t')
-        
-        for row in reader:
+    pairs = set()
+    with open(tsv_file) as f:
+        for row in csv.reader(f, delimiter="\t"):
             if len(row) >= 3:
-                id_a, variant, id_b = row[0], row[1], row[2]
-                # normalize pair order to ensure (A,B) and (B,A) are treated as same
-                pair = tuple(sorted([id_a, id_b]))
-                complex_ids.add(pair)
-    
-    return complex_ids
+                pairs.add(tuple(sorted([row[0], row[2]])))
+    return pairs
 
 
-def create_af3_json(id_a, seq_a, id_b, seq_b):
-    """Create AlphaFold3 JSON input structure."""
-    complex_id = f"{id_a}-{id_b}"
-    
-    data = {
-        "name": complex_id,
-        "modelSeeds": [1],  # Single seed (5 samples) for speed
-        "sequences": [
-            {
-                "protein": {
-                    "sequence": seq_a,
-                    "id": "A"
-                }
-            },
-            {
-                "protein": {
-                    "sequence": seq_b,
-                    "id": "B"
-                }
-            }
-        ]
-    }
-    
-    return data
+def parse_rows_csv(csv_file):
+    """Read a rows CSV with sequences inline. Returns (sequences, pairs)."""
+    import pandas as pd
+    need = ["interactor", "partner", "interactor_sequence", "partner_sequence"]
+    df = pd.read_csv(csv_file, usecols=need)
+    sequences, pairs = {}, set()
+    for a, b, sa, sb in df.itertuples(index=False):
+        # Keyed on the accession exactly as given -- do NOT canonicalise a
+        # trailing "-1". The 090826 mapping keeps a suffix only where the
+        # isoform sequence genuinely differs, and both `Q9BRI3-1` and bare
+        # `Q9BRI3` occur; collapsing them pairs an accession with the wrong
+        # sequence.
+        sequences.setdefault(a, sa)
+        sequences.setdefault(b, sb)
+        pairs.add(tuple(sorted([a, b])))
+    return sequences, pairs
+
+
+def create_af3_json(id_a, seq_a, id_b, seq_b, seeds, fmt):
+    name = pair_name(id_a, id_b)
+    if fmt == "server":
+        chains = [{"proteinChain": {"sequence": seq_a, "count": 1}},
+                  {"proteinChain": {"sequence": seq_b, "count": 1}}]
+    else:
+        chains = [{"protein": {"sequence": seq_a, "id": "A"}},
+                  {"protein": {"sequence": seq_b, "id": "B"}}]
+    return {"name": name, "modelSeeds": list(range(1, seeds + 1)), "sequences": chains}
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Generate AlphaFold3 input JSONs from FASTA file and variant triplet TSV'
-    )
-    parser.add_argument('fasta_file', help='Input FASTA file with protein sequences')
-    parser.add_argument('triplet_tsv', help='TSV file with triplets (id_a, variant, id_b)')
-    parser.add_argument('output_dir', help='Output directory for JSON files')
-    parser.add_argument('--seeds', type=int, default=1, 
-                       help='Number of AlphaFold3 model seeds (1-5, default: 1)')
-    
-    args = parser.parse_args()
-    
-    # validate seeds
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("fasta_file", nargs="?", help="FASTA (omit when using --csv)")
+    ap.add_argument("triplet_tsv", nargs="?", help="TSV id_a<TAB>variant<TAB>id_b (omit with --csv)")
+    ap.add_argument("output_dir")
+    ap.add_argument("--csv", help="Rows CSV with sequences inline (alternative to fasta+tsv)")
+    ap.add_argument("--format", choices=("local", "server"), default="local",
+                    help="AF3 input dialect (default: local executable)")
+    ap.add_argument("--seeds", type=int, default=1, help="Model seeds 1-5 (default 1)")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="Leave already-written JSONs alone (resumable)")
+    args = ap.parse_args()
+
     if not 1 <= args.seeds <= 5:
-        print("Error: seeds must be between 1 and 5")
-        sys.exit(1)
-    
+        sys.exit("Error: --seeds must be between 1 and 5")
+    if args.csv:
+        if args.fasta_file and not args.output_dir:
+            args.output_dir = args.fasta_file
+    elif not (args.fasta_file and args.triplet_tsv):
+        sys.exit("Error: provide either --csv, or both fasta_file and triplet_tsv")
+
     os.makedirs(args.output_dir, exist_ok=True)
-    
-    try:
-        # parse FASTA to get all sequences
-        print(f"Parsing FASTA file: {args.fasta_file}")
+
+    if args.csv:
+        print(f"Reading rows CSV: {args.csv}")
+        sequences, pairs = parse_rows_csv(args.csv)
+        sequences = {k: normalize_sequence(k, v) for k, v in sequences.items()}
+    else:
+        print(f"Parsing FASTA: {args.fasta_file}")
         sequences = parse_fasta(args.fasta_file)
-        print(f"Loaded {len(sequences)} sequences")
-        
-        # parse triplet TSV to get unique pairs
-        print(f"Parsing triplet TSV: {args.triplet_tsv}")
-        complex_ids = parse_triplet_tsv(args.triplet_tsv)
-        print(f"Found {len(complex_ids)} unique protein pairs")
-        
-        # process each unique pair
-        successful = 0
-        failed = []
-        for id_a, id_b in complex_ids:
-            try:
-                # check if both IDs exist in FASTA
-                if id_a not in sequences:
-                    raise ValueError(f"ID '{id_a}' not found in FASTA file")
-                if id_b not in sequences:
-                    raise ValueError(f"ID '{id_b}' not found in FASTA file")
-                
-                seq_a = sequences[id_a]
-                seq_b = sequences[id_b]
-                
-                json_data = create_af3_json(id_a, seq_a, id_b, seq_b)
-                
-                # update seeds if specified
-                if args.seeds > 1:
-                    json_data["modelSeeds"] = list(range(1, args.seeds + 1))
-                
-                # save JSON file
-                complex_id = json_data["name"]
-                output_path = os.path.join(args.output_dir, f"{complex_id}.json")
-                
-                with open(output_path, 'w') as f:
-                    json.dump(json_data, f, indent=2)
-                
-                successful += 1
-                print(f"  Created: {complex_id}.json ({len(seq_a)} + {len(seq_b)} aa)")
-                
-            except Exception as e:
-                failed.append((id_a, id_b, str(e)))
-                print(f"  Failed: {id_a}-{id_b} - {e}")
-        
-           
-        print(f"Successfully created {successful} JSON files")
-        if failed:
-            print(f"Failed to process {len(failed)} pairs:")
-            for id_a, id_b, error in failed:
-                print(f"  {id_a}-{id_b}: {error}")
-        print(f"Output directory: {args.output_dir}")
-        print(f"Seeds per model: {args.seeds}")
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        print(f"Parsing triplets: {args.triplet_tsv}")
+        pairs = parse_triplet_tsv(args.triplet_tsv)
+    print(f"{len(sequences)} sequences, {len(pairs)} unique pairs, format={args.format}")
+
+    written = skipped = 0
+    failed = []
+    for id_a, id_b in sorted(pairs):
+        out = os.path.join(args.output_dir, f"{pair_name(id_a, id_b)}.json")
+        if args.skip_existing and os.path.exists(out):
+            skipped += 1
+            continue
+        try:
+            data = create_af3_json(id_a, sequences[id_a], id_b, sequences[id_b],
+                                   args.seeds, args.format)
+        except KeyError as e:
+            failed.append((id_a, id_b, f"missing sequence for {e}"))
+            continue
+        except ValueError as e:
+            failed.append((id_a, id_b, str(e)))
+            continue
+        with open(out, "w") as f:
+            json.dump(data, f, indent=2)
+        written += 1
+
+    print(f"\nwritten={written} skipped={skipped} failed={len(failed)}")
+    for a, b, why in failed[:20]:
+        print(f"  FAILED {a}-{b}: {why}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

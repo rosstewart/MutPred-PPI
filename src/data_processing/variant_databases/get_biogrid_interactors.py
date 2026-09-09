@@ -15,22 +15,21 @@ Usage:
     python get_biogrid_interactors.py \
         --biogrid-tsv biogrid/biogrid_ppi.tsv \
         --uniprot-fasta biogrid/all_uniprot_ids.fasta \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/biogrid
+        --output-dir $MUTPRED_DATA_ROOT/biogrid
 
     # Stage 1 + Stage 2 (ClinVar)
     python get_biogrid_interactors.py \
         --biogrid-tsv biogrid/biogrid_ppi.tsv \
         --uniprot-fasta biogrid/all_uniprot_ids.fasta \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/biogrid \
-        --clinvar-dir /data/ross/clinvar \
-        --clinvar-output-dir /data/ross/ppi_lossgain/interaction_loss/clinvar \
+        --output-dir $MUTPRED_DATA_ROOT/biogrid \
+        --clinvar-dir /path/to/clinvar \
+        --clinvar-output-dir $MUTPRED_DATA_ROOT/clinvar \
         --train-uniprot-ids combined_train_uniprot_ids.pkl
 """
 
 import argparse
 import os
 import pickle
-import numpy as np
 import pandas as pd
 
 

@@ -34,8 +34,7 @@ from matplotlib.patches import Ellipse
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT, HOME_DIR, REPO_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, HOME_DIR, REPO_ROOT
 
 
 _PUB = REPO_ROOT
@@ -44,7 +43,6 @@ _DB   = _PUB / "results_revisions" / "variant_dbs"
 _STAB = _PUB / "results_revisions" / "variant_dbs_stability"
 _OUT  = _PUB / "results_revisions" / "stability_interaction"
 
-sys.path.insert(0, str(_PUB / "src" / "analysis"))
 from stability_interaction_scatter import load_tsv_grouped, aggregate_per_variant
 
 
@@ -71,28 +69,28 @@ def build_pooled_data() -> pd.DataFrame:
 
     frames = []
 
-    with open(_HOME / "clinvar" / "pathogenic_dirbind_variant_subset.pkl", "rb") as f:
+    with open(ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl", "rb") as f:
         pathogenic_subset = pickle.load(f)
     df = aggregate_per_variant(db_grouped["clinvar"], pathogenic_subset)
     df["source"] = "ClinVar Pathogenic"
     frames.append(df)
     print(f"  ClinVar Pathogenic: {len(df):,} variants", flush=True)
 
-    with open(_HOME / "clinvar" / "benign_dirbind_variant_subset.pkl", "rb") as f:
+    with open(ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl", "rb") as f:
         benign_subset = pickle.load(f)
     df = aggregate_per_variant(db_grouped["clinvar"], benign_subset)
     df["source"] = "ClinVar Benign"
     frames.append(df)
     print(f"  ClinVar Benign: {len(df):,} variants", flush=True)
 
-    with open(_HOME / "hgmd" / "variant_subset.pkl", "rb") as f:
+    with open(ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl", "rb") as f:
         hgmd_subset = pickle.load(f)
     df = aggregate_per_variant(db_grouped["hgmd"], hgmd_subset)
     df["source"] = "HGMD"
     frames.append(df)
     print(f"  HGMD: {len(df):,} variants", flush=True)
 
-    cosmic_rec_file = DATA_ROOT / "cosmic" / "vt_to_tumor_site.pkl"
+    cosmic_rec_file = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
     with open(cosmic_rec_file, "rb") as f:
         vt_to_sites = pickle.load(f)
     cosmic_high_rec = set()

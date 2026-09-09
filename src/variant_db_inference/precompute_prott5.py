@@ -8,8 +8,8 @@ already present in the output H5 are skipped.
 Run for each dataset (nohup recommended — takes hours for large databases):
 
     nohup conda run -n ppi python precompute_prott5.py \\
-        --fasta /data/ross/ppi_lossgain/interaction_loss/clinvar/clinvar_interaction_loss_wt_and_vt.fasta \\
-        --out /data/ross/ppi_lossgain/interaction_loss/clinvar/prott5_embeddings.h5 \\
+        --fasta $MUTPRED_DATA_ROOT/clinvar/clinvar_interaction_loss_wt_and_vt.fasta \\
+        --out $MUTPRED_DATA_ROOT/clinvar/prott5_embeddings.h5 \\
         --device cuda:0 > precompute_clinvar.log 2>&1 &
 
 Storage estimates (float32, L×1024 per residue):
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import time
 from pathlib import Path
 

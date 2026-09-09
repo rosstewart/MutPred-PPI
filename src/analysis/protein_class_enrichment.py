@@ -16,7 +16,6 @@ Output:
 """
 from __future__ import annotations
 
-import os
 import pickle
 import sys
 from collections import defaultdict
@@ -31,8 +30,7 @@ import pandas as pd
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT, REPO_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
 
 
 _PUB = REPO_ROOT
@@ -41,7 +39,6 @@ _HOME = _BASE / "home"
 _OUT  = _PUB / "results_revisions" / "protein_class_enrichment"
 
 # Import calc_enrichment and plot rcParams from variant_db_charts
-sys.path.insert(0, str(_PUB / "src" / "analysis"))
 from variant_db_charts import calc_enrichment
 
 
@@ -52,7 +49,7 @@ ANNOTATION_CSV = _PUB / "results_revisions" / "protein_class_annotations.csv"
 # across panels is what this path previously did.
 CLINVAR_TSV    = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "clinvar_mutpred_ppi_predictions.tsv"
 GNOMAD_TSV     = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "gnomad_mutpred_ppi_predictions.tsv"
-PATHOGENIC_PKL = _HOME / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"
+PATHOGENIC_PKL = ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"
 
 plt.rcParams.update({
     "font.size": 11, "axes.labelsize": 12, "figure.dpi": 100,

@@ -35,8 +35,10 @@ import pandas as pd
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from method_names import (  # noqa: E402
+    METHOD_DISPLAY_NAMES, extract_method_and_dataset)
 from paths import CV_DIR as _P_CV_DIR, REPO_ROOT, cv_reference_dir  # noqa: E402
+from ids import split_wt_id  # noqa: E402  (single definition, see src/ids.py)
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -47,11 +49,9 @@ BLIND_TEST_DIR = os.path.join(_PUB, "results", "varchamp_seqcnf_newvar_eval")
 CV_DIR = str(cv_reference_dir())
 OUT_DIR = os.path.join(_PUB, "datasets", "reconstruction_tables")
 
-sys.path.insert(0, _ANALYSIS_DIR)
 
 N_SEEDS = 30
-N_SEM_DIVISOR = 10  # matches hardcoded value used throughout roc_plots.py / robustness scripts
-FPR_GRID = np.linspace(0, 1, 100)
+from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -59,42 +59,6 @@ FPR_GRID = np.linspace(0, 1, 100)
 # side-effecting top-level code (writes npy/pkl files on import) so we only reuse
 # its pure logic here).
 # ═════════════════════════════════════════════════════════════════════════════
-
-def split_wt_id(wt_id: str):
-    """Split a hyphen/underscore-joined complex id into (interactor, partner).
-
-    Copied verbatim from roc_plots.py::split_wt_id (pure function, no side effects).
-    """
-    if wt_id.startswith('NP_') or wt_id.startswith('np_'):
-        return '_'.join(wt_id.split('_')[:2]), '_'.join(wt_id.split('_')[2:])
-
-    if '_' not in wt_id:
-        delim = '-'
-    else:
-        delim = '_'
-
-    if len(wt_id.split(delim)) == 2:
-        return tuple(wt_id.split(delim))
-
-    part_split_idx = -1
-    for part_idx, wt_part in enumerate(wt_id.split(delim)):
-        try:
-            int(wt_part)
-            part_split_idx = part_idx + 1
-            break
-        except Exception:
-            continue
-
-    if part_split_idx == -1:
-        raise ValueError(wt_id)
-
-    if part_split_idx == len(wt_id.split(delim)):
-        part_split_idx = 1
-
-    part_1 = delim.join(wt_id.split(delim)[:part_split_idx])
-    part_2 = delim.join(wt_id.split(delim)[part_split_idx:])
-    return part_1, part_2
-
 
 def safe_split_wt_id(complex_id: str):
     try:
@@ -107,108 +71,8 @@ def safe_split_wt_id(complex_id: str):
 # Method display-name table + dataset/method extraction, copied verbatim (pure,
 # no side effects) from roc_plots.py so that the set of GCV files we export
 # exactly matches what main_comparison() actually plots for Fig 3 / S1 / S-new.
-METHOD_DISPLAY_NAMES = {
-    'MutPredPPI_sahni_megascale_all':                              'MutPred-PPI',
-    'MutPredPPI_sahni_fragoza_megascale_all':                      'MutPred-PPI',
-    'MutPredPPI_sahni_fragoza_varchamp1p_cava_megascale_all':      'MutPred-PPI',
-    'SWING_sahni_test_pretrain':                         'SWING (Test Pretrain)',
-    'SWING_sahni_fragoza_test_pretrain':                 'SWING (Test Pretrain)',
-    'SWING_sahni_fragoza_varchamp1p_cava_test_pretrain': 'SWING (Test Pretrain)',
-    'SWING_sahni_no_test_pretrain':                      'SWING (Blind-Test)',
-    'SWING_sahni_fragoza_no_test_pretrain':              'SWING (Blind-Test)',
-    'SWING_sahni_fragoza_varchamp1p_cava_no_test_pretrain': 'SWING (Blind-Test)',
-    'ESigNet_sahni':                                     'eSIG-Net',
-    'ESigNet_sahni_fragoza':                             'eSIG-Net',
-    'ESigNet_sahni_fragoza_varchamp1p_cava':             'eSIG-Net',
-    'MINT_seq_diff_sahni':                               'MINT (seq diff)',
-    'MINT_seq_diff_sahni_fragoza':                       'MINT (seq diff)',
-    'MINT_seq_diff_sahni_fragoza_varchamp1p_cava':       'MINT (seq diff)',
-    'MINT_site_diff_sahni':                              'MINT (site diff)',
-    'MINT_site_diff_sahni_fragoza':                      'MINT (site diff)',
-    'MINT_site_diff_sahni_fragoza_varchamp1p_cava':      'MINT (site diff)',
-    'PPLM_seq_diff_sahni':                               'PPLM (seq diff)',
-    'PPLM_seq_diff_sahni_fragoza':                       'PPLM (seq diff)',
-    'PPLM_seq_diff_sahni_fragoza_varchamp1p_cava':       'PPLM (seq diff)',
-    'PPLM_site_diff_sahni':                              'PPLM (site diff)',
-    'PPLM_site_diff_sahni_fragoza':                      'PPLM (site diff)',
-    'PPLM_site_diff_sahni_fragoza_varchamp1p_cava':      'PPLM (site diff)',
-    'MutPredPPI_sahni_fragoza_varchamp2026_megascale_all': 'MutPred-PPI',
-    'SWING_sahni_fragoza_varchamp2026_test_pretrain':    'SWING (Test Pretrain)',
-    'SWING_sahni_fragoza_varchamp2026_no_test_pretrain': 'SWING (Blind-Test)',
-    'ESigNet_sahni_fragoza_varchamp2026':                'eSIG-Net',
-    'MINT_seq_diff_sahni_fragoza_varchamp2026':          'MINT (seq diff)',
-    'MINT_site_diff_sahni_fragoza_varchamp2026':         'MINT (site diff)',
-    'PPLM_seq_diff_sahni_fragoza_varchamp2026':          'PPLM (seq diff)',
-    'PPLM_site_diff_sahni_fragoza_varchamp2026':         'PPLM (site diff)',
-    'MutPredPPI_sahni_fragoza_varchamp_full_pooled_megascale_all': 'MutPred-PPI',
-    'SWING_sahni_fragoza_varchamp_full_pooled_test_pretrain':      'SWING (Test Pretrain)',
-    'SWING_sahni_fragoza_varchamp_full_pooled_no_test_pretrain':   'SWING (Blind-Test)',
-    'ESigNet_sahni_fragoza_varchamp_full_pooled':                  'eSIG-Net',
-    'MINT_seq_diff_sahni_fragoza_varchamp_full_pooled':            'MINT (seq diff)',
-    'MINT_site_diff_sahni_fragoza_varchamp_full_pooled':           'MINT (site diff)',
-    'PPLM_seq_diff_sahni_fragoza_varchamp_full_pooled':            'PPLM (seq diff)',
-    'PPLM_site_diff_sahni_fragoza_varchamp_full_pooled':           'PPLM (site diff)',
-}
 
 
-def extract_method_and_dataset(filename: str):
-    """Copied verbatim (pure function) from roc_plots.py."""
-    basename = os.path.basename(filename).replace('_detailed_results.pkl', '')
-
-    if 'sahni_fragoza_varchamp1p_cava' in basename:
-        dataset = 'sahni_fragoza_varchamp1p_cava'
-    elif 'sahni_fragoza_varchamp2026' in basename:
-        dataset = 'sahni_fragoza_varchamp2026'
-    elif 'sahni_fragoza_varchamp_full_pooled' in basename:
-        dataset = 'sahni_fragoza_varchamp_full_pooled'
-    elif 'sahni_fragoza_varchamp_pooled' in basename:
-        dataset = 'sahni_fragoza_varchamp_pooled'
-    elif 'sahni_fragoza_varchamp_full' in basename:
-        dataset = 'sahni_fragoza_varchamp_full'
-    elif 'sahni_varchamp1p_cava' in basename:
-        dataset = 'sahni_varchamp1p_cava'
-    elif 'sahni_fragoza' in basename:
-        dataset = 'sahni_fragoza'
-    elif 'sahni' in basename:
-        dataset = 'sahni'
-    else:
-        dataset = 'unknown'
-
-    if basename == f'MutPredPPI_{dataset}_megascale_all':
-        method = f'MutPredPPI_{dataset}_megascale_all'
-    elif basename.startswith('gnn_'):
-        return None, dataset
-    elif 'SWING' in basename:
-        if 'no_test_pretrain' in basename:
-            method = 'SWING_' + dataset + '_no_test_pretrain'
-        else:
-            method = 'SWING_' + dataset + '_test_pretrain'
-    elif basename.startswith('ESigNet_'):
-        method = 'ESigNet_' + dataset
-    elif basename.startswith('MINT_seq_diff_'):
-        method = 'MINT_seq_diff_' + dataset
-    elif basename.startswith('MINT_site_diff_'):
-        method = 'MINT_site_diff_' + dataset
-    elif basename.startswith('PPLM_seq_diff_'):
-        method = 'PPLM_seq_diff_' + dataset
-    elif basename.startswith('PPLM_site_diff_'):
-        method = 'PPLM_site_diff_' + dataset
-    else:
-        return None, dataset
-
-    return method, dataset
-
-
-# Per-dataset cv_splits bookkeeping needed to reconstruct which vt_id (variant)
-# corresponds to each entry of a GCV detailed_results.pkl's per-class preds/labels
-# arrays. Verified empirically (see task notes) to reproduce exact per-fold,
-# per-class sample counts with zero mismatches for sahni_fragoza across 4 methods
-# (900/900 iteration x fold x class combinations matched).
-#
-# Only datasets with PER-SEED vt_ids files (all_vt_ids_{seed}.pkl, not just the
-# base all_vt_ids.pkl) are supported — sahni_fragoza_varchamp_pooled/_full/
-# _full_pooled only have the base file, so vt_id linkage is not possible for
-# those and is left blank (preds/labels are still exported).
 VT_ID_SUPPORT = {
     'sahni':                             dict(prefix='', ptc_prefix=''),
     'sahni_fragoza':                     dict(prefix='sahni_fragoza_train_',

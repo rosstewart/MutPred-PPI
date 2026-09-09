@@ -6,16 +6,13 @@ per-group statistics: Proteins, Pairs, Variants, Triplets, Mean Partners.
 
 Writes figures/variant_db_stats_table.tex as a drop-in tabular block.
 """
-import os, pickle
-from pathlib import Path
-from collections import defaultdict
+import pickle
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT, REPO_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
 
 
 _PUB = REPO_ROOT
@@ -27,20 +24,20 @@ PRED_DIR = _PUB / "results_revisions" / "variant_dbs_sfvfp"
 
 # Classification source files
 CLINVAR_SUBSETS = {
-    "pathogenic": _HOME / "clinvar" / "pathogenic_dirbind_variant_subset.pkl",
-    "benign":     _HOME / "clinvar" / "benign_dirbind_variant_subset.pkl",
-    "vus":        _HOME / "clinvar" / "vus_dirbind_variant_subset.pkl",
+    "pathogenic": ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl",
+    "benign":     ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl",
+    "vus":        ANNOTATIONS_DIR / "clinvar" / "vus_dirbind_variant_subset.pkl",
 }
-BENIGN_AF_FILE = Path("/data/ross/clinvar/benign_allele_frequencies.tsv")
+BENIGN_AF_FILE = ANNOTATIONS_DIR / "benign_allele_frequencies.tsv"
 RARE_BENIGN_THRESHOLD = 0.01
 
-GNOMAD_AF_FILE   = _BASE / "gnomad" / "gnomad_allele_frequencies.tsv"
-VT_TO_TUMOR_SITE = _BASE / "cosmic" / "vt_to_tumor_site.pkl"
-ONCO_TSG_FILE    = _BASE / "cosmic_mutations" / "onco_tsg_dict.pkl"
-AUTISM_SUBSET    = _HOME / "autism" / "variant_subset.pkl"
-NEURODEV_LABELS  = _HOME / "autism" / "variant_label_dict.pkl"
-HGMD_SUBSET      = _HOME / "hgmd" / "variant_subset.pkl"
-AR_AD_FILE       = _BASE / "clingen_ar_ad_uniprot_sets.pkl"
+GNOMAD_AF_FILE   = ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv"
+VT_TO_TUMOR_SITE = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
+ONCO_TSG_FILE    = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
+AUTISM_SUBSET    = ANNOTATIONS_DIR / "autism" / "variant_subset.pkl"
+NEURODEV_LABELS  = ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl"
+HGMD_SUBSET      = ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl"
+AR_AD_FILE       = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
 
 
 def parse_preds(tsv_path) -> pd.DataFrame:

@@ -27,6 +27,11 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+# --- repo-relative path resolution (see src/paths.py) ---
+import sys as _sys
+from ids import parse_mutation  # noqa: E402,F401
+# Re-exported: predictors/{mint,pplm}_mlp.py import this relatively from here.
+
 from . import BasePredictor
 
 logger = logging.getLogger(__name__)
@@ -62,18 +67,6 @@ def load_cache(path: str) -> Optional[Any]:
 
 # ── Mutation parsing helpers ──────────────────────────────────────────────────
 
-def parse_mutation(mutation: str) -> Tuple[str, int, str]:
-    """Parse 'E80K' → ('E', 79, 'K')  [0-based position]."""
-    wt_aa = mutation[0]
-    mut_aa = mutation[-1]
-    pos_1based = int("".join(filter(str.isdigit, mutation)))
-    return wt_aa, pos_1based - 1, mut_aa  # return 0-based index
-
-
-def zero_based_variant(mutation: str) -> str:
-    """'E80K' (1-based) → 'E79K' (0-based, for MINT/PPLM keys)."""
-    _, pos0, _ = parse_mutation(mutation)
-    return f"{mutation[0]}{pos0}{mutation[-1]}"
 
 
 # ── Feature extraction utilities ─────────────────────────────────────────────
@@ -180,14 +173,21 @@ class CacheMLPPredictor(BasePredictor):
         self._scaler = StandardScaler()
         X_sc = self._scaler.fit_transform(X)
 
-        # Architecture follows Sahni et al. supplement:
-        # g: R^d → R^32 → R^64, Mish activation via relu approx, c: R^64 → 1
+        # Head matches MINT's own downstream evaluation harness, so the MINT and
+        # PPLM baselines are run the way MINT's authors prescribe:
+        # mint/downstream/GeneralPPI/finetune_general.py::return_logistic_model.
+        # (mutational-ppi/README.md points at that script; NOT oncoPPI/train.py.)
+        # Upstream wraps this in GridSearchCV, but its MLP param_grid is a single
+        # point, so the values below are the whole grid -- no tuning to replicate.
+        # Feature differencing likewise follows upstream: baselines.py::encode_two
+        # defaults to how="subtract".
         self._clf = MLPClassifier(
-            hidden_layer_sizes=(64,),
+            hidden_layer_sizes=(640,),
             activation="relu",
             solver="adam",
+            learning_rate="adaptive",
             learning_rate_init=1e-3,
-            max_iter=200,
+            max_iter=100,
             random_state=self._seed,
             early_stopping=True,
             validation_fraction=0.1,

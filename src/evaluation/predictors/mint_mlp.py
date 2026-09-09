@@ -1,16 +1,16 @@
 """MINT embedding-based MLP predictors.
 
-Cache: /data/ross/ppi_lossgain/interaction_loss/2026/mint_cache/mint_cache_v2.pkl
+Cache: $MUTPRED_DATA_ROOT/2026/mint_cache/mint_cache_v2.pkl
 
 Keys use ZERO-BASED variant positions (e.g. 'E79K' for 1-based 'E80K').
 
 Full-pair mean embeddings (1280-dim, sep_chains=False — mean over all La+Lb residues):
   "mean_{id_a}_{id_b}"              → WT full-pair mean
-  "mean_{id_a}_{id_b}_{var_zero}"   → MUT full-pair mean
+  "mean_{id_a}_{id_b}_{var}"   → MUT full-pair mean
 
 Per-residue chain-A embeddings (La, 1280):
   "res_wt_pair_{id_a}_{id_b}"              → WT chain A in pair context
-  "res_mut_pair_{var_zero}_{id_a}_{id_b}"  → MUT chain A in pair context
+  "res_mut_pair_{var}_{id_a}_{id_b}"  → MUT chain A in pair context
 
 Two predictors:
   mint_seq_diff  — mean_pool(mut_pair) - mean_pool(wt_pair)  →  1280-dim  →  MLP
@@ -29,7 +29,6 @@ from . import register
 from .nn_base import (
     CacheMLPPredictor,
     parse_mutation,
-    zero_based_variant,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,6 @@ from pathlib import Path as _Path
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from paths import cache_file  # noqa: E402
 
 CACHE_PATH = str(cache_file("mint_cache.pkl"))
@@ -49,12 +47,12 @@ def _mint_keys(row: pd.Series):
     """Return (wt_mean_key, mut_mean_key, wt_res_key, mut_res_key) for a row."""
     id_a = row["interactor"]
     id_b = row["partner"]
-    var_zero = zero_based_variant(row["mutation"])
+    var = str(row["mutation"])          # 1-based, as stored in the tables
     return (
         f"mean_{id_a}_{id_b}",
-        f"mean_{id_a}_{id_b}_{var_zero}",
+        f"mean_{id_a}_{id_b}_{var}",
         f"res_wt_pair_{id_a}_{id_b}",
-        f"res_mut_pair_{var_zero}_{id_a}_{id_b}",
+        f"res_mut_pair_{var}_{id_a}_{id_b}",
     )
 
 

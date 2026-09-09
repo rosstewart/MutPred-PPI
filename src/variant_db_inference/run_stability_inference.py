@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import sys
 from pathlib import Path
 
 import h5py
@@ -29,14 +28,12 @@ import joblib
 import numpy as np
 import scipy.sparse as sp
 import torch
-import torch.nn as nn
 from scipy.io import loadmat
-from torch_geometric.nn import GATConv
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+from model import GAT_mut_processor  # noqa: E402
 from paths import DATA_ROOT  # noqa: E402
 
 
@@ -64,32 +61,11 @@ DATASET_CONFIGS = {
 }
 
 
-class StabilityModel(nn.Module):
-    """Pretrained GAT stability predictor (same architecture as MutPred-PPI)."""
-
-    def __init__(self, input_dim: int = 1024, hidden_dim: int = 64,
-                 num_heads: int = 4, mutation_diff_dim: int = 1024):
-        super().__init__()
-        self.mutation_diff_processor = nn.Sequential(
-            nn.Linear(mutation_diff_dim, 128), nn.ReLU(), nn.Dropout(0.1),
-            nn.Linear(128, 32),
-        )
-        self.complex_gat1 = GATConv(input_dim, hidden_dim, heads=num_heads, concat=True)
-        self.complex_gat2 = GATConv(hidden_dim * num_heads, hidden_dim // 2,
-                                    heads=1, concat=False)
-        self.binding_predictor = nn.Sequential(
-            nn.Linear(hidden_dim // 2 + 32, 16), nn.ReLU(), nn.Dropout(0.1),
-            nn.Linear(16, 1),
-        )
-
-    def forward(self, x, edge_index, mutation_idx, mutation_site_diff):
-        if mutation_site_diff.dim() == 1:
-            mutation_site_diff = mutation_site_diff.unsqueeze(0)
-        processed = self.mutation_diff_processor(mutation_site_diff)
-        h = torch.relu(self.complex_gat1(x, edge_index))
-        h = torch.relu(self.complex_gat2(h, edge_index))
-        combined = torch.cat([h[mutation_idx:mutation_idx + 1], processed], dim=-1)
-        return self.binding_predictor(combined)
+# The GAT stability predictor is `GAT_mut_processor` in src/model.py -- imported
+# above. A verbatim 4th copy of the architecture used to live here; it was
+# bit-for-bit identical (state_dict loads strict=True, max output delta 0.0
+# over 20 random graphs), so this is a pure de-duplication. The canonical
+# class has a 4-arg inference path, so call it exactly as before.
 
 
 def _variant_0b_to_1b(mut: str) -> str:
@@ -319,7 +295,7 @@ def main() -> None:
     print(f"Device: {device}", flush=True)
 
     print(f"Loading pretrained stability model from {_MEGASCALE_PRETRAINED}", flush=True)
-    model = StabilityModel(input_dim=1024).to(device)
+    model = GAT_mut_processor(input_dim=1024).to(device)
     state = torch.load(_MEGASCALE_PRETRAINED, weights_only=True, map_location=device)
     model.load_state_dict(state)
     model.eval()

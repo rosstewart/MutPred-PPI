@@ -41,8 +41,7 @@ from scipy.stats import gaussian_kde
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT, REPO_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
 
 
 _PUB = REPO_ROOT
@@ -55,15 +54,15 @@ _DB    = _PUB / "results_revisions" / "variant_dbs_sfvfp"
 _STAB  = _PUB / "results_revisions" / "variant_dbs_stability"
 _OUT   = _PUB / "results_revisions" / "stability_interaction"
 
-ONCO_TSG_FILE = _BASE / "cosmic_mutations" / "onco_tsg_dict.pkl"
-AR_AD_FILE    = _BASE / "clingen_ar_ad_uniprot_sets.pkl"
+ONCO_TSG_FILE = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
+AR_AD_FILE    = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
 ONCO_TSG_MIN_RECURRENCE = 8  # too few onco/tsg variants at ≥32 (139/114)
 
 SUBSET_PKLS = {
-    "ClinVar Pathogenic": (_HOME / "clinvar" / "pathogenic_dirbind_variant_subset.pkl", "clinvar"),
-    "ClinVar Benign":     (_HOME / "clinvar" / "benign_dirbind_variant_subset.pkl",     "clinvar"),
-    "ClinVar VUS":        (_HOME / "clinvar" / "vus_dirbind_variant_subset.pkl",        "clinvar"),
-    "HGMD":               (_HOME / "hgmd"    / "variant_subset.pkl",                    "hgmd"),
+    "ClinVar Pathogenic": (ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl", "clinvar"),
+    "ClinVar Benign":     (ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl",     "clinvar"),
+    "ClinVar VUS":        (ANNOTATIONS_DIR / "clinvar" / "vus_dirbind_variant_subset.pkl",        "clinvar"),
+    "HGMD":               (ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl",        "hgmd"),
 }
 
 # Fig 5 reference n's (variant_db_charts.py, results_revisions/variant_dbs_sfvfp) — for sanity check
@@ -310,7 +309,7 @@ def main() -> None:
     _OUT.mkdir(parents=True, exist_ok=True)
 
     # --- Load COSMIC recurrence ---
-    cosmic_rec_file = _BASE / "cosmic" / "vt_to_tumor_site.pkl"
+    cosmic_rec_file = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
     cosmic_high_rec: set[tuple[str, str]] | None = None
     cosmic_rec8: set[tuple[str, str]] | None = None
     if cosmic_rec_file.exists():

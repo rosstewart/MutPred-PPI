@@ -34,7 +34,8 @@ the Fig S2 comparison) are present but not git-tracked.
 
 Required once before any fine-tuning. Source data: [Tsuboyama et al. 2023](https://doi.org/10.1038/s41586-023-06328-6).
 Train/val/test splits (`datasets/mega_splits.pkl`) are from
-[SPURS](https://doi.org/10.1038/s41467-025-67609-4) and included in this repo.
+[SPURS](https://doi.org/10.1038/s41467-025-67609-4). `datasets/` is gitignored, so this
+arrives with the Zenodo bundle rather than the git clone -- see [`docs/SETUP.md`](SETUP.md).
 
 ```bash
 conda run -n ppi python src/training/preprocess_stability_data.py \

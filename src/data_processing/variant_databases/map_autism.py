@@ -29,7 +29,7 @@ Usage:
         --neurodev-control autism/neurodev_control.fasta \
         --neurodev-refseq-to-uniprot autism/neurodev_refseq_to_uniprot.tsv \
         --biogrid-dir biogrid \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/autism \
+        --output-dir $MUTPRED_DATA_ROOT/autism \
         --max-complex-subset 720
 
     # Fu/Tulika autism only
@@ -37,7 +37,7 @@ Usage:
         --tulika-dir tulika_autism \
         --tulika-fasta tulika_autism/tulika_autism_uniprots.fasta \
         --biogrid-dir biogrid \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/tulika_autism
+        --output-dir $MUTPRED_DATA_ROOT/tulika_autism
 
     # Both
     python map_autism.py --mode both \
@@ -47,49 +47,27 @@ Usage:
         --tulika-dir tulika_autism \
         --tulika-fasta tulika_autism/tulika_autism_uniprots.fasta \
         --biogrid-dir biogrid \
-        --neurodev-output-dir /data/ross/ppi_lossgain/interaction_loss/autism \
-        --tulika-output-dir /data/ross/ppi_lossgain/interaction_loss/tulika_autism
+        --neurodev-output-dir $MUTPRED_DATA_ROOT/autism \
+        --tulika-output-dir $MUTPRED_DATA_ROOT/tulika_autism
 """
 
 import argparse
 import os
 import pickle
-import numpy as np
 import pandas as pd
 import requests
 from Bio import SeqIO
+from biogrid_common import (  # shared verbatim helpers
+    build_variant_triplets,
+    clean_complexes,
+    get_complexes_in_biogrid,
+    load_biogrid,
+)
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-def load_biogrid(biogrid_dir):
-    with open(f"{biogrid_dir}/biogrid_dirbind_uniprot_to_interactors.pkl", "rb") as f:
-        uniprot_to_interactors = pickle.load(f)
-    with open(f"{biogrid_dir}/uniprot_dirbind_to_seq.pkl", "rb") as f:
-        uniprot_to_seq = pickle.load(f)
-    return uniprot_to_interactors, uniprot_to_seq
-
-
-def get_complexes_in_biogrid(uniprot_wts, uniprot_to_interactors, uniprot_to_seq):
-    wt_complexes = set()
-    for uid in uniprot_wts:
-        if uid not in uniprot_to_interactors:
-            continue
-        for partner in uniprot_to_interactors[uid]:
-            if partner in uniprot_to_seq:
-                wt_complexes.add((uid, partner))
-    return wt_complexes
-
-
-def clean_complexes(all_complexes):
-    cleaned = set()
-    for a, b in all_complexes:
-        if (b, a) not in cleaned:
-            cleaned.add((a, b))
-    return cleaned
-
 
 def build_complex_subset(all_complexes, max_size):
     complex_subset = set()
@@ -131,20 +109,6 @@ def apply_variants(variant_seq_dict, id_to_seq):
             assert id_to_seq[key] == new_seq
         else:
             id_to_seq[key] = new_seq
-
-
-def build_variant_triplets(id_to_seq, complexes):
-    variants = set()
-    for key in id_to_seq:
-        if " " not in key:
-            continue
-        uid, variant = key.split(" ")
-        for u, p in complexes:
-            if uid == u:
-                variants.add((uid, variant, p))
-            if uid == p:
-                variants.add((uid, variant, u))
-    return variants
 
 
 def sanity_check(all_complexes, id_to_seq, uniprot_to_interactors):

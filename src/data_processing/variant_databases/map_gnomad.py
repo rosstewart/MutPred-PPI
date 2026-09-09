@@ -22,14 +22,14 @@ Usage:
     python map_gnomad.py --mode subset \
         --gnomad-dir gnomad \
         --biogrid-dir biogrid \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/gnomad
+        --output-dir $MUTPRED_DATA_ROOT/gnomad
 
     # All-variants mode (large scale)
     python map_gnomad.py --mode all \
-        --gnomad-variants-txt /data/ross/gnomad/gnomad_all_validated_missense_variants_uniprot.txt \
-        --wt-fasta /data/ross/gnomad/gnomad_all_missense_wild_type_seqs.fasta \
-        --biogrid-dir /data/ross/ppi_lossgain/interaction_loss/biogrid \
-        --output-dir /data/ross/ppi_lossgain/interaction_loss/gnomad \
+        --gnomad-variants-txt /path/to/gnomad/gnomad_all_validated_missense_variants_uniprot.txt \
+        --wt-fasta /path/to/gnomad/gnomad_all_missense_wild_type_seqs.fasta \
+        --biogrid-dir $MUTPRED_DATA_ROOT/biogrid \
+        --output-dir $MUTPRED_DATA_ROOT/gnomad \
         --max-complex-subset 2000
 """
 
@@ -39,19 +39,15 @@ import pickle
 from collections import defaultdict
 
 from Bio import SeqIO
+from biogrid_common import (  # shared verbatim helpers
+    clean_complexes,
+    load_biogrid,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers shared by both modes
 # ---------------------------------------------------------------------------
-
-def load_biogrid(biogrid_dir):
-    with open(f"{biogrid_dir}/biogrid_dirbind_uniprot_to_interactors.pkl", "rb") as f:
-        uniprot_to_interactors = pickle.load(f)
-    with open(f"{biogrid_dir}/uniprot_dirbind_to_seq.pkl", "rb") as f:
-        uniprot_to_seq = pickle.load(f)
-    return uniprot_to_interactors, uniprot_to_seq
-
 
 def get_genes_in_biogrid(uniprot_wts, uniprot_to_interactors, uniprot_to_seq):
     """Return set of (uniprot_id, partner) for proteins in both gnomAD and BioGRID."""
@@ -76,14 +72,6 @@ def sanity_check(all_complexes, id_to_seq, uniprot_to_interactors):
     for vt_id in id_to_seq:
         uid = vt_id.split(" ")[0]
         assert uid in uniprot_to_interactors, f"Protein {uid} not in BioGRID"
-
-
-def clean_complexes(all_complexes):
-    cleaned = set()
-    for a, b in all_complexes:
-        if (b, a) not in cleaned:
-            cleaned.add((a, b))
-    return cleaned
 
 
 def build_complex_subset(all_complexes, max_size):
