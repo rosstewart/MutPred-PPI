@@ -6,10 +6,12 @@ robust to accession changes introduced by the 090826 re-mapping. The interactor
 chain is identified from the structure index and passed to SAAMBE-3D; previously
 it was hardcoded to "A".
 
-SAAMBE-3D scores a PDB rather than the contact matrix, so `graphs.PDBResolver`
-maps the sequence-matched .mat back to its structure file. Coverage is partial --
-many pairs kept a contact graph while the PDB was not retained -- and rows with
-no structure score NaN and are dropped by the shared per-class AUC.
+SAAMBE-3D scores a PDB rather than the contact matrix, so `graphs.Structures`
+resolves one straight from the canonical structure manifest, on the same pair of
+sequence hashes the graph store uses. It previously took the sequence-matched
+`.mat` and turned its FILENAME into a structure name, which put a name-based hop
+back in front of an exact one. Coverage is partial, and rows with no structure
+score NaN and are dropped by the shared per-class AUC.
 
 Mutation positions come from the canonical tables (1-based) and are passed to
 SAAMBE-3D directly, without the +1 adjustment the old labels-file code needed.
@@ -28,14 +30,16 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
 _HERE = Path(__file__).resolve().parent
 
-from evaluation.gcv_common import DATASET_CONFIGS, load_data, load_splits  # noqa: E402
-from evaluation.graphs import GraphResolver, PDBResolver  # noqa: E402
+from utils import mutations  # noqa: E402
+from utils.gcv_common import DATASET_CONFIGS, load_data, load_splits  # noqa: E402
+from utils.structures import Structures  # noqa: E402
 
 _SAAMBE3D_PY = _HERE / "saambe-3d.py"
 
@@ -81,8 +85,8 @@ def run(args: argparse.Namespace) -> None:
 
     rows = load_data(cfg)
     fold_splits, _ = load_splits(cfg, seed=args.seed)
-    resolver = GraphResolver()
-    pdbs = PDBResolver()
+    structures = Structures(pdb_cache=outdir / "_pdb_cache")
+    skipped: Counter = Counter()
 
     n_rows = len(rows)
     n_test_total = sum(len(test_idx) for _, _, test_idx in fold_splits)
@@ -91,30 +95,26 @@ def run(args: argparse.Namespace) -> None:
 
     all_preds:  list[float] = []
     all_binary: list[int]   = []
-    n_ok = n_no_struct = n_no_pdb = n_error = 0
+    n_ok = n_no_struct = n_error = 0
 
     for fold, _train_idx, test_idx in fold_splits:
         print(f"\nfold {fold}: {len(test_idx)} test rows", flush=True)
         for idx in test_idx:
             row = rows.loc[idx]
             mutation = row["mutation"]          # 1-based, e.g. "E80K"
-            wt, pos, mt = mutation[0], mutation[1:-1], mutation[-1]
+            wt, pos_int, mt = mutations.parse(mutation)
+            pos = str(pos_int)
 
-            hit = resolver.find(row["interactor_sequence"], row["partner_sequence"])
-            if hit is None:
+            # (path, interactor chain id). SAAMBE-3D parses PDB only, so a
+            # gzipped mmCIF from the canonical tree is converted once per pair.
+            pdb_path, chain = structures.find_pdb(
+                interactor=row["interactor_sequence"],
+                partner=row["partner_sequence"])
+            if pdb_path is None:
+                skipped["no_structure"] += 1
                 all_preds.append(float("nan"))
                 all_binary.append(-1)
                 n_no_struct += 1
-                continue
-
-            mat_path, interactor_is_first, _ = hit
-            chain = "A" if interactor_is_first else "B"
-            pdb_path = pdbs.find(mat_path)
-            if pdb_path is None:
-                print(f"  MISSING PDB: {row['interactor']}/{row['partner']}", flush=True)
-                all_preds.append(float("nan"))
-                all_binary.append(-1)
-                n_no_pdb += 1
                 continue
 
             tmp_out = outdir / f"_tmp_{model_flag}_{idx}.txt"
@@ -133,8 +133,10 @@ def run(args: argparse.Namespace) -> None:
                     tmp_out.unlink()
 
     print(f"\n{'='*50}", flush=True)
-    print(f"Done: {n_ok} ok  {n_no_struct} no structure  "
-          f"{n_no_pdb} no PDB  {n_error} errors", flush=True)
+    print(f"Done: {n_ok} ok  {n_no_struct} no structure  {n_error} errors",
+          flush=True)
+    for reason, count in sorted(skipped.items()):
+        print(f"  skipped, {reason}: {count}", flush=True)
     np.save(out_npy,    np.array(all_preds,  dtype=np.float32))
     np.save(binary_npy, np.array(all_binary, dtype=np.int8))
     print(f"Saved: {out_npy}  shape={np.array(all_preds).shape}", flush=True)

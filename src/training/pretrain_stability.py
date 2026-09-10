@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """Pretrain GAT_mut_processor for ddG stability regression.
 
-Uses data from preprocess_stability_data.py.
-Outputs a .pt state-dict compatible with _MEGASCALE_PRETRAINED_PATH in mutpred_ppi_cv.py.
+Consumes `preprocessed.pkl` from `preprocess_stability_data.py` and writes a
+plain state-dict, the `weights/MutPred-PPI_stability_pretrain.pt` that every
+fine-tuning run starts from.
+
+POSITION BASE: `mutation_indices` in `preprocessed.pkl` is a 0-BASED ARRAY
+INDEX, not a 1-based position. It subscripts the GAT node features directly
+(`h[mutation_idx]`), so it is used here exactly as stored and never converted.
+The 1-based row form lives in `datasets/megascale_rows.csv.gz`; see
+`utils.mutations` for the convention.
 
 Usage:
     python pretrain_stability.py \\
         --data     megascale_preprocessed/preprocessed.pkl \\
-        --scaler   weights/mutation_diff_scaler.pkl \\
+        --scaler   megascale_preprocessed/mutation_diff_scaler.pkl \\
         --outmodel weights/MutPred-PPI_stability_pretrain.pt \\
         --device   cuda:0
 """
@@ -24,20 +31,32 @@ from typing import Tuple
 import joblib
 import numpy as np
 import torch
-from preprocess_stability_data import expand_emb
 import torch.nn as nn
 import torch.optim as optim
-from torch_geometric.utils import dense_to_sparse
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-
 # ── model ────────────────────────────────────────────────────────────────────
 # Single definition lives in src/model.py; see its docstring for why.
-
-import sys as _sys
-from pathlib import Path as _Path
+from contact_graphs import edges_from_dense, symmetric_edge_index  # noqa: E402
 from model import GAT_mut_processor  # noqa: E402
+from training.preprocess_stability_data import expand_emb  # noqa: E402
+
+
+def _edge_index(dense) -> torch.Tensor:
+    """`edge_index` for one stored dense adjacency, via the canonical helpers.
+
+    Was `dense_to_sparse(torch.tensor(e))[0]`. `symmetric_edge_index` is the one
+    definition of what a graph looks like to the model -- both directions plus
+    self-loops, sorted by (src, dst) -- so going through it is what keeps this
+    loop and `ContactGraphStore.load_edge_index` from drifting apart, which is
+    exactly how training and `run_stability_inference` came to disagree about
+    self-loops. Output is identical to `dense_to_sparse` for these matrices:
+    they are symmetric and already carry the diagonal, and both orderings are
+    (src, dst) ascending.
+    """
+    a = np.asarray(dense)
+    return torch.from_numpy(symmetric_edge_index(edges_from_dense(a), a.shape[0]))
 
 
 # ── training ──────────────────────────────────────────────────────────────────
@@ -85,7 +104,7 @@ def run(args: argparse.Namespace) -> None:
     # ── precompute CPU tensors (avoids repeated conversion per epoch) ─────
     print("Precomputing CPU tensors...", flush=True)
     X_t    = [torch.tensor(x, dtype=torch.float) for x in X]
-    edge_t = [dense_to_sparse(torch.tensor(e))[0] for e in edge_mats]
+    edge_t = [_edge_index(e) for e in edge_mats]
     print(f"  done ({len(X_t)} graphs)", flush=True)
 
     num_mut_residues = [lengths[0] for lengths in seq_lengths]

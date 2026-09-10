@@ -29,8 +29,8 @@ The two halves of the data disagree, and nothing documented it:
     1-based : triplet tables, `id_to_seq.pkl` keys   (verified 3000/3000)
     0-based : FASTA headers, ProtT5 keys, subgraph H5 variant keys (3000/3000)
 
-`to_one_based` / `to_zero_based` below are the ONLY places that conversion may
-happen. Never write an inline +1.
+Conversion happens ONLY in `utils.mutations` (`to_one_based` / `to_zero_based`),
+re-exported here for the callers that already import them. Never an inline +1.
 """
 from __future__ import annotations
 
@@ -43,6 +43,9 @@ from pathlib import Path
 _PUB = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PUB / "src"))
 from contact_graphs import ContactGraphStore, sha  # noqa: E402
+from utils.mutations import MUTATION_RE as _MUT_RE  # noqa: E402
+from utils.mutations import to_one_based, to_zero_based  # noqa: E402
+from utils.sequences import accession_only, read_fasta  # noqa: E402
 
 _ROOT = Path("/data/ross/ppi_lossgain/interaction_loss")
 _TABLE_DIR = _PUB / "datasets" / "variant_dbs"
@@ -61,29 +64,24 @@ DB_SOURCES = {
                 "id_to_seq": _ROOT / "autism" / "id_to_seq.pkl"},
 }
 
-_MUT_RE = re.compile(r"^([A-Z])(\d+)([A-Z])$")
+# Historical names, still used by callers, docs and other modules. `autism` was
+# originally `neurodev`, and `tulika_autism` was originally `fu_autism` -- the
+# datasets were renamed but the old names survive in
+# `classify_variant_dbs.SUBSET_FILES` ("fu_autism"), in the on-disk directory
+# `tulika_autism/`, and in run scripts. Resolve rather than reject: a caller
+# passing a real dataset under its other name is not an error.
+DB_ALIASES = {
+    "neurodev": "autism",
+    "fu_autism": "tulika_autism",
+}
+
+
+def resolve_db(db: str) -> str:
+    """Canonical database name for any of its historical spellings."""
+    return DB_ALIASES.get(db, db)
+
+
 _ACC_RE = re.compile(r"^[A-Za-z0-9]+(-\d+)?$")
-
-
-# ── the only base conversions in the pipeline ────────────────────────────────
-
-def to_one_based(mutation_0b: str) -> str:
-    """'A822V' (0-based) -> 'A823V' (1-based)."""
-    m = _MUT_RE.match(mutation_0b)
-    if not m:
-        raise ValueError(f"unparseable mutation {mutation_0b!r}")
-    return f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}"
-
-
-def to_zero_based(mutation_1b: str) -> str:
-    """'A823V' (1-based) -> 'A822V' (0-based), for ProtT5 / subgraph-H5 keys."""
-    m = _MUT_RE.match(mutation_1b)
-    if not m:
-        raise ValueError(f"unparseable mutation {mutation_1b!r}")
-    p = int(m.group(2))
-    if p < 1:
-        raise ValueError(f"{mutation_1b!r} is not 1-based")
-    return f"{m.group(1)}{p - 1}{m.group(3)}"
 
 
 # ── inputs ───────────────────────────────────────────────────────────────────
@@ -117,26 +115,8 @@ def load_wt_sequences(db: str) -> dict[str, list[str]]:
 
     The real repair is upstream, in the mapping code; this is containment.
     """
-    seqs: dict[str, list[str]] = {}
-
-    def add(acc: str, seq: str) -> None:
-        v = seqs.setdefault(acc, [])
-        if seq not in v:
-            v.append(seq)
-
-    acc, buf = None, []
-    with open(DB_SOURCES[db]["fasta"]) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                if acc and buf:
-                    add(acc, "".join(buf))
-                parts = line[1:].strip().split()
-                acc = parts[0] if len(parts) == 1 and _ACC_RE.match(parts[0]) else None
-                buf = []
-            elif acc:
-                buf.append(line.strip())
-    if acc and buf:
-        add(acc, "".join(buf))
+    db = resolve_db(db)
+    seqs = read_fasta(DB_SOURCES[db]["fasta"], accession_only, on_duplicate="all")
 
     pkl = DB_SOURCES[db].get("id_to_seq")
     if pkl and Path(pkl).exists():
@@ -153,19 +133,25 @@ def load_wt_sequences(db: str) -> dict[str, list[str]]:
 
 def load_fasta_variants(db: str) -> dict[str, set[str]]:
     """accession -> {mutation, 1-BASED}. FASTA headers are 0-based on disk."""
+    db = resolve_db(db)
     out: dict[str, set[str]] = {}
-    with open(DB_SOURCES[db]["fasta"]) as fh:
-        for line in fh:
-            if not line.startswith(">"):
-                continue
-            parts = line[1:].strip().split()
-            if len(parts) != 2:
-                continue            # bare accession = the wild-type entry
-            acc, mut0 = parts
-            if not _MUT_RE.match(mut0):
-                continue
-            out.setdefault(acc, set()).add(to_one_based(mut0))
+    for header_key, _seq in _iter_variant_headers(db):
+        acc, mut0 = header_key
+        out.setdefault(acc, set()).add(to_one_based(mut0))
     return out
+
+
+def _iter_variant_headers(db: str):
+    """((accession, mutation_0b), sequence) for the FASTA's VARIANT records."""
+    from utils.sequences import iter_fasta
+
+    def variant_header(header: str):
+        parts = header.split()
+        if len(parts) != 2 or not _MUT_RE.match(parts[1]):
+            return None
+        return (parts[0], parts[1])
+
+    return iter_fasta(DB_SOURCES[db]["fasta"], variant_header)
 
 
 def db_pair_keys(db: str, aliases_csv: Path | str) -> set[str]:
@@ -177,6 +163,7 @@ def db_pair_keys(db: str, aliases_csv: Path | str) -> set[str]:
     enumerated 3.2x the published rows, so the DB partition is required, not
     cosmetic.
     """
+    db = resolve_db(db)
     import csv
     want = f"/{db}/"
     keys = set()
@@ -197,6 +184,7 @@ def pair_graph_keys(db: str, aliases_csv: Path | str) -> dict[frozenset, str]:
     hits and gives up. The alias row ties one accession PAIR to one graph, which
     resolves it.
     """
+    db = resolve_db(db)
     import csv
     want = f"/{db}/"
     out: dict[frozenset, str] = {}
@@ -227,6 +215,7 @@ def store_pairs(db: str, aliases_csv: Path | str) -> dict[str, set[str]]:
     interactor comes from the row, and the graph itself is still fetched by
     sequence.
     """
+    db = resolve_db(db)
     import csv
     want = f"/{db}/"
     pairs: dict[str, set[str]] = {}
@@ -267,6 +256,7 @@ def iter_rows(db: str, store: ContactGraphStore, *, seqs=None, variants=None,
 
     Pass a `collections.Counter` as `stats` to receive the drop reasons.
     """
+    db = resolve_db(db)
     seqs = seqs if seqs is not None else load_wt_sequences(db)
     variants = variants if variants is not None else load_fasta_variants(db)
     pairs = pairs if pairs is not None else store_pairs(db, _ALIASES)
@@ -336,7 +326,7 @@ def iter_rows(db: str, store: ContactGraphStore, *, seqs=None, variants=None,
 
 def table_path(db: str) -> Path:
     """`datasets/variant_dbs/{db}_rows.csv.gz`, written by build_variant_db_tables."""
-    return _TABLE_DIR / f"{db}_rows.csv.gz"
+    return _TABLE_DIR / f"{resolve_db(db)}_rows.csv.gz"
 
 
 def iter_table_rows(db: str, path=None, *, seqs=None, stats=None):

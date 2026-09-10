@@ -1,18 +1,23 @@
 #!/usr/bin/env python
 """Train final MutPred-PPI model weights and save per-fold checkpoints.
 
-Data loading is imported from src/evaluation/mutpred_ppi_cv.py, which holds
-all hardcoded dataset paths.  This script only adds checkpoint saving and the
---no-cv (all-data) training mode on top of the standard GCV infrastructure.
+Rows, folds and tensors come from exactly the same place the cross-validation
+gets them -- the canonical tables (`gcv_common`) and the sequence-keyed contact
+graph store (`mutpred_ppi_data.build_tensors`) -- so the released weights are
+trained on the rows the published AUCs were measured on. This script only adds
+checkpoint saving and the --no-cv (all-data) training mode.
+
+It previously imported a per-source loader out of mutpred_ppi_cv that globbed
+`.mat` files and parsed accessions from their names; that loader is gone.
 
 Usage — 10-fold ensemble (Option A):
     conda run -n ppi python src/training/train_final_model.py \\
-        --dataset sahni_fragoza --ablation megascale_all --seed 1 \\
+        --dataset sahni_fragoza_mapped090826 --ablation megascale_all --seed 1 \\
         --save-models-dir weights/folds/ --device cuda:0
 
 Usage — single model on all data (Option B):
     conda run -n ppi python src/training/train_final_model.py \\
-        --dataset sahni_fragoza --ablation megascale_all --seed 1 \\
+        --dataset sahni_fragoza_mapped090826 --ablation megascale_all --seed 1 \\
         --save-models-dir weights/ --device cuda:0 --no-cv
 """
 
@@ -20,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import pickle
 import random
 import sys
 from pathlib import Path
@@ -33,18 +37,12 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
-from torch_geometric.utils import dense_to_sparse
 
-# ── import data loading infrastructure from the CV script ────────────────────
-from evaluation.mutpred_ppi_cv import (  # noqa: E402
+# ── data layer: the canonical tables and the contact-graph store ─────────────
+from utils.gcv_common import DATASET_CONFIGS, load_data, load_splits  # noqa: E402
+from utils.mutpred_ppi_data import build_tensors  # noqa: E402
+from training.train_fold import (  # noqa: E402
     apply_freeze_strategy,
-    DATASET_CONFIGS,
-    load_dataset,
-    shuffle_data,
-    align_to_vt_ids,
-    canonical_vt_ids_path,
-    canonical_clusters_path,
-    make_fold_splits,
     GAT_mut_processor,
     GAT_mut_processor_no_gat,
     GAT_mut_processor_no_mut,
@@ -102,7 +100,7 @@ def _build_model(ablation: str, input_dim: int, device: torch.device) -> nn.Modu
 def _train_loop(
     train_idx,
     val_idx,
-    X, edge_mats, pos_labels, neg_labels,
+    X, edge_indices, pos_labels, neg_labels,
     mutation_site_diffs, seq_lengths,
     device, ablation, seed,
     X_t, edge_t,
@@ -128,7 +126,8 @@ def _train_loop(
             e = [edge_t[j] for j in indices]
         else:
             g = [torch.tensor(X[j], dtype=torch.float) for j in indices]
-            e = [dense_to_sparse(torch.tensor(edge_mats[j]))[0] for j in indices]
+            # The store already returns both directions plus self-loops.
+            e = [torch.as_tensor(edge_indices[j], dtype=torch.long) for j in indices]
         d = [torch.tensor(mutation_site_diffs[j], dtype=torch.float) for j in indices]
         return g, e, d
 
@@ -240,10 +239,10 @@ def _train_loop(
 
 def train_fold(
     train_val_idx, test_idx, fold,
-    X, edge_mats, pos_labels, neg_labels, clusters,
+    X, edge_indices, pos_labels, neg_labels, clusters,
     mut_diffs_raw, seq_lengths,
     device, ablation, seed,
-    prefit_scaler, precomputed_diffs,
+    precomputed_diffs,
     X_t, edge_t,
     save_path: Optional[Path] = None,
 ):
@@ -263,7 +262,7 @@ def train_fold(
 
     best_state = _train_loop(
         train_idx, val_idx,
-        X, edge_mats, pos_labels, neg_labels, mutation_site_diffs, seq_lengths,
+        X, edge_indices, pos_labels, neg_labels, mutation_site_diffs, seq_lengths,
         device, ablation, seed, X_t, edge_t,
         label_prefix=f"[fold {fold}] ",
     )
@@ -275,7 +274,7 @@ def train_fold(
 
 def train_all_data(
     all_idx,
-    X, edge_mats, pos_labels, neg_labels, clusters,
+    X, edge_indices, pos_labels, neg_labels, clusters,
     mut_diffs_raw, seq_lengths,
     device, ablation, seed,
     precomputed_diffs,
@@ -298,7 +297,7 @@ def train_all_data(
 
     best_state = _train_loop(
         train_idx, val_idx,
-        X, edge_mats, pos_labels, neg_labels, mutation_site_diffs, seq_lengths,
+        X, edge_indices, pos_labels, neg_labels, mutation_site_diffs, seq_lengths,
         device, ablation, seed, X_t, edge_t,
         label_prefix="[all-data] ",
     )
@@ -324,25 +323,11 @@ def run(args: argparse.Namespace) -> None:
 
     use_wt_emb = args.ablation in ("wt-emb", "megascale_all_wt-emb")
     print(f"Loading dataset: {cfg.name}  use_wt_emb={use_wt_emb}", flush=True)
-    if args.data_cache and Path(args.data_cache).exists():
-        print(f"Loading cached data from {args.data_cache}", flush=True)
-        with open(args.data_cache, "rb") as _f:
-            data = pickle.load(_f)
-    else:
-        data = load_dataset(cfg, use_wt_emb=use_wt_emb)
-        if args.data_cache:
-            Path(args.data_cache).parent.mkdir(parents=True, exist_ok=True)
-            print(f"Saving data cache to {args.data_cache}", flush=True)
-            with open(args.data_cache, "wb") as _f:
-                pickle.dump(data, _f)
-    canonical = canonical_vt_ids_path(cfg)
-    if canonical.exists():
-        ordered = align_to_vt_ids(data, canonical, canonical_clusters_path(cfg))
-    else:
-        print(f"  no canonical ordering at {canonical}; deriving one by shuffle",
-              flush=True)
-        ordered = shuffle_data(data)
-    print(f"  {len(ordered['all_vt_ids'])} rows", flush=True)
+    rows = load_data(cfg)
+    # The table's own row order IS the canonical ordering (row_index), so there
+    # is nothing to align to a saved vt_id list and nothing to shuffle.
+    ordered = build_tensors(rows, args.dataset, use_wt_emb=use_wt_emb)
+    print(f"  {len(rows)} rows", flush=True)
 
     _MEGASCALE_ABLATIONS = {
         "megascale", "megascale_freeze_diff", "megascale_all", "megascale_head",
@@ -354,17 +339,17 @@ def run(args: argparse.Namespace) -> None:
     elif args.ablation != "scratch":
         prefit_scaler = joblib.load(_V1_0_SCALER_PATH)
 
-    X             = ordered["prott5_embeddings"]
-    edge_mats     = ordered["edge_mats"]
-    pos_labels    = ordered["pos_labels"]
-    neg_labels    = ordered["neg_labels"]
-    seq_lengths   = ordered["seq_lengths"]
-    clusters      = ordered["clusters"]
-    mut_diffs_raw = ordered["mutation_site_diffs"]
+    X             = list(ordered["node_emb"])
+    edge_indices  = list(ordered["edge_index"])
+    pos_labels    = list(ordered["pos_labels"])
+    neg_labels    = list(ordered["neg_labels"])
+    seq_lengths   = list(ordered["seq_lengths"])
+    clusters      = list(ordered["clusters"])
+    mut_diffs_raw = list(ordered["mut_diff"])
 
     print("Precomputing graph tensors...", flush=True)
     X_t    = [torch.tensor(x, dtype=torch.float) for x in X]
-    edge_t = [dense_to_sparse(torch.tensor(e))[0] for e in edge_mats]
+    edge_t = [torch.as_tensor(e, dtype=torch.long) for e in edge_indices]
 
     precomputed_diffs = None
     if prefit_scaler is not None:
@@ -378,7 +363,7 @@ def run(args: argparse.Namespace) -> None:
         save_path = save_dir / f"{stem}_all.pt"
         print(f"\nTraining on all {len(all_idx)} samples → {save_path}", flush=True)
         train_all_data(
-            all_idx, X, edge_mats, pos_labels, neg_labels, clusters,
+            all_idx, X, edge_indices, pos_labels, neg_labels, clusters,
             mut_diffs_raw, seq_lengths, device,
             args.ablation, args.seed, precomputed_diffs, X_t, edge_t,
             save_path=save_path,
@@ -386,8 +371,9 @@ def run(args: argparse.Namespace) -> None:
         print(f"\nDone. Checkpoint: {save_path}", flush=True)
     else:
         gcv_seed = args.seed
-        fold_splits = make_fold_splits(ordered, gcv_seed, cfg=cfg)
-        print(f"\nGenerated fold splits for seed={gcv_seed}: {len(fold_splits)} folds", flush=True)
+        # The same seed-keyed splits every method is scored on.
+        fold_splits, _ = load_splits(cfg, gcv_seed)
+        print(f"\nLoaded fold splits for seed={gcv_seed}: {len(fold_splits)} folds", flush=True)
 
         for fold, train_val_idx, test_idx in fold_splits:
             save_path = save_dir / f"{stem}_{fold}.pt"
@@ -396,10 +382,10 @@ def run(args: argparse.Namespace) -> None:
                   flush=True)
             train_fold(
                 train_val_idx, test_idx, fold,
-                X, edge_mats, pos_labels, neg_labels, clusters,
+                X, edge_indices, pos_labels, neg_labels, clusters,
                 mut_diffs_raw, seq_lengths, device,
                 args.ablation, fold_seed,
-                prefit_scaler, precomputed_diffs, X_t, edge_t,
+                precomputed_diffs, X_t, edge_t,
                 save_path=save_path,
             )
             torch.cuda.empty_cache()
@@ -410,7 +396,8 @@ def run(args: argparse.Namespace) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train final MutPred-PPI model and save checkpoints")
-    p.add_argument("--dataset", default="sahni_fragoza", choices=list(DATASET_CONFIGS))
+    p.add_argument("--dataset", default="sahni_fragoza_mapped090826",
+                   choices=sorted(DATASET_CONFIGS))
     p.add_argument("--device", default="")
     p.add_argument("--save-models-dir", required=True,
                    help="Directory to save .pt checkpoints")
@@ -425,8 +412,6 @@ def _parse_args() -> argparse.Namespace:
                    help="GCV seed (selects fold splits file) and base random seed (default: 1)")
     p.add_argument("--no-cv", action="store_true",
                    help="Train on all data (no held-out test); saves a single _all.pt checkpoint")
-    p.add_argument("--data-cache", default=None,
-                   help="Path to pickle cache of loaded dataset (read if exists, write on first load)")
     return p.parse_args()
 
 

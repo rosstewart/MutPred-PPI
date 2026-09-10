@@ -1,10 +1,9 @@
 #!/usr/bin/env python
-"""Shared SWING internals: feature encoding, DataFrame builders, Doc2Vec, benchmark loading.
+"""Shared SWING internals: feature encoding, DataFrame builders, Doc2Vec.
 
-Single source for everything SWING-specific in this repo. Used by both the
-blind-test supplement (`supplement_swing_vc1pcava.py`) and the cross-validation
-driver (`swing_gcv.py`), so the feature pipeline and hyperparameters cannot
-drift between them.
+Single source for everything SWING-specific in this repo. Used by the
+cross-validation driver (`swing_gcv.py`), so the feature pipeline and
+hyperparameters cannot drift from a second copy.
 
 Vendored from (external, non-repo path):
     /path/to/upstream-scripts/SWING_scripts/blind_test/run_swing_blind_test_vcfp.py
@@ -14,12 +13,11 @@ window-encoding / k-mer / Doc2Vec-corpus pipeline here was checked against the
 external SFVCFP GCV script's own copies on 200 real benchmark rows: the amino-acid
 score dictionary, the window encodings, the k-mers and the tagged corpus are all
 identical, so the external copies were redundant rather than divergent.
-
-`_TRAINING_DATA_CSV` points at the repo's internal training data cache.
 """
 from __future__ import annotations
 
 import sys as _sys
+from collections import Counter
 
 import gensim
 import pandas as pd
@@ -29,10 +27,10 @@ from tqdm import tqdm
 import sys as _sys
 from pathlib import Path as _Path
 from paths import REPO_ROOT  # noqa: E402
+from utils import mutations  # noqa: E402
 
 
 _PUB = REPO_ROOT
-_TRAINING_DATA_CSV = _PUB / "data_caches" / "training_data_internal.csv"
 
 # ── Grantham aa_score_dict ────────────────────────────────────────────────────
 
@@ -102,22 +100,39 @@ def _get_corpus(matrix: list[list[str]]):
 
 # ── data loading ──────────────────────────────────────────────────────────────
 
-def _build_swing_df(df: pd.DataFrame) -> pd.DataFrame:
+def _build_swing_df(df: pd.DataFrame, label: str = "") -> pd.DataFrame:
+    """SWING-format frame, skipping rows that cannot be mutated -- and counting them.
+
+    The skips are unchanged: SWING has always dropped these rows, and turning any
+    of them into a raise would move a published SWING number. What has changed is
+    that each drop is now attributed and printed instead of being an anonymous
+    `continue`, and the parse/apply go through `utils.mutations` rather than the
+    inline `mut[0], int(mut[1:-1]), mut[-1]` that could not reject junk.
+    """
     rows = []
+    dropped: Counter[str] = Counter()
     for _, row in df.iterrows():
-        mut = row["mutation"]
-        before_aa, pos_1based, after_aa = mut[0], int(mut[1:-1]), mut[-1]
+        mut = str(row["mutation"])
+        try:
+            before_aa, pos_1based, after_aa = mutations.parse(mut)
+        except ValueError:
+            dropped["unparseable_mutation"] += 1
+            continue
         if before_aa == after_aa:
+            dropped["synonymous"] += 1
             continue
         wt_seq  = str(row["interactor_sequence"])
         par_seq = str(row["partner_sequence"])
         if not wt_seq or not par_seq or wt_seq == "nan" or par_seq == "nan":
+            dropped["missing_sequence"] += 1
             continue
-        if pos_1based < 1 or pos_1based > len(wt_seq):
+        vt_seq = mutations.apply(wt_seq, mut)
+        if vt_seq is None:
+            # `apply` folds the old out-of-range and WT-mismatch checks into one
+            # None; separate them here so the report keeps naming both.
+            dropped["position_out_of_range" if pos_1based > len(wt_seq)
+                    else "wt_residue_mismatch"] += 1
             continue
-        if wt_seq[pos_1based - 1] != before_aa:
-            continue
-        vt_seq = wt_seq[: pos_1based - 1] + after_aa + wt_seq[pos_1based:]
         rows.append({
             "interactor":     row["interactor"],
             "partner":        row["partner"],
@@ -131,27 +146,12 @@ def _build_swing_df(df: pd.DataFrame) -> pd.DataFrame:
             "Type":           "Mutant",
             "Y2H_score":      int(row["perturbed"]),
         })
+    if dropped:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(dropped.items()))
+        print(f"  _build_swing_df{f' [{label}]' if label else ''}: "
+              f"kept {len(rows)}/{len(df)}, dropped {sum(dropped.values())} "
+              f"({detail})", flush=True)
     return pd.DataFrame(rows).reset_index(drop=True)
-
-
-def load_benchmark() -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
-    df = pd.read_csv(_TRAINING_DATA_CSV)
-    sf_mask = df["dataset"].str.contains("Sahni") | df["dataset"].str.contains("Fragoza")
-    vc_mask = df["dataset"].str.contains("VarChAMP") | df["dataset"].str.contains("VarChAMP_pooled")
-    sf_proteins = set(df.loc[sf_mask, "interactor"]) | set(df.loc[sf_mask, "partner"])
-
-    train_raw = df[sf_mask].copy().reset_index(drop=True)
-    # Exclude test rows whose (interactor, mutation) appears in SF training (variant-level)
-    sf_variants = set(zip(train_raw["interactor"], train_raw["mutation"]))
-    test_raw = df[vc_mask].copy()
-    test_raw = test_raw[~test_raw.apply(
-        lambda r: (r["interactor"], r["mutation"]) in sf_variants, axis=1
-    )].reset_index(drop=True)
-
-    train_df = _build_swing_df(train_raw)
-    test_df  = _build_swing_df(test_raw)
-    print(f"  Train (SF): {len(train_df)}  Test (VCFP): {len(test_df)}", flush=True)
-    return train_df, test_df, sf_proteins
 
 
 def build_wt_df(df: pd.DataFrame) -> pd.DataFrame:

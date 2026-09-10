@@ -6,7 +6,7 @@ Groups proteins into broad functional classes:
   structural_cytoskeletal, ubiquitin_proteasome, dna_rna_binding, other
 
 Saves results to:
-  results_revisions/protein_class_annotations.csv
+  results/protein_class/protein_class_annotations.csv
     columns: uniprot_id, go_terms (semicolon-separated), protein_class
 
 Usage:
@@ -24,12 +24,17 @@ import requests
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-from paths import REPO_ROOT  # noqa: E402
+from paths import DATASETS_DIR, REPO_ROOT  # noqa: E402
+from utils.identifiers import bare_accession  # noqa: E402
 
 
 _PUB = REPO_ROOT
-_DB_DIR = _PUB / "results_revisions" / "variant_dbs"
-_OUT = _PUB / "results_revisions" / "protein_class_annotations.csv"
+# The canonical variant-database row tables, not the prediction TSVs. The TSVs
+# carry a welded `complex_id`, and recovering the interactor from it meant
+# `cid.split("_")[0]` -- a guess that is wrong for any RefSeq-style accession.
+# These tables have `interactor` as its own column, so there is nothing to split.
+_DB_DIR = DATASETS_DIR / "variant_dbs"
+_OUT = _PUB / "results" / "protein_class" / "protein_class_annotations.csv"
 
 # GO slim classifications: GO term ID → broad class
 # These cover the most common functional classes in interactomes
@@ -105,12 +110,24 @@ def fetch_go_terms_batch(uniprot_ids: list[str], retries: int = 3) -> dict[str, 
 
 
 def collect_all_interactors() -> set[str]:
+    """Every mutated protein across the variant-database row tables.
+
+    `bare_accession` is applied because the UniProt search endpoint has no entry
+    for an isoform accession -- `accession:O14787-2` returns nothing, while the
+    GO annotation wanted here is a property of the parent entry anyway. This is
+    the one place the isoform suffix is deliberately dropped.
+    """
+    tables = sorted(_DB_DIR.glob("*_rows.csv.gz"))
+    if not tables:
+        raise FileNotFoundError(
+            f"no *_rows.csv.gz under {_DB_DIR}. The variant-database row tables "
+            f"ship in the Zenodo datasets/ bundle; see docs/DATA_SOURCES.md.")
+
     interactors: set[str] = set()
-    for tsv in sorted(_DB_DIR.glob("*_mutpred_ppi_predictions.tsv")):
-        df = pd.read_csv(tsv, sep="\t", usecols=["complex_id"])
-        for cid in df["complex_id"]:
-            # complex_id format: INTERACTOR_PARTNER (underscore-separated)
-            interactors.add(cid.split("_")[0])
+    for table in tables:
+        df = pd.read_csv(table, usecols=["interactor"])
+        interactors.update(bare_accession(a) for a in df["interactor"])
+        print(f"  {table.name}: {len(df)} rows", flush=True)
     return interactors
 
 

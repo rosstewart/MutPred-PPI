@@ -18,6 +18,24 @@
 | AlphaFold3 structures (this study) | Zenodo: [10.5281/zenodo.18701748](https://doi.org/10.5281/zenodo.18701748) | Subject to AlphaFold Server Output Terms of Use. Training/evaluation complexes (`datasets/af3_structures.tar`) and variant-repository complexes for ClinVar/gnomAD/NDD/ASD (`datasets/af3_structures_variant_dbs.tar`) — both individually gzipped per-structure in an uncompressed outer tar for random-access extraction. COSMIC/HGMD variant-DB structures excluded (licensing). |
 | Trained models + Sahni/Fragoza training data | Zenodo: [10.5281/zenodo.17645488](https://doi.org/10.5281/zenodo.17645488) | Post-AF3-structure-filtering; used for Fig 3 GCV |
 
+## Mapping scripts
+
+Each raw download is mapped to UniProt-keyed variant/partner records by one script under
+`src/data_processing/variant_databases/`:
+
+| Dataset | Script |
+|---|---|
+| ClinVar | `map_clinvar.py` |
+| COSMIC (recurrence, onco/TSG) | `get_cosmic_annotations.py`, `map_cosmic.py` |
+| HGMD | `map_hgmd.py` |
+| ASD / NDD | `map_tulika_autism.py` |
+
+Their outputs are then collapsed into one self-contained table per database,
+`datasets/variant_dbs/{db}_rows.csv.gz`, by
+`src/variant_db_inference/build_variant_db_tables.py`. Every analysis reads that table rather
+than the individual pickles. Columns and row counts:
+[`docs/REPRODUCING_ANALYSES.md`](REPRODUCING_ANALYSES.md#variant-database-tables).
+
 ## Licensing / exclusions
 
 VarChAMP raw data is unpublished IGVF consortium data and is excluded from all public releases (git, Zenodo). COSMIC and HGMD variant-partner interaction data are excluded due to commercial/academic licensing restrictions — obtain directly from their respective sources using the versions above. gnomAD and ClinVar must also be downloaded directly (public, no redistribution restriction, but not bundled here for size reasons).

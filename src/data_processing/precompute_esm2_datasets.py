@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from evaluation.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
 from paths import DATASETS_DIR  # noqa: E402
 
 SAVE_EVERY = 500

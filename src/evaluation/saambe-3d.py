@@ -10,7 +10,7 @@ import numpy as np
 import prody as pdy
 import xgboost as xgb
 
-from utils.protseqfeature import *
+from evaluation.protseqfeature import *
 
 __version__ = "1.0"
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))

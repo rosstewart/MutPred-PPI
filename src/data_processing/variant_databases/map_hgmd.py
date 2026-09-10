@@ -1,3 +1,4 @@
+from utils import mutations  # noqa: E402
 #!/usr/bin/env python
 """Map HGMD disease-mutation variants to the BioGRID direct-binding PPI network.
 
@@ -29,8 +30,8 @@ Usage:
 import argparse
 import os
 import pickle
-from Bio import SeqIO
-from biogrid_common import (  # shared verbatim helpers
+from utils.sequences import first_token, read_fasta as read_fasta_shared
+from data_processing.variant_databases.biogrid_common import (  # noqa: E402
     build_variant_triplets,
     clean_complexes,
     get_complexes_in_biogrid,
@@ -83,7 +84,7 @@ def apply_variants(uniprot_seq_dict, id_to_seq):
             continue
         wt_res = variant[0]
         try:
-            mt_idx = int(variant[1:-1]) - 1
+            mt_idx = mutations.index(variant)
         except ValueError:
             continue
         mt_res = variant[-1]
@@ -112,7 +113,7 @@ def main(args):
     # 1. Read HGMD FASTA — DM variants only (no variant data retained)
     # ------------------------------------------------------------------
     print(f"Reading HGMD FASTA from {args.hgmd_file} …")
-    seq_dict = {rec.id: str(rec.seq) for rec in SeqIO.parse(args.hgmd_file, "fasta")}
+    seq_dict = read_fasta_shared(args.hgmd_file, first_token, on_duplicate="last")
     print(f"  {len(seq_dict)} sequences in HGMD FASTA")
 
     # Load DM-only ID sets

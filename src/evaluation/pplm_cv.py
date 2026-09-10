@@ -16,7 +16,7 @@ Usage:
         --pplm-cache $MUTPRED_CACHE_DIR/pplm_cache.pkl
 
     conda run -n ppi python pplm_gcv_iter.py \\
-        --dataset sahni_fragoza_varchamp1p_cava \\
+        --dataset sahni_fragoza_mapped090826 \\
         --predictor site_diff \\
         --pplm-cache /path/to/cache.pkl \\
         --n-gcv 30 --outdir /path/to/results/
@@ -33,8 +33,8 @@ from pathlib import Path
 # ── shared code (see src/evaluation/esignet_cv.py and
 #    src/evaluation/predictors/) ───────────────────────────────────────────────
 from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
-# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
-from evaluation.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
+# Shared GCV data-loading layer (see src/utils/gcv_common.py).
+from utils.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
 import evaluation.predictors.pplm_mlp as _pplm_mod   # noqa: E402
 from evaluation.predictors.pplm_mlp import PPLMSeqDiff, PPLMSiteDiff  # noqa: E402

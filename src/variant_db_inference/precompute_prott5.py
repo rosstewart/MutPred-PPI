@@ -31,20 +31,17 @@ import h5py
 import numpy as np
 import torch
 from transformers import T5EncoderModel, T5Tokenizer
+from utils.embeddings import embed_sequences as _embed_sequences_shared  # noqa: E402
+from utils.sequences import h5_safe_key, read_fasta  # noqa: E402
 
 
 def _read_fasta(fasta_path: str) -> dict[str, str]:
-    sequences: dict[str, str] = {}
-    with open(fasta_path) as f:
-        key = None
-        for line in f:
-            line = line.strip()
-            if line.startswith(">"):
-                key = line[1:].strip().replace("/", "_").replace(".", "_")
-                sequences[key] = ""
-            elif key is not None:
-                sequences[key] += line.upper().replace("-", "")
-    return sequences
+    """{key: sequence} from a WT_VT-format FASTA. `key` is the whole header,
+    H5-safe-mangled, so a wild type and its variants key to different H5
+    dataset names -- see `utils.sequences.h5_safe_key`.
+    """
+    return read_fasta(fasta_path, lambda h: h5_safe_key(h, whole=True),
+                      on_duplicate="last")
 
 
 def _load_done(h5_path: str) -> set[str]:
@@ -74,67 +71,61 @@ def embed_sequences(
     vocab,
     device: torch.device,
     h5_path: str,
-    max_residues: int = 4000,
-    max_seq_len: int = 1000,
+    batch_residue_budget: int = 4000,
+    single_sequence_threshold: int = 1000,
     max_batch: int = 100,
 ) -> None:
-    """Embed sequences and append results directly to h5_path (resume-safe)."""
+    """Embed sequences and append results directly to h5_path (resume-safe).
 
-    # Sort longest-first for efficient batching
-    sorted_seqs = sorted(sequences.items(), key=lambda kv: len(kv[1]), reverse=True)
-    total = len(sorted_seqs)
-    done = 0
+    A thin wrapper around `utils.embeddings.embed_sequences`, using its `sink`
+    parameter to write and discard each batch as it completes rather than
+    holding the whole embedding set in memory: some variant-DB FASTAs embed to
+    ~1 TB (see module docstring), which does not fit in RAM. `on_oom="skip"`
+    matches this entry point's historical behaviour -- a batch that OOMs is
+    dropped entirely, not retried.
 
-    batch: list = []
+    Two logging deltas from the previous local implementation, neither of
+    which changes what ends up on disk: an individual "[WARN] RuntimeError
+    embedding batch..." message is no longer printed per skipped batch (the
+    shared retry/skip logic does not expose the failing batch back to the
+    caller); and the `[n/total]` progress count is now "successfully embedded
+    so far" rather than "attempted so far" -- an OOM-skipped batch no longer
+    advances it, since the shared function only calls back on success. The
+    `{written}` count stays exact: it is incremented here, once per NEW H5
+    dataset actually created, same as before.
+
+    Storage dtype is forced to float32 explicitly, matching this entry point's
+    previous behaviour: the model may run in float16 on GPU (the checkpoint is
+    "half"-precision by name), and casting only on the CPU path -- as
+    `_get_t5_model` does -- would otherwise leave GPU-computed embeddings
+    written as float16.
+    """
+    total = len(sequences)
+    written = 0
     start = time.time()
 
-    for seq_idx, (seq_id, seq) in enumerate(sorted_seqs, 1):
-        seq_clean = seq.replace("U", "X").replace("Z", "X").replace("O", "X")
-        seq_len = len(seq_clean)
-        seq_spaced = " ".join(list(seq_clean))
-        batch.append((seq_id, seq_spaced, seq_len))
-
-        n_res_batch = sum(s_len for _, _, s_len in batch) + seq_len
-        flush = (
-            len(batch) >= max_batch
-            or n_res_batch >= max_residues
-            or seq_idx == total
-            or seq_len > max_seq_len
-        )
-
-        if not flush:
-            continue
-
-        pdb_ids, seqs, seq_lens = zip(*batch)
-        batch = []
-
-        token_encoding = vocab.batch_encode_plus(
-            list(seqs), add_special_tokens=True, padding="longest"
-        )
-        input_ids = torch.tensor(token_encoding["input_ids"]).to(device)
-        attention_mask = torch.tensor(token_encoding["attention_mask"]).to(device)
-
-        try:
-            with torch.no_grad():
-                emb_repr = model(input_ids, attention_mask=attention_mask)
-        except RuntimeError as e:
-            print(f"[WARN] RuntimeError embedding batch containing {pdb_ids[0]}: {e}", flush=True)
-            continue
-
+    def sink(batch: dict) -> None:
+        nonlocal written
         with h5py.File(h5_path, "a") as hf:
-            for batch_idx, seq_id in enumerate(pdb_ids):
-                s_len = seq_lens[batch_idx]
-                emb = emb_repr.last_hidden_state[batch_idx, :s_len].detach().cpu().numpy().astype(np.float32)
+            for seq_id, emb in batch.items():
                 if seq_id in hf:
                     continue
-                hf.create_dataset(seq_id, data=emb)
-                done += 1
+                hf.create_dataset(seq_id, data=emb.astype(np.float32))
+                written += 1
 
+    def progress(n_done: int) -> None:
         elapsed = time.time() - start
-        print(
-            f"  [{seq_idx}/{total}] {done} written, {elapsed:.0f}s elapsed",
-            flush=True,
-        )
+        print(f"  [{n_done}/{total}] {written} written, {elapsed:.0f}s elapsed", flush=True)
+
+    _embed_sequences_shared(
+        sequences, model, vocab, device,
+        batch_residue_budget=batch_residue_budget,
+        single_sequence_threshold=single_sequence_threshold,
+        max_batch=max_batch,
+        on_oom="skip",
+        sink=sink,
+        progress=progress,
+    )
 
 
 def main(args: argparse.Namespace) -> None:

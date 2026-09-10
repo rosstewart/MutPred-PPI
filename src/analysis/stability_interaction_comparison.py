@@ -12,8 +12,8 @@ Usage:
     conda run -n ppi python src/analysis/stability_interaction_comparison.py
 
 Requirements:
-  - results_revisions/variant_dbs/clinvar_mutpred_ppi_predictions.tsv
-  - results_revisions/variant_dbs_stability/clinvar_stability_predictions.tsv
+  - results/variant_dbs_all_data/clinvar_mutpred_ppi_predictions.tsv
+  - results/variant_dbs_stability/clinvar_stability_predictions.tsv
   (same for cosmic, gnomad)
 """
 from __future__ import annotations
@@ -31,12 +31,13 @@ from scipy import stats
 import sys as _sys
 from pathlib import Path as _Path
 from paths import REPO_ROOT  # noqa: E402
+from roc_plots import StaleCacheError  # noqa: E402
 
 
 _PUB = REPO_ROOT
-_DB_DIR  = _PUB / "results_revisions" / "variant_dbs"
-_STAB    = _PUB / "results_revisions" / "variant_dbs_stability"
-_OUT_DIR = _PUB / "results_revisions" / "stability_interaction"
+_DB_DIR  = _PUB / "results" / "variant_dbs_all_data"
+_STAB    = _PUB / "results" / "variant_dbs_stability"
+_OUT_DIR = _PUB / "results" / "stability_interaction"
 
 DATASETS = {
     "clinvar": {
@@ -77,8 +78,35 @@ DATASETS = {
 }
 
 
+_NEW_PRED_COLS  = {"interactor", "partner", "mutation", "score"}
+_NEW_STAB_COLS  = {"interactor", "partner", "mutation", "ddg_kcalmol"}
+
+
+def _check_schema(path: Path, expected_new_cols: set[str]) -> None:
+    """Raise StaleCacheError if the TSV header matches the old composite-id schema."""
+    with open(path) as f:
+        header = f.readline().rstrip("\n")
+    cols = set(header.split("\t"))
+    if "complex_id" in cols:
+        raise StaleCacheError(
+            f"{path.name} still uses the old `complex_id` schema. "
+            f"Regenerate it with the migrated inference scripts "
+            f"(`run_variant_db_inference.py` / `run_stability_inference.py`) "
+            f"which emit `interactor / partner / mutation / score|ddg_kcalmol`.")
+    if not expected_new_cols.issubset(cols):
+        raise StaleCacheError(
+            f"{path.name} header {header!r} lacks expected columns "
+            f"{expected_new_cols - cols}.")
+
+
 def load_joined(pred_tsv: Path, stab_tsv: Path) -> pd.DataFrame:
-    """Join MutPred-PPI predictions with stability predictions on (complex_id, variant)."""
+    """Join MutPred-PPI predictions with stability predictions on (interactor, partner, mutation).
+
+    Both files must use the new explicit-column schema
+    (`interactor / partner / mutation / score|ddg_kcalmol`). If either still carries
+    the old `complex_id` schema, raises StaleCacheError naming which file must be
+    regenerated — all existing on-disk TSVs are pre-migration and must be regenerated.
+    """
     if not pred_tsv.exists():
         print(f"[SKIP] Missing: {pred_tsv}")
         return pd.DataFrame()
@@ -86,12 +114,14 @@ def load_joined(pred_tsv: Path, stab_tsv: Path) -> pd.DataFrame:
         print(f"[SKIP] Missing stability: {stab_tsv}")
         return pd.DataFrame()
 
-    pred = pd.read_csv(pred_tsv, sep="\t", names=["complex_id", "variant", "score"],
-                       skiprows=1)
-    stab = pd.read_csv(stab_tsv, sep="\t", names=["complex_id", "variant", "ddg_kcalmol"],
-                       skiprows=1)
+    _check_schema(pred_tsv, _NEW_PRED_COLS)
+    _check_schema(stab_tsv, _NEW_STAB_COLS)
 
-    merged = pred.merge(stab, on=["complex_id", "variant"], how="inner")
+    pred = pd.read_csv(pred_tsv, sep="\t")
+    stab = pd.read_csv(stab_tsv, sep="\t")
+
+    # Join on the canonical (interactor, partner, mutation) triple.
+    merged = pred.merge(stab, on=["interactor", "partner", "mutation"], how="inner")
     print(f"  Joined: {len(merged):,} variants (pred={len(pred):,}, stab={len(stab):,})")
     return merged
 

@@ -2,7 +2,7 @@
 """Export reconstruction tables for manuscript figures from existing result files.
 
 This script does NOT rerun any inference or training. It only reads already-computed
-pkl/npy result files (from results_revisions/macro_aucs, results/varchamp_seqcnf_newvar_eval,
+pkl/npy result files (from results/gcv, results/varchamp_seqcnf_newvar_eval,
 and the three robustness-analysis modules) and reshapes them into clean, documented CSVs
 under datasets/reconstruction_tables/, so that anyone can reconstruct every figure's
 curves/values without access to the original models, splits, or GPU.
@@ -37,15 +37,15 @@ import sys as _sys
 from pathlib import Path as _Path
 from method_names import (  # noqa: E402
     METHOD_DISPLAY_NAMES, extract_method_and_dataset)
-from paths import CV_DIR as _P_CV_DIR, REPO_ROOT, cv_reference_dir  # noqa: E402
-from ids import split_wt_id  # noqa: E402  (single definition, see src/ids.py)
+from paths import (  # noqa: E402
+    CV_DIR as _P_CV_DIR, GCV_RESULTS_DIR, REPO_ROOT, VARCHAMP_BLIND_TEST_DIR, cv_reference_dir)
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
 _ANALYSIS_DIR = os.path.join(_PUB, "src", "analysis")
-GCV_DIR = os.path.join(_PUB, "results_revisions", "macro_aucs")
-BLIND_TEST_DIR = os.path.join(_PUB, "results", "varchamp_seqcnf_newvar_eval")
+GCV_DIR = str(GCV_RESULTS_DIR)
+BLIND_TEST_DIR = str(VARCHAMP_BLIND_TEST_DIR)
 CV_DIR = str(cv_reference_dir())
 OUT_DIR = os.path.join(_PUB, "datasets", "reconstruction_tables")
 
@@ -60,67 +60,67 @@ from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition
 # its pure logic here).
 # ═════════════════════════════════════════════════════════════════════════════
 
-def safe_split_wt_id(complex_id: str):
-    try:
-        p1, p2 = split_wt_id(complex_id)
-        return p1, p2
-    except Exception:
-        return complex_id, ''
-
-
 # Method display-name table + dataset/method extraction, copied verbatim (pure,
 # no side effects) from roc_plots.py so that the set of GCV files we export
 # exactly matches what main_comparison() actually plots for Fig 3 / S1 / S-new.
 
 
-VT_ID_SUPPORT = {
-    'sahni':                             dict(prefix='', ptc_prefix=''),
-    'sahni_fragoza':                     dict(prefix='sahni_fragoza_train_',
-                                               ptc_prefix='swing_train_'),
-    'sahni_varchamp1p_cava':             dict(prefix='sahni_varchamp1p_cava_train_',
-                                               ptc_prefix='combined_sahni_varchamp1p_cava_seq_confirmed_concat_clust_'),
-    'sahni_fragoza_varchamp1p_cava':     dict(prefix='sahni_fragoza_varchamp1p_cava_train_',
-                                               ptc_prefix='combined_sahni_fragoza_varchamp1p_cava_seq_confirmed_'),
-    # NOTE: sahni_fragoza_varchamp2026 is deliberately NOT included here. Its
-    # cv_splits vt_ids/pair_test_classes files carry a
-    # '.bak_before_conflict_removal' backup alongside the live ones, indicating
-    # the splits were edited after the GCV pkls for this dataset were generated.
-    # Empirically this produces <1% per-fold/class count matches (744/221070
-    # rows), i.e. essentially no reliable alignment — so vt_id linkage for this
-    # dataset is left blank rather than emitting misleading near-empty joins.
+# Canonical rows support: datasets whose fold_splits indices are row positions
+# into a canonical rows CSV (built after the 090826 mapping).  These can be
+# linked to a specific (interactor, partner, mutation) directly.  Datasets not
+# listed here have no canonical rows CSV and return an empty index.
+#
+# NOTE: sahni_fragoza_varchamp2026 and other varchamp configs are deliberately
+# NOT included.  Their cv_splits carry '.bak_before_conflict_removal' backups
+# indicating the splits were edited after the GCV pkls were generated,
+# producing <1% per-fold/class count matches (744/221070 rows) and therefore
+# essentially no reliable alignment.  vt_id linkage for those datasets is left
+# blank rather than emitting misleading near-empty joins.
+CANONICAL_ROWS_SUPPORT = {
+    'sahni': dict(
+        rows_csv='sahni_only_train_rows.csv.gz',
+        splits_prefix='sahni_only_train_',
+        ptc_prefix='sahni_only_',
+    ),
+    'sahni_fragoza': dict(
+        rows_csv='sahni_fragoza_train_rows.csv.gz',
+        splits_prefix='sahni_fragoza_train_',
+        ptc_prefix='swing_train_',
+    ),
 }
 
 
 def _vt_id_index_for_dataset(dataset: str, detailed_results: dict):
-    """Return {(seed, fold, cls): [vt_id, ...]} aligned with the pkl's per-class
-    preds/labels arrays (same order), or {} if unsupported / nothing matched.
+    """Return {(seed, fold, cls): [(interactor, partner, mutation), ...]} aligned
+    with the pkl's per-class preds/labels arrays, or {} if unsupported / no match.
 
-    Algorithm copied from interface_analysis.py / plddt_stratification.py /
-    protein_class_stratification.py's compute_curves(): for each GCV seed, load
-    that seed's shuffled vt_ids list + fold_splits + pair_test_classes, walk the
-    test indices of each fold in original order, and bucket vt_ids into
-    per-class lists in the same relative order as the boolean-mask filtering
-    used to build the method pkl's class_{1,2,3} arrays. If a fold/class's vt_id
-    count doesn't match the pkl's preds count (methods may drop invalid preds),
-    that slice is left unlinked rather than mis-aligned.
+    For datasets in CANONICAL_ROWS_SUPPORT, row identity comes from the canonical
+    rows CSV (built after the 090826 mapping): `test_idx` from fold_splits are
+    positional indices into that CSV, so `canonical_rows.iloc[ridx]` gives
+    (interactor, partner, mutation) without any string splitting.
+
+    If a fold/class's row count doesn't match the pkl's preds count (methods may
+    drop invalid preds), that slice is left unlinked rather than mis-aligned.
     """
-    cfg = VT_ID_SUPPORT.get(dataset)
+    cfg = CANONICAL_ROWS_SUPPORT.get(dataset)
     if cfg is None:
         return {}
 
+    rows_path = f"{CV_DIR}/{cfg['rows_csv']}"
+    if not os.path.exists(rows_path):
+        return {}
+    canonical_rows = pd.read_csv(rows_path)
+
     index = {}
     for seed in range(N_SEEDS):
-        vt_ids_path = f"{CV_DIR}/{cfg['prefix']}all_vt_ids_{seed}.pkl"
-        fold_splits_path = f"{CV_DIR}/{cfg['prefix']}fold_splits_{seed}.pkl"
+        fold_splits_path = f"{CV_DIR}/{cfg['splits_prefix']}fold_splits_{seed}.pkl"
         ptc_path = f"{CV_DIR}/{cfg['ptc_prefix']}pair_test_classes_{seed}.npy"
-        if not all(os.path.exists(p) for p in (vt_ids_path, fold_splits_path, ptc_path)):
+        if not all(os.path.exists(p) for p in (fold_splits_path, ptc_path)):
             continue
         iteration = detailed_results['iterations'].get(seed)
         if iteration is None:
             continue
 
-        with open(vt_ids_path, 'rb') as f:
-            vt_ids_seed = pickle.load(f)
         with open(fold_splits_path, 'rb') as f:
             fold_splits = pickle.load(f)
         ptc = np.load(ptc_path)
@@ -133,17 +133,20 @@ def _vt_id_index_for_dataset(dataset: str, detailed_results: dict):
                 continue
             n_test = len(test_idx)
             ptc_fold = ptc[flat_cursor:flat_cursor + n_test]
-            fold_vt_ids = [vt_ids_seed[idx] for idx in test_idx]
 
-            per_class = {1: [], 2: [], 3: []}
-            for vt, cls in zip(fold_vt_ids, ptc_fold):
-                per_class[int(cls)].append(vt)
+            # Each test_idx is a canonical row position; no vt_ids pkl needed.
+            fold_rows = [canonical_rows.iloc[ridx] for ridx in test_idx]
+
+            per_class: dict[int, list] = {1: [], 2: [], 3: []}
+            for row, cls in zip(fold_rows, ptc_fold):
+                per_class[int(cls)].append(
+                    (str(row['interactor']), str(row['partner']), str(row['mutation'])))
 
             for cls in (1, 2, 3):
                 n_preds = len(fold_data[f'class_{cls}']['preds'])
                 if n_preds == len(per_class[cls]):
                     index[(seed, fold, cls)] = per_class[cls]
-                # else: leave unlinked (mismatch) — no entry in index
+                # else: leave unlinked (count mismatch) — no entry in index
 
             flat_cursor += n_test
 
@@ -178,18 +181,14 @@ def export_gcv():
                     class_data = fold_data[f'class_{cls}']
                     preds = np.asarray(class_data['preds'])
                     labels = np.asarray(class_data['labels'])
-                    vt_ids = vt_index.get((seed, fold, cls))
+                    # Each entry is (interactor, partner, mutation) from canonical rows.
+                    row_ids = vt_index.get((seed, fold, cls))
                     for i in range(len(preds)):
-                        vt_id = vt_ids[i] if vt_ids is not None else None
-                        if vt_id is not None:
-                            parts = vt_id.split(' ')
-                            if len(parts) == 2:
-                                interactor, partner = safe_split_wt_id(parts[0])
-                                variant = parts[1]
-                            else:
-                                interactor, partner, variant = None, None, None
+                        if row_ids is not None:
+                            interactor, partner, variant = row_ids[i]
+                            vt_id = f"{interactor}-{partner} {variant}"
                         else:
-                            interactor = partner = variant = None
+                            interactor = partner = variant = vt_id = None
                         rows.append((
                             vt_id, interactor, partner, variant,
                             seed, fold, cls,
@@ -377,7 +376,7 @@ conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure al
 |---|---|---|---|
 | Fig 3, S1 (GCV method comparison ROC curves) | `gcv_{method}.csv` (one per method/dataset combination plotted in `roc_plots.py`) | `vt_id, interactor, partner, variant, gcv_seed, fold, test_class, true_label, predicted_score`. `vt_id`/`interactor`/`partner`/`variant` are populated only where the underlying cv_splits bookkeeping files exist with per-seed variant orderings AND those orderings are internally consistent with the pkl's per-fold/class sample counts (sahni, sahni_fragoza, sahni_varchamp1p_cava, sahni_fragoza_varchamp1p_cava datasets); rows for datasets without usable per-seed vt_ids files (sahni_fragoza_varchamp2026, sahni_fragoza_varchamp_pooled/_full/_full_pooled) still contain preds/labels but leave those 4 columns blank. Recompute AUC per (gcv_seed, fold, test_class) with `sklearn.metrics.roc_auc_score`; average across seeds/folds per test_class to reproduce Fig 3/S1. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure gcv` |
 | Fig 4, S2 (VarChAMP/VCFP blind test ROC curves) | `blind_test_{method}.csv` (one per method key found in `results/varchamp_seqcnf_newvar_eval/`) | `vt_id, interactor, partner, variant, test_class, true_label, predicted_score` (test_class in {C1,C2,C3}). Recompute AUC per test_class with `sklearn.metrics.roc_auc_score` to reproduce Fig 4/S2. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure blind_test` |
-| Fig 5, S4, S-stability (variant-DB disease-enrichment / stability-interaction figures) | `../master_variant_db_predictions.csv.gz` (one row per interactor/variant/partner triplet, SFVCFP-model predictions + disease-label flags) | See that file's own header row. | (already generated; not produced by this script) |
+| Fig 5, S4, S-stability (variant-DB disease-enrichment / stability-interaction figures) | `../master_variant_db_predictions.csv.gz` (one row per interactor/variant/partner triplet, all-data-model predictions + disease-label flags) | See that file's own header row. | (already generated; not produced by this script) |
 | Interface-residue robustness panel | `robustness_interface_curves.csv`, `robustness_interface_summary.csv` | curves: `class, group (interface/non_interface), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure robustness` |
 | pLDDT-stratification robustness panel | `robustness_plddt_curves.csv`, `robustness_plddt_summary.csv` | curves: `class, group (low/medium/high), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | (same as above) |
 | Protein-class (single- vs multi-domain) robustness panel | `robustness_protein_class_curves.csv`, `robustness_protein_class_summary.csv` | curves: `class, group (single/multi), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | (same as above) |
@@ -390,7 +389,7 @@ Notes:
   `interface_analysis.py` / `plddt_stratification.py` / `protein_class_stratification.py`
   plot; the `_summary.csv` files are the same summary rows those scripts already write to
   their own `.tsv` outputs, just reformatted as CSV with a `class`/`group` split.
-- Nothing in `results_revisions/variant_dbs_sfvfp/` is read or touched by this script.
+- Nothing in `results/variant_dbs_all_data/` is read or touched by this script.
 """
 
 

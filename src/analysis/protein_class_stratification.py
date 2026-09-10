@@ -10,9 +10,17 @@ Aggregation matches compute_roc_with_variance() in roc_plots.py exactly:
   - 100 FPR interpolation points
   - Mean ± SEM where SEM = std / sqrt(10)
 
+Rows come from the CANONICAL table `sahni_fragoza_train_rows.csv.gz`, whose
+`row_index` is what `sahni_fragoza_train_fold_splits_{seed}.pkl` and
+`swing_train_pair_test_classes_{seed}.npy` index. The previous version indexed a
+6,219-entry split into a 5,894-entry `all_vt_ids_{seed}.pkl` and recovered the
+mutated protein as `complex_id.split("-")[0]`, which is the wrong protein
+whenever the interactor carries an isoform suffix. The table has `interactor` as
+a column, so neither step exists any more.
+
 Output:
-  results_revisions/robustness_analyses/protein_class_auroc_by_class.png
-  results_revisions/robustness_analyses/protein_class_auroc_summary.tsv
+  results/robustness/protein_class_auroc_by_class.png
+  results/robustness/protein_class_auroc_summary.tsv
   figures/protein_class_auroc_by_class.png  (symlink)
 
 Usage:
@@ -22,6 +30,7 @@ Usage:
 import os
 import pickle
 import numpy as np
+import pandas as pd
 from sklearn.metrics import roc_curve
 import matplotlib
 matplotlib.use("Agg")
@@ -31,6 +40,8 @@ import matplotlib.pyplot as plt
 import sys as _sys
 from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
+from utils.gcv_common import StaleCacheError, load_gcv_detailed_results  # noqa: E402
+from utils.identifiers import bare_accession  # noqa: E402
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -38,9 +49,16 @@ _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
 PFAM_CACHE = str(ANNOTATIONS_DIR / "pfam_domains_cache.pkl")
-GCV_RESULTS = f"{_PUB}/results_revisions/macro_aucs/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
-VT_IDS_FILE = f"{CV_DIR}/sahni_fragoza_train_all_vt_ids.pkl"
-OUT_DIR   = f"{_PUB}/results_revisions/robustness_analyses"
+GCV_RESULTS = f"{_PUB}/results/gcv/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
+CANONICAL_DATASET = "sahni_fragoza_mapped090826"
+# Canonical row ordering: row_index indexes the fold splits and test classes.
+ROWS_FILE = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
+OUT_DIR   = f"{_PUB}/results/robustness"
+
+# `StaleGcvCacheError` (a locally-defined duplicate of `StaleCacheError`)
+# retired 2026-09-10: `StaleCacheError` from `utils.gcv_common` is the one
+# exception every GCV-pkl consumer raises, so a script-specific name for the
+# same failure no longer serves a purpose.
 
 N_SEEDS       = 30
 MIN_N         = 5
@@ -62,17 +80,19 @@ def build_domain_lookup(pfam_hits: dict) -> dict:
     return out
 
 
-def build_vt_group_cache(vt_ids: list, domain_lookup: dict) -> dict:
-    """Map vt_id → group (or None if interactor not in cache)."""
-    seen = {}
-    result = {}
-    for vt_id in vt_ids:
-        complex_id = vt_id.split(" ")[0]
-        if complex_id not in seen:
-            interactor = complex_id.split("-")[0]
-            seen[complex_id] = domain_lookup.get(interactor)
-        result[vt_id] = seen[complex_id]
-    return result
+def build_row_groups(rows: pd.DataFrame, domain_lookup: dict) -> np.ndarray:
+    """Domain group per canonical row, positionally aligned to `row_index`.
+
+    `bare_accession` is called explicitly because `pfam_domains_cache.pkl` is
+    keyed by parent accessions only -- it has no isoform entries at all, so an
+    isoform interactor would otherwise be scored as "unknown" rather than
+    inheriting its parent's domain architecture. That is the one thing the
+    suffix is dropped for; the row itself keeps the accession the table stores.
+    """
+    return np.array(
+        [domain_lookup.get(bare_accession(a)) for a in rows["interactor"]],
+        dtype=object,
+    )
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -80,7 +100,7 @@ def build_vt_group_cache(vt_ids: list, domain_lookup: dict) -> dict:
 def compute_curves():
     """Load data and compute per-(class, domain-group) ROC fold curves.
 
-    Returns (fold_curves, all_vt_by_grp).
+    Returns (fold_curves, all_rows_by_grp).
     """
     print("Loading pfam_domains_cache...", flush=True)
     with open(PFAM_CACHE, "rb") as f:
@@ -88,37 +108,45 @@ def compute_curves():
     domain_lookup = build_domain_lookup(pfam["hits"])
     print(f"  {len(domain_lookup)} proteins with IPR hits", flush=True)
 
-    with open(VT_IDS_FILE, "rb") as f:
-        all_vt_ids = pickle.load(f)
+    rows = pd.read_csv(ROWS_FILE).sort_values("row_index").reset_index(drop=True)
+    if list(rows["row_index"]) != list(range(len(rows))):
+        raise ValueError(f"{ROWS_FILE}: row_index is not 0..n-1; it cannot be "
+                         f"used as a positional index into the fold splits")
+    print(f"  {len(rows)} canonical rows", flush=True)
 
-    vt_groups = build_vt_group_cache(all_vt_ids, domain_lookup)
+    row_groups = build_row_groups(rows, domain_lookup)
     for g in GROUPS:
-        print(f"  {g}: {sum(1 for v in vt_groups.values() if v == g)}", flush=True)
-    print(f"  unknown: {sum(1 for v in vt_groups.values() if v is None)}", flush=True)
-    total = len(all_vt_ids)
-    known = sum(1 for v in vt_groups.values() if v is not None)
-    print(f"  Coverage: {known}/{total} = {known/total:.1%}", flush=True)
+        print(f"  {g}: {int((row_groups == g).sum())}", flush=True)
+    unknown = int(sum(1 for v in row_groups if v is None))
+    print(f"  unknown: {unknown}", flush=True)
+    known = len(row_groups) - unknown
+    print(f"  Coverage: {known}/{len(rows)} = {known/len(rows):.1%}", flush=True)
 
-    with open(GCV_RESULTS, "rb") as f:
-        gcv_results = pickle.load(f)
+    gcv_results = load_gcv_detailed_results(GCV_RESULTS, CANONICAL_DATASET)
 
     fold_curves   = {c: {g: [] for g in GROUPS} for c in (1, 2, 3)}
-    all_vt_by_grp = {c: {g: set() for g in GROUPS} for c in (1, 2, 3)}
+    all_rows_by_grp = {c: {g: set() for g in GROUPS} for c in (1, 2, 3)}
 
     for seed in range(N_SEEDS):
-        vt_ids_seed_path = f"{CV_DIR}/sahni_fragoza_train_all_vt_ids_{seed}.pkl"
         fold_splits_path = f"{CV_DIR}/sahni_fragoza_train_fold_splits_{seed}.pkl"
         ptc_path         = f"{CV_DIR}/swing_train_pair_test_classes_{seed}.npy"
 
-        if not all(os.path.exists(p) for p in [vt_ids_seed_path, fold_splits_path, ptc_path]):
+        if not all(os.path.exists(p) for p in [fold_splits_path, ptc_path]):
             print(f"  Seed {seed}: missing files, skipping", flush=True)
             continue
 
-        with open(vt_ids_seed_path, "rb") as f:
-            vt_ids_seed = pickle.load(f)
         with open(fold_splits_path, "rb") as f:
             fold_splits = pickle.load(f)
         pair_test_classes = np.load(ptc_path)
+
+        n_test_total = sum(len(t) for _, _, t in fold_splits)
+        if n_test_total != len(rows) or len(pair_test_classes) != len(rows):
+            raise ValueError(
+                f"seed {seed}: fold splits cover {n_test_total} rows and the "
+                f"test-class array {len(pair_test_classes)}, but "
+                f"{os.path.basename(ROWS_FILE)} has {len(rows)}. Regenerate the "
+                f"CV reference with src/analysis/export_cv_reference.py "
+                f"--dataset sahni_fragoza_mapped090826.")
 
         iteration   = gcv_results["iterations"][seed]
         flat_cursor = 0
@@ -128,10 +156,29 @@ def compute_curves():
             fold_data = iteration["folds"][fold]
             n_test    = len(test_idx)
             ptc_fold  = pair_test_classes[flat_cursor:flat_cursor + n_test]
-            fold_vt_ids = [vt_ids_seed[idx] for idx in test_idx]
 
             preds_fold  = {cls: list(fold_data[f"class_{cls}"]["preds"])  for cls in (1, 2, 3)}
             labels_fold = {cls: list(fold_data[f"class_{cls}"]["labels"]) for cls in (1, 2, 3)}
+
+            # Freshness of GCV_RESULTS AS A WHOLE is already asserted once, by
+            # `load_gcv_detailed_results` above (via the shared
+            # `utils.gcv_common.assert_gcv_pkl_fresh`), which compares one
+            # seed's TOTAL row count against the canonical table. That does not
+            # guarantee every INDIVIDUAL fold's class buckets are internally
+            # consistent with THIS fold split -- a global total can match by
+            # construction while a specific fold's bucket sizes still disagree.
+            # The interleave below indexes `preds_fold[cls][cls_cursor[cls]]`
+            # unconditionally, so a per-fold mismatch must be caught here or it
+            # surfaces as an opaque `IndexError` instead of a named cause.
+            n_cached = sum(len(v) for v in preds_fold.values())
+            if n_cached != n_test:
+                raise StaleCacheError(
+                    f"{os.path.basename(GCV_RESULTS)}: seed {seed} fold {fold} "
+                    f"holds {n_cached} cached predictions but the canonical "
+                    f"fold has {n_test} test rows, despite the pkl's overall row "
+                    f"count matching the canonical table. This fold is "
+                    f"internally inconsistent and must be recomputed.")
+
             cls_cursor  = {1: 0, 2: 0, 3: 0}
             preds_ordered, labels_ordered = [], []
             for cls in ptc_fold:
@@ -142,7 +189,9 @@ def compute_curves():
             preds_ordered  = np.array(preds_ordered)
             labels_ordered = np.array(labels_ordered)
             classes_ordered = np.array(ptc_fold)
-            groups_ordered  = np.array([vt_groups.get(vt) for vt in fold_vt_ids], dtype=object)
+            # Rows, not welded vt_id strings: row_index is what the split holds.
+            fold_rows      = np.asarray(test_idx)
+            groups_ordered = row_groups[fold_rows]
 
             for cls in (1, 2, 3):
                 mask_cls = classes_ordered == cls
@@ -150,8 +199,7 @@ def compute_curves():
                     mask = mask_cls & (groups_ordered == grp)
                     p = preds_ordered[mask]
                     l = labels_ordered[mask]
-                    vts = np.array(fold_vt_ids)[mask]
-                    all_vt_by_grp[cls][grp].update(vts)
+                    all_rows_by_grp[cls][grp].update(fold_rows[mask].tolist())
                     if len(p) >= MIN_N and len(np.unique(l)) == 2:
                         fpr, tpr, _ = roc_curve(l, p)
                         fold_curves[cls][grp].append(np.interp(FPR_GRID, fpr, tpr))
@@ -160,13 +208,13 @@ def compute_curves():
 
         print(f"  Seed {seed}: done", flush=True)
 
-    return fold_curves, all_vt_by_grp
+    return fold_curves, all_rows_by_grp
 
 
 CLASS_LABELS = {1: "Class 1 (both seen)", 2: "Class 2 (one seen)", 3: "Class 3 (neither seen)"}
 
 
-def plot_on_axes(axes, fold_curves, all_vt_by_grp):
+def plot_on_axes(axes, fold_curves, all_rows_by_grp):
     """Draw the 3-panel (C1/C2/C3) single-vs-multi-domain ROC comparison onto
     pre-supplied axes. Returns summary_rows (list[str]) for the TSV output.
     """
@@ -180,7 +228,7 @@ def plot_on_axes(axes, fold_curves, all_vt_by_grp):
         for grp in GROUPS:
             curves      = fold_curves[cls][grp]
             n_fold      = len(curves)
-            n_variants  = len(all_vt_by_grp[cls][grp])
+            n_variants  = len(all_rows_by_grp[cls][grp])
             color       = COLORS[grp]
 
             if curves:
@@ -219,10 +267,10 @@ def plot_on_axes(axes, fold_curves, all_vt_by_grp):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    fold_curves, all_vt_by_grp = compute_curves()
+    fold_curves, all_rows_by_grp = compute_curves()
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), sharey=True)
-    summary_rows = plot_on_axes(axes, fold_curves, all_vt_by_grp)
+    summary_rows = plot_on_axes(axes, fold_curves, all_rows_by_grp)
 
     plt.tight_layout()
     out_png = os.path.join(OUT_DIR, "protein_class_auroc_by_class.png")

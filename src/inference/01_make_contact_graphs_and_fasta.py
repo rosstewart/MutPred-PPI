@@ -9,16 +9,21 @@ Usage:
     python 01_make_contact_graphs_and_fasta.py <working_dir> <mmcif_dir> <variants_file> <n_jobs>
 """
 
+import csv
 import os
 import glob
 import argparse
+import sys
 import numpy as np
-import scipy.sparse as sp
-from scipy.io import savemat, loadmat
-from scipy.spatial import cKDTree
 from Bio import PDB
 from Bio.PDB import MMCIFParser
 from joblib import Parallel, delayed
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from contact_graphs import (  # noqa: E402
+    ContactGraphStore, contact_graph_from_structure,
+)
+from utils import mutations  # noqa: E402
 
 
 # parse command line arguments
@@ -69,7 +74,7 @@ def get_labeled_residues(variant_file):
             
             # parse variant notation (e.g., V123A)
             wt_res = variant[0]
-            res_idx = int(variant[1:-1]) - 1  # convert to 0-based
+            res_idx = mutations.index(variant)  # convert to 0-based
             mt_res = variant[-1]
             
             if complex_id not in all_pos_indices:
@@ -150,82 +155,49 @@ def find_mmcif_file(id_a, id_b, mmcif_dir):
 
 
 def make_graph(complex_id, mmcif_dir, save_dir):
-    """Generate contact graph from mmCIF structure."""
+    """Contact graph for one complex, as a record the caller stores.
+
+    The contact rule itself lives in `contact_graphs.contact_graph_from_structure`
+    -- one definition for the whole repo, so the inference pipeline and the
+    canonical graph rebuild cannot drift apart. This function only resolves WHICH
+    file to read and WHICH chain the user called the interactor.
+
+    `edge_index` is indexed over the chains in FILE order (`store_seq_a` then
+    `store_seq_b`), which is what gets handed to `ContactGraphStore.put`. The
+    interactor/partner sequences are recorded separately for the CSV sidecar: the
+    store is keyed on sequence content and re-orients on read, so the two do not
+    have to agree and no renumbering is needed here.
+    """
     id_a, id_b = complex_id.split(':')
-    out_file = os.path.join(save_dir, f'{id_a}_{id_b}.mat')
-    
-    if os.path.exists(out_file):
-        return
-    
-    # find and parse structure file
+
     mmcif_file, swapped = find_mmcif_file(id_a, id_b, mmcif_dir)
-    parser = MMCIFParser(QUIET=True)
-    structure = parser.get_structure(complex_id, mmcif_file)
-    
-    # assign chains based on swap status
-    if not swapped:
-        model_a = structure[0]['A']
-        model_b = structure[0]['B']
-    else:
-        model_a = structure[0]['B']  # id_a gets chain B when swapped
-        model_b = structure[0]['A']  # id_b gets chain A when swapped
-    
-    # extract residue coordinates
-    aa_labels = []
-    coords = []
-    num_residues_a = 0
-    
-    # process chain A (id_a)
-    for residue in model_a:
-        if PDB.is_aa(residue):
-            num_residues_a += 1
-            aa_labels.append(THREE_LETTER_TO_ONE[residue.get_resname().capitalize()])
-            atom_coords = {atom.get_name(): atom.coord for atom in residue}
-            coords.append(atom_coords)
-    
-    # process chain B (id_b)
-    for residue in model_b:
-        if PDB.is_aa(residue):
-            aa_labels.append(THREE_LETTER_TO_ONE[residue.get_resname().capitalize()])
-            atom_coords = {atom.get_name(): atom.coord for atom in residue}
-            coords.append(atom_coords)
-    
-    num_residues = len(aa_labels)
+    built = contact_graph_from_structure(mmcif_file, EDGE_DIST_THRESHOLD)
+    if built is None:
+        raise ValueError(f"{mmcif_file}: not a readable two-chain structure")
+    seq_a, seq_b, edge_index = built
 
-    # Build a flat array of all atom coordinates with residue index labels,
-    # then use a KD-tree to find all atom pairs within EDGE_DIST_THRESHOLD.
-    # This replaces the O(N^2 * A^2) nested loop with an O(N*A * log(N*A)) query
-    # and produces identical results (same threshold, same distance metric).
-    flat_coords = []
-    atom_to_res = []
-    for res_idx, atom_dict in enumerate(coords):
-        for atom_coord in atom_dict.values():
-            flat_coords.append(atom_coord)
-            atom_to_res.append(res_idx)
+    # `swapped` says the file lists id_b first, so id_a is the SECOND chain.
+    interactor_sequence, partner_sequence = (
+        (seq_b, seq_a) if swapped else (seq_a, seq_b))
 
-    edge_mat = np.zeros((num_residues, num_residues))
-    if flat_coords:
-        flat_coords = np.array(flat_coords)
-        atom_to_res = np.array(atom_to_res)
-        tree = cKDTree(flat_coords)
-        close_pairs = tree.query_pairs(EDGE_DIST_THRESHOLD)
-        for ai, aj in close_pairs:
-            ri, rj = atom_to_res[ai], atom_to_res[aj]
-            if ri != rj:
-                edge_mat[ri, rj] = edge_mat[rj, ri] = 1
-    
-    # save graph data
-    savemat(out_file, {
-        'G': sp.csr_matrix(edge_mat),
-        'L': aa_labels,
-        'NRR': num_residues_a
-    })
+    return {
+        'complex_id': complex_id,
+        'interactor': id_a,
+        'partner': id_b,
+        'interactor_sequence': interactor_sequence,
+        'partner_sequence': partner_sequence,
+        'store_seq_a': seq_a,
+        'store_seq_b': seq_b,
+        'edge_index': edge_index,
+        'source': mmcif_file,
+    }
 
 
 def write_variant_labels(variant_indices, save_dir, method='interaction_loss'):
     """Generate variant sequence files."""
     variant_labels_lines = []
     variant_labels_sep_lines = []
+    variant_rows = []          # (interactor, partner, mutation_0b), explicit columns
     num_bad_variants = 0
     
     for complex_id in variant_indices:
@@ -261,6 +233,7 @@ def write_variant_labels(variant_indices, save_dir, method='interaction_loss'):
             variant_name = f'{id_a}_{id_b}_{method}_variant_{wt_res}{mt_idx}{mt_res}'
             variant_labels_lines.append(f'>{variant_name}\n{vt_seq.upper()}\n')
             variant_labels_sep_lines.append(f'>{variant_name}\n{vt_seq}\n')
+            variant_rows.append((id_a, id_b, f'{wt_res}{mt_idx}{mt_res}'))
             
             if chain not in chain_to_pos:
                 chain_to_pos[chain] = ''
@@ -284,88 +257,75 @@ def write_variant_labels(variant_indices, save_dir, method='interaction_loss'):
     
     with open(variant_labels_sep_file, 'w') as f:
         f.writelines(variant_labels_sep_lines)
-    
+
+    # The canonical form of the same information. The `.labels` FASTAs above key
+    # on `{interactor}_{partner}_{method}_variant_{mut}`, a four-part composite
+    # that has to be split back apart to be used; this table states the three
+    # fields directly. `mutation` is 0-BASED here, matching the ProtT5 keys the
+    # next step looks up; conversion to the canonical 1-based form happens once,
+    # in `inference_utils.write_output`.
+    variants_index = os.path.join(save_dir, 'variants.csv')
+    with open(variants_index, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['interactor', 'partner', 'mutation'])
+        w.writerows(variant_rows)
+    print(f'Wrote {variants_index}')
+
     return variant_labels_sep_file
 
 
-def generate_fasta_output(save_dir, wd, variant_labels_sep_file):
-    """Generate FASTA file with wild-type and variant sequences."""
-    # parse variant sequences
-    wt_to_vt_seq = {}
-    with open(variant_labels_sep_file, 'r') as f:
-        for line in f:
-            if line.startswith('>'):
-                filename_key = line[1:].strip()
-                pdb_id = filename_key.split('_')[0]
-                if pdb_id not in wt_to_vt_seq:
-                    wt_to_vt_seq[pdb_id] = {}
-                variant = filename_key.split('_')[-1]
-            else:
-                seq = line.strip()
-                wt_to_vt_seq[pdb_id][variant] = seq
-    
-    # write FASTA output
-    seen_wts = set()
-    seen_vts = set()
-    seen_partners = set()
-    
+def generate_fasta_output(save_dir, wd, variant_labels_sep_file=None):
+    """Write `wt_and_vt.fasta`: every wild-type, partner and variant sequence.
+
+    Driven by `complexes.csv` and `variants.csv`, the two tables written above.
+    It previously globbed `*.interaction_loss_pos`, took the complex id from the
+    FILENAME, split it on `_` to recover the two accessions, and separated the
+    two chains by LETTER CASE inside a `.labels_separated` file. Every one of
+    those steps is a guess: `split('_')` mis-assigns both proteins for any
+    RefSeq-style id (`NP_002046_GFAP`), and case-encoding cannot represent a
+    sequence that legitimately contains both cases. The tables state all of it.
+
+    `variant_labels_sep_file` is accepted and ignored, so existing callers do
+    not have to change.
+    """
+    complexes_path = os.path.join(save_dir, 'complexes.csv')
+    variants_path = os.path.join(save_dir, 'variants.csv')
+
+    seqs = {}                       # accession -> sequence
+    with open(complexes_path) as f:
+        for row in csv.DictReader(f):
+            seqs.setdefault(row['interactor'], row['interactor_sequence'])
+            seqs.setdefault(row['partner'], row['partner_sequence'])
+
+    variants = []                   # (interactor, mutation_0b), de-duplicated
+    seen = set()
+    with open(variants_path) as f:
+        for row in csv.DictReader(f):
+            key = (row['interactor'], row['mutation'])
+            if key not in seen:
+                seen.add(key)
+                variants.append(key)
+
+    n_wt = n_vt = 0
+    # Sorted so the file is byte-reproducible: dict insertion order follows
+    # whatever order the structures happened to parse in, which made two runs of
+    # the same input differ only by line order.
     with open(os.path.join(wd, 'wt_and_vt.fasta'), 'w') as f_out:
-        seen_pdbs = set()
-        
-        # process all variant files
-        variant_files = glob.glob(f"{save_dir}/*.interaction_loss_pos") + \
-                       glob.glob(f"{save_dir}/*.interaction_loss_neg")
-        
-        for f_pos in variant_files:
-            labels_file = f_pos.replace('interaction_loss_pos', 'labels_separated')\
-                              .replace('interaction_loss_neg', 'labels_separated')
-            
-            if not os.path.exists(labels_file.replace('labels_separated', 'mat')):
+        for accession, seq in sorted(seqs.items()):
+            f_out.write(f">{accession}\n{seq}\n")
+            n_wt += 1
+        for interactor, mutation in sorted(variants):
+            seq = seqs.get(interactor)
+            if seq is None:
                 continue
-            
-            pdb_id = os.path.basename(labels_file).split('.')[0]
-            if pdb_id in seen_pdbs:
+            idx = int(mutation[1:-1])          # already 0-based; see variants.csv
+            if idx >= len(seq) or seq[idx] != mutation[0]:
                 continue
-            seen_pdbs.add(pdb_id)
-            
-            wt_id = pdb_id.split('_')[0]
-            partner_id = '_'.join(pdb_id.split('_')[1:])
-            
-            # parse sequences
-            with open(labels_file, 'r') as f:
-                line = f.read().strip()
-                wt_seq = ''
-                partner_seq = ''
-                
-                for char in line:
-                    if char.islower():
-                        partner_seq += char
-                    else:
-                        wt_seq += char
-            
-            # write wild-type sequence
-            if wt_id not in seen_wts:
-                f_out.write(f">{wt_id}\n{wt_seq}\n")
-                seen_wts.add(wt_id)
-            
-            # write partner sequence
-            if partner_id not in seen_partners:
-                f_out.write(f">{partner_id}\n{partner_seq.upper()}\n")
-                seen_partners.add(partner_id)
-            
-            # write variant sequences
-            if wt_id in wt_to_vt_seq:
-                for variant, vt_partner_seq in wt_to_vt_seq[wt_id].items():
-                    vt_id = f'{wt_id} {variant}'
-                    
-                    if vt_id not in seen_vts:
-                        vt_seq = ''
-                        for char in vt_partner_seq:
-                            if not char.islower():
-                                vt_seq += char
-                        
-                        f_out.write(f">{vt_id}\n{vt_seq}\n")
-                        seen_vts.add(vt_id)
+            f_out.write(f">{interactor} {mutation}\n"
+                        f"{seq[:idx]}{mutation[-1]}{seq[idx + 1:]}\n")
+            n_vt += 1
+    print(f'Wrote {n_wt} wild-type and {n_vt} variant sequences to '
+          f'{os.path.join(wd, "wt_and_vt.fasta")}')
 
 
 if __name__ == "__main__":
@@ -375,38 +335,49 @@ if __name__ == "__main__":
     
     # generate contact graphs in parallel
     print(f'Generating {len(complex_ids)} contact graph{"s" if len(complex_ids) != 1 else ""}...')
-    Parallel(n_jobs=n_jobs)(
-        delayed(make_graph)(complex_id, mmcif_dir, save_dir) 
+    records = [r for r in Parallel(n_jobs=n_jobs)(
+        delayed(make_graph)(complex_id, mmcif_dir, save_dir)
         for complex_id in complex_ids
-    )
-    
-    # process graph files and extract sequences
-    for mat_file in glob.glob(f'{save_dir}/*.mat'):
-        key = os.path.splitext(os.path.basename(mat_file))[0]
-        
-        # load graph data
-        mat_data = loadmat(mat_file)
-        dense_mat = mat_data['G'].toarray()
-        pdb_seq = mat_data['L']
-        num_residues_a = mat_data['NRR'].item()
-        
-        # process sequence
-        if len(pdb_seq) == 1:
-            pdb_seq = pdb_seq[0]
-        else:
-            pdb_seq = ''.join(pdb_seq)
-        
-        # write sequence files
+    ) if r is not None]
+
+    # One container keyed by chain sequence, plus the sidecar that maps a
+    # complex_id to its two chains. Step 02 reads the sidecar and looks the graph
+    # up BY SEQUENCE; it never parses a filename, which is what made isoform
+    # accessions (`O43889-2-J3QKU0`) unsplittable and chain order guesswork.
+    store_path = os.path.join(save_dir, 'contact_graphs.h5')
+    if os.path.exists(store_path):
+        os.remove(store_path)
+    with ContactGraphStore(store_path, mode='w') as store:
+        for r in records:
+            # File order, matching `edge_index`. The store re-orients on read.
+            store.put(r['store_seq_a'], r['store_seq_b'],
+                      r['edge_index'], source=r['source'],
+                      threshold=EDGE_DIST_THRESHOLD)
+    print(f"Wrote {len(records)} graphs to {store_path}")
+
+    index_path = os.path.join(save_dir, 'complexes.csv')
+    with open(index_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=['complex_id', 'interactor', 'partner',
+                                          'interactor_sequence', 'partner_sequence'])
+        w.writeheader()
+        for r in records:
+            w.writerow({k: r[k] for k in w.fieldnames})
+    print(f"Wrote {index_path}")
+
+    # sequence files, still keyed by complex_id: they feed the variant/FASTA
+    # steps below, which are about variants rather than about graphs.
+    for r in records:
+        key = f"{r['interactor']}_{r['partner']}"
+        seq_a, seq_b = r['interactor_sequence'], r['partner_sequence']
+
         with open(os.path.join(save_dir, f'{key}.labels'), 'w') as f:
-            f.write(pdb_seq)
-            print(f"Wrote {save_dir}/{key}.labels")
-        
+            f.write(seq_a + seq_b)
+
         with open(os.path.join(save_dir, f'{key}.labels_separated'), 'w') as f:
-            f.write(pdb_seq[:num_residues_a] + pdb_seq[num_residues_a:].lower())
-            print(f"Wrote {save_dir}/{key}.labels_separated")
-        
+            f.write(seq_a + seq_b.lower())
+
         with open(os.path.join(save_dir, f'{key}.num_residues_a'), 'w') as f:
-            f.write(str(num_residues_a))
+            f.write(str(len(seq_a)))
     
     # generate variant labels
     variant_labels_sep_file = write_variant_labels(variant_indices, save_dir)

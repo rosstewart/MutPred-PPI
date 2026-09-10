@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Build a master gzip-compressed CSV of all variant-partner predictions.
 
-Uses SFVCFP (sahni_fragoza_varchamp_full_pooled) model predictions across
+Uses the all-data model's (sahni_fragoza_varchamp_all_mapped090826) predictions across
 ClinVar, gnomAD, and autism/NDD datasets. HGMD is excluded (commercial
 license). COSMIC is excluded by default due to redistribution restrictions;
 enable with --include-cosmic if you have verified your use is compliant.
@@ -33,20 +33,13 @@ from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT  # noqa: 
 _BASE = DATA_ROOT
 _HOME   = _BASE / "home"
 _PUB    = _BASE / "publication"
-_REVDIR = _PUB / "results_revisions"
+_REVDIR = _PUB / "results"
 
-SF_TSV = {
-    "clinvar": _REVDIR / "variant_dbs" / "clinvar_mutpred_ppi_predictions.tsv",
-    "gnomad":  _REVDIR / "variant_dbs" / "gnomad_mutpred_ppi_predictions.tsv",
-    "cosmic":  _REVDIR / "variant_dbs" / "cosmic_mutpred_ppi_predictions.tsv",
-    "autism":  _REVDIR / "variant_dbs" / "autism_mutpred_ppi_predictions.tsv",
-    # hgmd excluded
-}
-SFVCFP_TSV = {
-    "clinvar": _REVDIR / "variant_dbs_sfvfp" / "clinvar_mutpred_ppi_predictions.tsv",
-    "gnomad":  _REVDIR / "variant_dbs_sfvfp" / "gnomad_mutpred_ppi_predictions.tsv",
-    "cosmic":  _REVDIR / "variant_dbs_sfvfp" / "cosmic_mutpred_ppi_predictions.tsv",
-    "autism":  _REVDIR / "variant_dbs_sfvfp" / "autism_mutpred_ppi_predictions.tsv",
+ALL_DATA_TSV = {
+    "clinvar": _REVDIR / "variant_dbs_all_data" / "clinvar_mutpred_ppi_predictions.tsv",
+    "gnomad":  _REVDIR / "variant_dbs_all_data" / "gnomad_mutpred_ppi_predictions.tsv",
+    "cosmic":  _REVDIR / "variant_dbs_all_data" / "cosmic_mutpred_ppi_predictions.tsv",
+    "autism":  _REVDIR / "variant_dbs_all_data" / "autism_mutpred_ppi_predictions.tsv",
 }
 
 CLINVAR_PKL = {
@@ -81,6 +74,10 @@ def load_tsv(path: Path) -> pd.DataFrame:
     if {"interactor", "partner"}.issubset(df.columns):
         df["interactor_uniprot"] = df["interactor"]
         df["partner_uniprot"] = df["partner"]
+        # The explicit schema names the column `mutation`; the legacy one
+        # `variant`. Downstream here expects `variant`.
+        if "variant" not in df.columns and "mutation" in df.columns:
+            df["variant"] = df["mutation"]
     else:
         # `complex_id` is '{interactor}_{partner}'. Split on the FIRST underscore:
         # UniProt accessions never contain one, so it is the unambiguous
@@ -115,13 +112,13 @@ def load_all_tsv(tsv_dict: dict, score_col: str, include_cosmic: bool) -> pd.Dat
 def main(args):
     include_cosmic = args.include_cosmic
 
-    print("Loading SFVCFP predictions...")
-    sfvcfp = load_all_tsv(SFVCFP_TSV, "mutpredppi_score", include_cosmic)
-    print(f"  {len(sfvcfp):,} SFVCFP rows")
+    print("Loading all-data-model predictions...")
+    all_data = load_all_tsv(ALL_DATA_TSV, "mutpredppi_score", include_cosmic)
+    print(f"  {len(all_data):,} rows")
 
     key_cols = ["interactor_uniprot", "variant", "partner_uniprot"]
 
-    master = sfvcfp.drop(columns=["_source"])
+    master = all_data.drop(columns=["_source"])
     master = master.drop_duplicates(subset=key_cols)
     print(f"  {len(master):,} unique (interactor, variant, partner) rows")
 

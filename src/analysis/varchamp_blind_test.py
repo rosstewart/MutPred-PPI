@@ -6,30 +6,32 @@ import glob
 import os
 import re
 
-WORKING_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../results/varchamp_seqcnf_newvar_eval")
-)
+# --- repo-relative path resolution (see src/paths.py) ---
+from paths import VARCHAMP_BLIND_TEST_DIR  # noqa: E402
+from utils.blind_test_common import load_class_arrays  # noqa: E402
+
+WORKING_DIR = str(VARCHAMP_BLIND_TEST_DIR)
 SAVE_PLOTS = True
 SAVE_DIR = os.path.join(WORKING_DIR, "roc_plots")
 FIGURE_DPI = 100
 SAVE_DPI = 300
 
 METHOD_DISPLAY_NAMES = {
-    # VCFP (varchamp_full_pooled) blind test method keys
-    "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)":        "MutPred-PPI",
-    "MutPred-PPI (sahni, megascale_all, all-data) (varchamp_full_pooled)": "MutPred-PPI (Sahni only)",
-    "eSIG-Net (Sahni+Fragoza train) (varchamp_full_pooled)":               "eSIG-Net",
-    "SWING (Sahni+Fragoza train) (varchamp_full_pooled)":                  "SWING (Blind-Test)",
-    "SWING (test pretrain, Sahni+Fragoza train) (varchamp_full_pooled)":   "SWING (Test Pretrain)",
-    "MutPPI (Sahni+Fragoza train) (varchamp_full_pooled)":                 "MutPPI",
-    "MutPPIPlus (Sahni+Fragoza train) (varchamp_full_pooled)":             "MutPPI+",
-    "PPLM_seq_diff (Sahni+Fragoza train) (varchamp_full_pooled)":          "PPLM (seq diff)",
-    "PPLM_site_diff (Sahni+Fragoza train) (varchamp_full_pooled)":         "PPLM (site diff)",
-    "MINT_seq_diff (Sahni+Fragoza train) (varchamp_full_pooled)":          "MINT (seq diff)",
-    "MINT_site_diff (Sahni+Fragoza train) (varchamp_full_pooled)":         "MINT (site diff)",
-    "SAAMBE-3D (Sahni+Fragoza train) (varchamp_full_pooled)":              "SAAMBE-3D",
-    "DDMutPPI (varchamp_full_pooled)":                                     "DDMutPPI",
-    "MutPred2 (varchamp_full_pooled)":                                     "MutPred2",
+    # VarChAMP blind test method keys (train=sahni_fragoza_mapped090826,
+    # test=varchamp_all_mapped090826 -- see run_varchamp_blind_test.py)
+    "MutPred-PPI (megascale_all, all-data) (varchamp_blind_test)":        "MutPred-PPI",
+    "MutPred-PPI (sahni, megascale_all, all-data) (varchamp_blind_test)": "MutPred-PPI (Sahni only)",
+    "eSIG-Net (Sahni+Fragoza train) (varchamp_blind_test)":               "eSIG-Net",
+    "SWING (Sahni+Fragoza train) (varchamp_blind_test)":                  "SWING (Blind-Test)",
+    "SWING (test pretrain, Sahni+Fragoza train) (varchamp_blind_test)":   "SWING (Test Pretrain)",
+    "MutPPI (Sahni+Fragoza train) (varchamp_blind_test)":                 "MutPPI",
+    "MutPPIPlus (Sahni+Fragoza train) (varchamp_blind_test)":             "MutPPI+",
+    "PPLM_seq_diff (Sahni+Fragoza train) (varchamp_blind_test)":          "PPLM (seq diff)",
+    "PPLM_site_diff (Sahni+Fragoza train) (varchamp_blind_test)":         "PPLM (site diff)",
+    "MINT_seq_diff (Sahni+Fragoza train) (varchamp_blind_test)":          "MINT (seq diff)",
+    "MINT_site_diff (Sahni+Fragoza train) (varchamp_blind_test)":         "MINT (site diff)",
+    "SAAMBE-3D (Sahni+Fragoza train) (varchamp_blind_test)":              "SAAMBE-3D",
+    "MutPred2 (varchamp_blind_test)":                                     "MutPred2",
 }
 
 COLORS = {
@@ -55,30 +57,28 @@ LINE_STYLES = {
     "SAAMBE-3D": "--",  # dashed
     "MutPPI":    "--",
     "MutPPI+":   "--",
-    "DDMutPPI":  "--",
 }
 
 # Training-set comparison: all-trained MutPred-PPI models on VCFP blind test (no 10-fold)
 TRAINING_SET_COMPARISON_METHODS = [
-    "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)",
-    "MutPred-PPI (sahni, megascale_all, all-data) (varchamp_full_pooled)",
+    "MutPred-PPI (megascale_all, all-data) (varchamp_blind_test)",
+    "MutPred-PPI (sahni, megascale_all, all-data) (varchamp_blind_test)",
 ]
 
 # Set to a list of method keys to restrict which methods appear; None = all in display names
 METHODS_TO_COMPARE = [
-    "MutPred-PPI (megascale_all, all-data) (varchamp_full_pooled)",
-    "eSIG-Net (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "SWING (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "SWING (test pretrain, Sahni+Fragoza train) (varchamp_full_pooled)",
-    "MutPPI (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "MutPPIPlus (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "PPLM_seq_diff (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "PPLM_site_diff (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "MINT_seq_diff (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "MINT_site_diff (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "SAAMBE-3D (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "DDMutPPI (varchamp_full_pooled)",
-    "MutPred2 (varchamp_full_pooled)",
+    "MutPred-PPI (megascale_all, all-data) (varchamp_blind_test)",
+    "eSIG-Net (Sahni+Fragoza train) (varchamp_blind_test)",
+    "SWING (Sahni+Fragoza train) (varchamp_blind_test)",
+    "SWING (test pretrain, Sahni+Fragoza train) (varchamp_blind_test)",
+    "MutPPI (Sahni+Fragoza train) (varchamp_blind_test)",
+    "MutPPIPlus (Sahni+Fragoza train) (varchamp_blind_test)",
+    "PPLM_seq_diff (Sahni+Fragoza train) (varchamp_blind_test)",
+    "PPLM_site_diff (Sahni+Fragoza train) (varchamp_blind_test)",
+    "MINT_seq_diff (Sahni+Fragoza train) (varchamp_blind_test)",
+    "MINT_site_diff (Sahni+Fragoza train) (varchamp_blind_test)",
+    "SAAMBE-3D (Sahni+Fragoza train) (varchamp_blind_test)",
+    "MutPred2 (varchamp_blind_test)",
 ]
 
 
@@ -86,7 +86,7 @@ METHODS_TO_COMPARE = [
 # training-set membership, so the stratification carries no meaning for them:
 # they are scored on the pooled test set and drawn identically in all three panels.
 STRATIFICATION_INDEPENDENT_METHODS = {
-    "MutPred2 (varchamp_full_pooled)",
+    "MutPred2 (varchamp_blind_test)",
 }
 
 
@@ -98,18 +98,18 @@ def extract_method_name(filepath):
 def load_method_data(method_name, directory):
     data = {}
     for c in [1, 2, 3]:
-        labels_f = os.path.join(directory, f"{method_name}_c{c}_labels.npy")
-        preds_f  = os.path.join(directory, f"{method_name}_c{c}_preds.npy")
-        if os.path.exists(labels_f) and os.path.exists(preds_f):
-            preds = np.load(preds_f)
-            if len(preds) == 0:
-                print(f"Warning: {method_name} c{c} predictions are empty — skipping.")
-                continue
-            if (preds.max() - preds.min()) < 1e-5:
-                print(f"Warning: {method_name} c{c} predictions are constant ({preds[0]:.4f}) — skipping (degenerate).")
-                return {}
-            data[f"labels_c{c}"] = np.load(labels_f)
-            data[f"preds_c{c}"]  = preds
+        loaded = load_class_arrays(method_name, c, directory, require_vt_ids=False)
+        if loaded is None:
+            continue
+        preds, labels, _vt_ids = loaded
+        if len(preds) == 0:
+            print(f"Warning: {method_name} c{c} predictions are empty — skipping.")
+            continue
+        if (preds.max() - preds.min()) < 1e-5:
+            print(f"Warning: {method_name} c{c} predictions are constant ({preds[0]:.4f}) — skipping (degenerate).")
+            return {}
+        data[f"labels_c{c}"] = labels
+        data[f"preds_c{c}"]  = preds
 
     if data and method_name in STRATIFICATION_INDEPENDENT_METHODS:
         present = [c for c in [1, 2, 3] if f"labels_c{c}" in data]
@@ -122,7 +122,7 @@ def load_method_data(method_name, directory):
     return data
 
 
-def plot_comparison(methods_data, save_name="roc_varchamp_full_pooled.png"):
+def plot_comparison(methods_data, save_name="roc_varchamp_blind_test.png"):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=FIGURE_DPI)
     class_labels = ["C1 (both in train)", "C2 (one in train)", "C3 (neither in train)"]
 
@@ -180,7 +180,7 @@ def plot_comparison(methods_data, save_name="roc_varchamp_full_pooled.png"):
     plt.show()
 
 
-def plot_training_set_comparison(methods_data, save_name="roc_varchamp_full_pooled_training_comparison.png"):
+def plot_training_set_comparison(methods_data, save_name="roc_varchamp_blind_test_training_comparison.png"):
     """S2: compare sahni-only vs sahni+fragoza model on VCFP blind test."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=FIGURE_DPI)
     class_labels = ["C1 (both in train)", "C2 (one in train)", "C3 (neither in train)"]

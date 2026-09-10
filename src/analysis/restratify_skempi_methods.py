@@ -8,6 +8,14 @@ C1 = both proteins in SKEMPI training, C2 = one in, C3 = neither in.
 The canonical SKEMPI reference is SAAMBE_train_uniprots.npy (258 proteins),
 already used for the GCV-figure stratification in roc_plots.py.
 
+**Redundant for freshly-generated arrays (2026-09-10).**
+`run_varchamp_blind_test.py` now assigns SKEMPI-based C1/C2/C3 at generation
+time itself (`utils.gcv_common.skempi_test_class`), the same rule this script
+applies after the fact -- so re-running the blind test never needs this
+script any more. It remains useful for arrays saved before that fix, or a
+one-off consistency check; running it on fresh output is a harmless no-op
+(the classes it computes will already match).
+
 Usage:
     conda run -n ppi python src/analysis/restratify_skempi_methods.py [--dry-run]
 """
@@ -19,19 +27,18 @@ import numpy as np
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-from paths import REPO_ROOT  # noqa: E402
+from paths import GCV_RESULTS_DIR, REPO_ROOT, VARCHAMP_BLIND_TEST_DIR  # noqa: E402
+from utils.blind_test_common import load_class_arrays  # noqa: E402
 
 
 _PUB = str(REPO_ROOT)
-_EVAL_DIR = os.path.join(_PUB, "results/varchamp_seqcnf_newvar_eval")
-_SAAMBE_UNIPROTS = os.path.join(
-    _PUB, "results_revisions/macro_aucs/SAAMBE_train_uniprots.npy"
-)
+_EVAL_DIR = str(VARCHAMP_BLIND_TEST_DIR)
+_SAAMBE_UNIPROTS = str(GCV_RESULTS_DIR / "SAAMBE_train_uniprots.npy")
 
 METHODS = [
-    "SAAMBE-3D (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "MutPPI (Sahni+Fragoza train) (varchamp_full_pooled)",
-    "MutPPIPlus (Sahni+Fragoza train) (varchamp_full_pooled)",
+    "SAAMBE-3D (Sahni+Fragoza train) (varchamp_blind_test)",
+    "MutPPI (Sahni+Fragoza train) (varchamp_blind_test)",
+    "MutPPIPlus (Sahni+Fragoza train) (varchamp_blind_test)",
 ]
 
 
@@ -41,15 +48,11 @@ def restratify(method: str, skempi_proteins: set, dry_run: bool) -> None:
     # Load existing per-class arrays and combine
     all_preds, all_labels, all_vt_ids = [], [], []
     for c in [1, 2, 3]:
-        preds_f  = os.path.join(_EVAL_DIR, f"{method}_c{c}_preds.npy")
-        labels_f = os.path.join(_EVAL_DIR, f"{method}_c{c}_labels.npy")
-        vt_ids_f = os.path.join(_EVAL_DIR, f"{method}_c{c}_vt_ids.npy")
-        if not (os.path.exists(preds_f) and os.path.exists(labels_f) and os.path.exists(vt_ids_f)):
+        loaded = load_class_arrays(method, c, _EVAL_DIR, require_vt_ids=True)
+        if loaded is None:
             print(f"  WARNING: missing c{c} files — skipping")
             continue
-        p = np.load(preds_f)
-        l = np.load(labels_f)
-        v = np.load(vt_ids_f, allow_pickle=True)
+        p, l, v = loaded
         if len(p) == 0:
             print(f"  c{c}: empty — skipping")
             continue

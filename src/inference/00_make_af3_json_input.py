@@ -37,7 +37,7 @@ import json
 import os
 import sys
 
-from Bio import SeqIO
+from utils.sequences import first_token, iter_fasta
 
 VALID_AAS = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -80,11 +80,18 @@ def pair_name(id_a, id_b):
     return f"{id_a}__{id_b}"
 
 
+def _af3_seq_id(header: str) -> str | None:
+    """First whitespace token, then its first `|`-field -- reproducing the
+    previous `record.id.split("|")[0]` exactly (BioPython's `record.id` is
+    the header up to the first whitespace)."""
+    tok = first_token(header)
+    return None if tok is None else tok.split("|")[0]
+
+
 def parse_fasta(fasta_file):
     sequences = {}
-    for record in SeqIO.parse(fasta_file, "fasta"):
-        seq_id = record.id.split("|")[0]
-        sequences[seq_id] = normalize_sequence(seq_id, str(record.seq))
+    for seq_id, seq in iter_fasta(fasta_file, _af3_seq_id):
+        sequences[seq_id] = normalize_sequence(seq_id, seq)
     return sequences
 
 

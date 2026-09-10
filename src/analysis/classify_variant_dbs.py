@@ -34,7 +34,7 @@ import numpy as np
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, RESULTS_REV_DIR  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, VARIANT_DBS_DIR  # noqa: E402
 
 
 # ── paths ──────────────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ _HOME = f"{_BASE}/home"
 # but every database in a run must come from one model: mixing them silently
 # produced a Fig 5 in which ClinVar/HGMD were scored by the SF model while
 # gnomAD/COSMIC/autism were scored by SFVCFP.
-DEFAULT_PRED_DIR = RESULTS_REV_DIR / "variant_dbs_sfvfp"
+DEFAULT_PRED_DIR = VARIANT_DBS_DIR
 
 SUBSET_FILES = {
     "clinvar": {
@@ -81,19 +81,32 @@ AR_AD_UNIPROT_FILE = str(ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl")  # 
 # ── core helpers ───────────────────────────────────────────────────────────────
 
 def load_predictions(tsv_path):
-    """Load TSV into dict: (uniprot, variant, partner) -> score."""
+    """Load TSV into dict: (uniprot, variant, partner) -> score.
+
+    Reads the current explicit-column schema
+    (`interactor  partner  mutation  score`) and the legacy composite one
+    (`complex_id  variant  score`, where `complex_id` is `{uniprot}_{partner}`).
+    Only the reader is schema-aware; nothing downstream of this function changed.
+    """
     pairs = {}
     with open(tsv_path) as f:
-        header = f.readline()
+        header = f.readline().rstrip("\n").split("\t")
+        legacy = header[:1] == ["complex_id"]
         for line in f:
-            parts = line.strip().split("\t")
-            if len(parts) < 3:
-                continue
-            complex_id, variant, score = parts[0], parts[1], float(parts[2])
-            # complex_id = "{uniprot}_{partner}" (first underscore-free token is uniprot)
-            under = complex_id.index("_")
-            uniprot = complex_id[:under]
-            partner = complex_id[under + 1:]
+            parts = line.rstrip("\n").split("\t")
+            if legacy:
+                if len(parts) < 3:
+                    continue
+                complex_id, variant, score = parts[0], parts[1], float(parts[2])
+                # UniProt accessions contain no underscore, so the first one is
+                # the delimiter.
+                under = complex_id.index("_")
+                uniprot, partner = complex_id[:under], complex_id[under + 1:]
+            else:
+                if len(parts) < 4:
+                    continue
+                uniprot, partner, variant, score = (
+                    parts[0], parts[1], parts[2], float(parts[3]))
             pairs[(uniprot, variant, partner)] = score
     return pairs
 

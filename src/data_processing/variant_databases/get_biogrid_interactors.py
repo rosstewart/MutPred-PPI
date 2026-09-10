@@ -31,6 +31,7 @@ import argparse
 import os
 import pickle
 import pandas as pd
+from utils.sequences import read_fasta as read_fasta_shared
 
 
 # ---------------------------------------------------------------------------
@@ -76,34 +77,35 @@ def collect_all_uniprot_ids(uniprot_to_interactors):
     return ids
 
 
+def _uniprot_header_key(header: str) -> str:
+    """`sp|Q30154|DRB5_HUMAN ...` -> `Q30154`; falls back to the first token
+    (BioPython's `record.id` equivalent) if there is no second pipe field."""
+    from utils.sequences import first_token
+    parts = header.split("|")
+    return parts[1] if len(parts) > 1 else first_token(header)
+
+
 def load_uniprot_seqs_from_fasta(fasta_path):
     """Load UniProt sequences from a standard UniProt FASTA (>sp|ACC|NAME …)."""
-    from Bio import SeqIO
-    seq_dict = {}
-    for rec in SeqIO.parse(fasta_path, "fasta"):
-        try:
-            acc = rec.id.split("|")[1]
-        except IndexError:
-            acc = rec.id
-        seq_dict[acc] = str(rec.seq)
-    return seq_dict
+    return read_fasta_shared(fasta_path, _uniprot_header_key, on_duplicate="last")
 
 
 # ---------------------------------------------------------------------------
 # ClinVar helpers
 # ---------------------------------------------------------------------------
 
+def _variant_header_only(header: str) -> str | None:
+    """`id variant` if the header has exactly two space-separated fields
+    (a variant record); `None` for WT-only or malformed headers, dropping
+    them from the result."""
+    parts = header.split(" ")
+    return f"{parts[0]} {parts[1]}" if len(parts) == 2 else None
+
+
 def get_all_vts_from_fasta(fasta_path):
     """Return set of 'uniprot_id variant' strings parsed from ClinVar FASTA headers."""
-    all_vts = set()
-    with open(fasta_path) as f:
-        for line in f:
-            if line[0] != ">":
-                continue
-            parts = line[1:].strip().split(" ")
-            if len(parts) == 2:
-                all_vts.add(f"{parts[0]} {parts[1]}")
-    return all_vts
+    from utils.sequences import iter_fasta
+    return {key for key, _ in iter_fasta(fasta_path, _variant_header_only)}
 
 
 def build_clinvar_id_to_seq(fasta_path, uniprot_to_interactors, uniprot_to_seq):

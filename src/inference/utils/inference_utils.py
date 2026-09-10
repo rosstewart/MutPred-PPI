@@ -1,3 +1,22 @@
+"""Inference-side helpers for the standalone MutPred-PPI pipeline.
+
+Graphs come from the `ContactGraphStore` written by step 01 and are looked up by
+CHAIN SEQUENCE, through the `complexes.csv` sidecar that step 01 writes
+alongside it. What that replaces: a `glob` of `*.mat`, a `loadmat` per complex,
+and `complex_id.split('_')` to recover the two accessions -- which silently
+mis-assigns both proteins whenever an accession itself contains the separator
+(isoforms, RefSeq ids). The pair identifiers are now read from their own
+columns, and the composite key is CONSTRUCTED from them rather than split apart.
+
+The store also returns the graph oriented to the requested interactor and with
+self-loops already added, so the `.toarray()` / `fill_diagonal` dance each
+consumer used to hand-roll is gone.
+"""
+import csv
+import sys
+from collections import Counter
+from pathlib import Path
+
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
@@ -5,14 +24,14 @@ import h5py
 import os
 import numpy as np
 import pickle
-from scipy.io import loadmat
-import scipy.sparse as sp
-import glob
-import h5py
 import torch
 from .model_loader import get_models, model_predict
 import tempfile
 import joblib # for mutation diff scaler
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from contact_graphs import ContactGraphStore  # noqa: E402
+from utils import mutations  # noqa: E402
 
 # for running T5
 from .prott5_loader import get_T5_model, run_T5_from_model
@@ -20,14 +39,22 @@ from .prott5_loader import get_T5_model, run_T5_from_model
 '''
 write output
 '''
-def write_output(out_f, ppi_preds, vt_ids):
-    assert len(ppi_preds) == len(vt_ids)
-    with open(out_f,'w') as f:
-        f.write('complex_id\tvariant\tscore\n')
-        for i,pred in enumerate(ppi_preds):
-            wt_id, variant = vt_ids[i].split(' ')
-            variant = variant[0] + str(int(variant[1:-1])+1) + variant[-1]
-            f.write(f'{wt_id}\t{variant}\t{pred}\n')
+def write_output(out_f, ppi_preds, rows):
+    """Predictions with EXPLICIT columns: interactor, partner, mutation, score.
+
+    `rows` is [(interactor, partner, mutation_0b)]. The mutation arrives 0-based
+    (ProtT5 keys are) and is converted through the pipeline's one named
+    conversion, `variant_rows.to_one_based`, so the emitted column is 1-based
+    like every other table. This previously wrote a `complex_id` composite and
+    re-based with an inline `+1`, both of which this refactor removes.
+    """
+    from utils.mutations import to_one_based
+
+    assert len(ppi_preds) == len(rows)
+    with open(out_f, 'w') as f:
+        f.write('interactor\tpartner\tmutation\tscore\n')
+        for pred, (interactor, partner, mutation_0b) in zip(ppi_preds, rows):
+            f.write(f'{interactor}\t{partner}\t{to_one_based(mutation_0b)}\t{pred}\n')
 
 
 '''
@@ -82,10 +109,11 @@ def get_t5_emb(key, device, fasta_dict, dataset_name, t5_model, t5_vocab):
 '''
 function to get concatenated T5 embeddings, for GAT, with missense variant accounted for
 '''
-def get_complex_and_vt_emb(complex_and_vt, INCLUDE_STABILITY, device, t5_fasta_dict, dataset_name, t5_model, t5_vocab, refseq_emb=None, vt_emb=None, partner_emb=None, scaler=None):
-    complex_id, variant = complex_and_vt.split(' ')
-    mut_idx = int(variant[1:-1]) # already made zero-based
-    refseq_id, partner_id = complex_id.split('_')
+def get_complex_and_vt_emb(refseq_id, partner_id, variant, INCLUDE_STABILITY, device, t5_fasta_dict, dataset_name, t5_model, t5_vocab, refseq_emb=None, vt_emb=None, partner_emb=None, scaler=None):
+    # The two accessions are passed in, never recovered by splitting a composite
+    # id: `complex_id.split('_')` mis-assigns both proteins for any accession
+    # that contains the separator.
+    mut_idx = mutations.position(variant)   # already 0-based
     vt_id = f'{refseq_id} {variant}'
 
     if refseq_emb is None:
@@ -100,7 +128,7 @@ def get_complex_and_vt_emb(complex_and_vt, INCLUDE_STABILITY, device, t5_fasta_d
         
     except Exception as e:
         # something went wrong with the variant fasta or T5 embedding size; is infrequent
-        print(complex_and_vt, e, flush=True)
+        print(f'{refseq_id}_{partner_id} {variant}', e, flush=True)
         return None, None, None, None
 
 
@@ -108,7 +136,7 @@ def get_complex_and_vt_emb(complex_and_vt, INCLUDE_STABILITY, device, t5_fasta_d
 overengineered function to mutate a wild-type sequence given a missense variant
 '''
 def get_vt_seq(wt_seq, variant):
-    missense_idx = int(variant[1:-1]) # assumed to be zero-based
+    missense_idx = mutations.position(variant)   # already 0-based
     assert wt_seq[missense_idx] == variant[0]
     
     vt_seq = list(wt_seq)
@@ -128,22 +156,43 @@ def get_vt_seq(wt_seq, variant):
 function to make sequence dict from fasta file
 '''
 def get_dict_from_fasta(fasta_path):
-    return {record.description.strip(): str(record.seq).strip() for record in SeqIO.parse(fasta_path, "fasta")}
+    from utils.sequences import read_fasta, whole_header
+    return read_fasta(fasta_path, whole_header, on_duplicate="last")
 
-def get_vts_from_wt(variant_labels_f):
+def get_vts_from_wt(save_dir):
+    """{(interactor, partner): [mutation_0b]} from `variants.csv`.
+
+    Reads the explicit table step 01 writes. It used to parse
+    `all_variants.labels` FASTA headers of the form
+    `P03372_Q14686_interaction_loss_variant_G89R`, splitting a four-part
+    composite on `_interaction_loss` and then on `_` -- which breaks on any
+    identifier containing the delimiter.
+    """
+    import csv as _csv
+
+    path = os.path.join(save_dir, 'variants.csv')
     wt_to_vt = {}
-    with open(variant_labels_f,'r') as f:
-        pdb_id, variant = None, None
-        for line in f:
-            if line[0] == '>':
-                # e.g. P03372_Q14686_interaction_loss_variant_G89R
-                filename_key = line[1:].strip()
-                pdb_id = filename_key.split('_interaction_loss')[0]
-                if pdb_id not in wt_to_vt:
-                    wt_to_vt[pdb_id] = []
-                variant = filename_key.split('_')[-1]
-                wt_to_vt[pdb_id].append(variant)
+    with open(path) as f:
+        for row in _csv.DictReader(f):
+            wt_to_vt.setdefault((row['interactor'], row['partner']), []).append(
+                row['mutation'])
     return wt_to_vt
+
+def read_complex_index(save_dir):
+    """Rows of the `complexes.csv` sidecar written by step 01.
+
+    complex_id, interactor, partner, interactor_sequence, partner_sequence --
+    the two accessions and their two chain sequences in their own columns, which
+    is what makes the graph lookup a content address rather than a name match.
+    """
+    index_path = os.path.join(save_dir, 'complexes.csv')
+    if not os.path.exists(index_path):
+        raise FileNotFoundError(
+            f'{index_path} not found -- run 01_make_contact_graphs_and_fasta.py '
+            'first (it writes complexes.csv beside contact_graphs.h5)')
+    with open(index_path) as f:
+        return list(csv.DictReader(f))
+
 
 '''
 main inference logic
@@ -177,72 +226,80 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
     stability_keys = []
     prediction_count = 0
 
-    wt_f_mats = glob.glob(f'{save_dir}/*.mat')
-    print(len(wt_f_mats),'complexes in',save_dir,flush=True)
-    
-    for wt_idx,wt_f_mat in enumerate(wt_f_mats):
-            
-        complex_id = wt_f_mat.split('/')[-1].split('.')[0]
-        refseq_id = '_'.join(complex_id.split('_')[:1]) # this is just the first uniprot id; the name carried over from training
-        partner_id = '_'.join(complex_id.split('_')[1:])
-    
-        data = loadmat(wt_f_mat)
-        wt_edge_mat = sp.csr_matrix(data['G'])
-        wt_seq = ''.join(data['L'])
-    
+    complexes = read_complex_index(save_dir)
+    store = ContactGraphStore(f'{save_dir}/contact_graphs.h5')
+    wt_to_vt = get_vts_from_wt(save_dir)
+    # Named, counted reasons: a silent `continue` is how rows used to vanish
+    # from a run with nothing to point at afterwards.
+    skipped = Counter()
+    print(len(complexes),'complexes in',save_dir,flush=True)
+
+    for row in complexes:
+        refseq_id, partner_id = row['interactor'], row['partner']
+        # Kept only for log lines; nothing is looked up by it any more.
+        complex_id = f'{refseq_id}_{partner_id}'
+
+        # Oriented to this interactor, self-loops included, keyed on the two
+        # chain sequences rather than on a filename.
+        wt_edge_mat = store.load_dense(interactor=row['interactor_sequence'],
+                                       partner=row['partner_sequence'])
+        if wt_edge_mat is None:
+            print(complex_id, 'has no contact graph in the store', flush=True)
+            skipped['no_graph'] += 1
+            continue
+
         if not t5_emb_exists(refseq_id, t5_fasta_dict) or not t5_emb_exists(partner_id, t5_fasta_dict):
             print(refseq_id,'or',partner_id, 'sequence dne')
+            skipped['no_wt_sequence'] += 1
             continue
-        
-        wt_to_vt = get_vts_from_wt(f'{save_dir}/all_variants.labels')
-        variant_f_list = wt_to_vt[complex_id]
+
+        variant_f_list = wt_to_vt.get((refseq_id, partner_id), [])
+        if not variant_f_list:
+            skipped['no_variants_listed'] += 1
+            continue
         
         # get wt embs to not compute over and over
         refseq_emb = get_t5_emb(refseq_id, device=device, fasta_dict=t5_fasta_dict, dataset_name=dataset_name, t5_model=t5_model, t5_vocab=t5_vocab)
         partner_emb = get_t5_emb(partner_id, device=device, fasta_dict=t5_fasta_dict, dataset_name=dataset_name, t5_model=t5_model, t5_vocab=t5_vocab)
         if refseq_emb is None or partner_emb is None:
+            skipped['t5_failed'] += 1
             continue
         
         for vt_labels_f in variant_f_list:
             
             variant = vt_labels_f
-            mut_idx = int(variant[1:-1]) # already made zero-based
+            mut_idx = mutations.position(variant)   # already 0-based
             mutated_prot_vt_id = f'{refseq_id} {variant}'
             complex_and_vt = f'{complex_id} {variant}'
             
             if not t5_emb_exists(mutated_prot_vt_id, t5_fasta_dict):
                 print(mutated_prot_vt_id,'sequence does not exist')
+                skipped['no_variant_sequence'] += 1
                 continue
 
 
             print(f'{complex_and_vt} generating T5 embeddings... ',end='',flush=True)
             
             try:
-                prott5_embedding, mutation_emb_diff, mut_seq_len, partner_seq_len = get_complex_and_vt_emb(complex_and_vt, INCLUDE_STABILITY=0, device=device, t5_fasta_dict=t5_fasta_dict, dataset_name=dataset_name, t5_model=t5_model, t5_vocab=t5_vocab, refseq_emb=refseq_emb, partner_emb=partner_emb, scaler=scaler)
+                prott5_embedding, mutation_emb_diff, mut_seq_len, partner_seq_len = get_complex_and_vt_emb(refseq_id, partner_id, variant, INCLUDE_STABILITY=0, device=device, t5_fasta_dict=t5_fasta_dict, dataset_name=dataset_name, t5_model=t5_model, t5_vocab=t5_vocab, refseq_emb=refseq_emb, partner_emb=partner_emb, scaler=scaler)
                 if prott5_embedding is None:
                     print(f'{complex_and_vt} prott5 embedding is none',flush=True)
+                    skipped['no_embedding'] += 1
                     continue
 
                 assert mut_seq_len + partner_seq_len == prott5_embedding.shape[0]
-                
-                # add chain encoding as column to embedding
-                labels = np.concatenate([np.zeros(mut_seq_len), np.ones(partner_seq_len)])
-                
-                edge_mat = wt_edge_mat
+
+                edge_mat = wt_edge_mat   # dense, self-loops already added
                 vt_id = complex_and_vt
-                seq_length = (mut_seq_len, partner_seq_len)
 
                 # for PPI predictor
                 x = prott5_embedding
-            
-                try:
-                    # if edge mat is sparse
-                    edge_mat = edge_mat.toarray()
-                except Exception as e1:
-                    pass # already made as dense
-                np.fill_diagonal(edge_mat,1)
 
-                assert edge_mat.shape[0] == edge_mat.shape[1] and edge_mat.shape[0] == x.shape[0]
+                if edge_mat.shape[0] != x.shape[0]:
+                    print(f'{complex_and_vt} graph has {edge_mat.shape[0]} nodes '
+                          f'for {x.shape[0]} embedded residues',flush=True)
+                    skipped['graph_embedding_length_mismatch'] += 1
+                    continue
     
                 '''
                 run predictions
@@ -251,7 +308,7 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
                 pred = model_predict(x, edge_mat, models=models, mutation_idx=mut_idx, mutation_site_diff=mutation_emb_diff, device=device)
                 
                 
-                all_vt_ids.append(vt_id)
+                all_vt_ids.append((refseq_id, partner_id, variant))
                 all_wt_ids.append(complex_id)
                 ppi_preds.append(float(pred))
                 
@@ -266,9 +323,12 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
             except Exception as e:
                 print()
                 print(f'error {e}',flush=True)
-                print(e,flush=True)
-                # sys.exit(1)
-    
+                skipped['error'] += 1
+
+    store.close()
+    for reason, count in sorted(skipped.items()):
+        print(f'  skipped, {reason}: {count}', flush=True)
+
     # save predictions
     write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids)
     print(f'\nWrote {len(ppi_preds)} prediction{"s" if len(ppi_preds) != 1 else ""} to {results_dir}/MutPred-PPI_preds.tsv', end='\n\n')

@@ -29,7 +29,23 @@ import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
-from ids import parse_mutation  # noqa: E402,F401
+from utils.mutations import index as _mutation_index  # noqa: E402
+from utils.mutations import parse as _parse_1based  # noqa: E402
+
+
+def parse_mutation(mutation: str) -> tuple[str, int, str]:
+    """`'E80K'` -> `('E', 79, 'K')`. Position is **0-BASED**, an array index.
+
+    Adapter over `utils.mutations`, whose `parse` returns the canonical 1-based
+    position. Every caller here immediately indexes a sequence or an embedding
+    with it, so the 0-based form is what they want -- but the conversion is named
+    (`utils.mutations.index`) rather than an inline `- 1`, and this docstring is
+    the one place the difference is stated.
+    """
+    wt, _, mt = _parse_1based(mutation)
+    return wt, _mutation_index(mutation), mt
+
+
 # Re-exported: predictors/{mint,pplm}_mlp.py import this relatively from here.
 
 from . import BasePredictor

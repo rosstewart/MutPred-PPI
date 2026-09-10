@@ -11,8 +11,8 @@ lists) from the classified variant DB directory, reclassifies at each threshold,
 then runs multinomial bootstrap enrichment vs gnomAD.
 
 Output:
-  results_revisions/robustness_analyses/threshold_sensitivity.png
-  results_revisions/robustness_analyses/threshold_sensitivity.tsv
+  results/robustness/threshold_sensitivity.png
+  results/robustness/threshold_sensitivity.tsv
 
 Usage:
   conda run -n ppi python src/analysis/threshold_sensitivity.py [--n-bootstrap 10000]
@@ -34,8 +34,8 @@ from paths import REPO_ROOT  # noqa: E402
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
-DATA_DIR = f"{_PUB}/results_revisions/variant_dbs_sfvfp"
-OUT_DIR = f"{_PUB}/results_revisions/robustness_analyses"
+DATA_DIR = f"{_PUB}/results/variant_dbs_all_data"
+OUT_DIR = f"{_PUB}/results/robustness"
 
 THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 # Color scheme: higher t = more stringent disruption threshold (disease mechanism).

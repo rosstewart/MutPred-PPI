@@ -20,7 +20,7 @@ _BASE = DATA_ROOT
 _HOME = _BASE / "home"
 _OUT  = _PUB / "figures" / "variant_db_stats_table.tex"
 
-PRED_DIR = _PUB / "results_revisions" / "variant_dbs_sfvfp"
+PRED_DIR = _PUB / "results" / "variant_dbs_all_data"
 
 # Classification source files
 CLINVAR_SUBSETS = {

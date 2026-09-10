@@ -30,7 +30,7 @@ Two modes, both reported in the paper and *not* interchangeable:
 
 Usage:
     conda run -n ppi python src/evaluation/swing_gcv.py \\
-        --dataset sahni_fragoza_varchamp_full_pooled [--test-pretrain]
+        --dataset sahni_fragoza_varchamp_all_mapped090826 [--test-pretrain]
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from xgboost import XGBClassifier
 _HERE = Path(__file__).resolve().parent
 
 from paths import GCV_RESULTS_DIR  # noqa: E402
-from evaluation.gcv_common import DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
+from utils.gcv_common import DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
 from evaluation.swing_common import (  # noqa: E402  single source for all SWING internals
     _D2V_DIM, _XGB_N_EST, _XGB_DEPTH, _XGB_LR,
     _get_window_encodings, _get_kmers, _get_corpus,

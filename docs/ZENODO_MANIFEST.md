@@ -24,8 +24,16 @@ Budget was ~40 GB. The deposit comes to **~9 GB**, so nothing was cut for size.
 | `datasets/cv_reference/` | 355 MB | Canonical orderings, clusters, fold splits and per-seed test classes for all 30 seeds. **Required** — the pooled datasets cannot reproduce their splits from raw, and without this a clone cannot reproduce SFVCFP at all |
 | `datasets/annotations/` | 258 MB | The small annotation/label inputs every analysis script now resolves against |
 | `datasets/esignet_supplements/` | 916 MB | The two ESM-2 caches the eSIG-Net blind test reads (extracted from a 110 GB upstream tree) |
+| `datasets/mapped090826/` rows/splits/sequences/`af3_index` + `contact_graphs.h5` | 39 MB store + small tables | The canonical train/eval data layer everything now reads |
+| `datasets/variant_dbs/*_rows.csv.gz` | 68 MB | The five self-contained variant-DB tables (ClinVar/gnomAD/autism ship; COSMIC/HGMD rows are licence-restricted, see below) |
 
-Total addition: **~2.2 GB**.
+Total addition: **~2.3 GB**.
+
+`datasets/variant_dbs/contact_graphs.h5` (248 MB) and the canonical structure trees
+(`datasets/af3_structures_canonical/` 510 MB, `datasets/af3_structures_variant_dbs_canonical/`
+5.7 GB) are derivable from the deposited `af3_structures*.tar` via
+`src/data_processing/canonicalize_structures.py` then `src/data_processing/rebuild_graphs_from_structures.py`, so
+depositing them is a convenience rather than a requirement.
 
 ## Deliberately excluded
 
@@ -44,20 +52,22 @@ stripping the labels leaves predictions that cannot be scored. **Fig 4 and S2 ar
 not independently reproducible until VarChAMP is published** — consistent with the position
 already stated in the README.
 
-**`data_caches/training_data_internal.csv` (26 MB) — unpublished data, despite the
-directory name.**
-Surfaced by the relocated-clone test rather than by inspection: it lives in
-`data_caches/`, which this document otherwise describes as optional regenerable caches, but
-it is a **required input** for five modules (`mutpred_ppi_cv.py`, `vcfp_common.py`,
-`swing_common.py`, `generate_training_table.py`, `restratify_vcfp_blind_test.py`). It is the
-merged internal training table: 27,614 rows with interactor/partner sequences and the
-`perturbed` label, and **~56% of the rows are VarChAMP** (`VarChAMP_pooled` 14,021,
-`VarChAMP` 1,372, plus combinations). It therefore cannot be deposited.
+**`data_caches/training_data_internal.csv` was never actually required — corrected
+2026-09-10.** The previous claim above (that it was a required input for five modules) was
+wrong: it has no producer anywhere in git history, and its only two code references
+(`swing_common.py`'s `load_benchmark()`, and a constant in
+`precompute_prott5_datasets.py`) were both dead code with no live callers.
+`generate_training_table.py`, `interface_analysis.py`, and `repro_test/build_sfvcfp_table.py`
+never referenced it at all — they read the canonical row tables directly, as this file's own
+docstring already stated. It has been moved to `archive/pre_090826/data_caches/`.
 
-Consequence: **Table 1 is not independently reproducible**, alongside Fig 4 and S2. The
-other affected modules are all VarChAMP blind-test paths that were already unreproducible.
-`reclaim_disk.sh` Tier 3 deliberately preserves this file while deleting the `*_cache.pkl`
-siblings.
+This does **not** resolve the underlying VarChAMP concern, only relocates it: Table 1's
+VarChAMP row (`generate_training_table.py`'s `_VARCHAMP` dataset) reads the canonical
+`varchamp_all_mapped090826` table directly, which carries the same unpublished VarChAMP
+measurements the archived CSV used to. **Table 1 is still not independently reproducible**,
+alongside Fig 4 and S2, for the reason already stated: shipping the VarChAMP rows would
+disclose an unpublished dataset. The affected file is now the canonical table, not the
+archived CSV.
 
 **Regenerable caches (~1 TB) — scripted, not shipped.**
 `mint_cache.pkl` / `pplm_cache.pkl` (84 GB each), `esm2_residue_embeddings*.pkl` (68 GB),
@@ -80,3 +90,8 @@ Keep the tars only. `datasets/` currently holds each tar *beside* its own extrac
 6.8 GB of pure duplication (`af3_structures_variant_dbs.tar` + the extracted tree, etc.).
 `repro_test/reclaim_disk.sh` Tier 4 removes the extracted copies; no script under `src/`
 reads them (verified by grep), so they are reconstructible with `tar xf` on demand.
+
+Tier 4 touches only `datasets/af3_structures/` and `datasets/af3_structures_variant_dbs/`. It
+does **not** touch the `*_canonical/` trees, and it should not: those are the deduplicated,
+content-named structures that `src/data_processing/rebuild_graphs_from_structures.py` reads, and they are
+not reconstructible with `tar xf` alone.

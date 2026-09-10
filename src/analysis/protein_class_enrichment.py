@@ -12,7 +12,7 @@ Usage:
     conda run -n ppi python src/analysis/protein_class_enrichment.py
 
 Output:
-    results_revisions/protein_class_enrichment/pathogenic_by_class.png
+    results/protein_class/pathogenic_by_class.png
 """
 from __future__ import annotations
 
@@ -36,19 +36,19 @@ from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
 _PUB = REPO_ROOT
 _BASE = DATA_ROOT
 _HOME = _BASE / "home"
-_OUT  = _PUB / "results_revisions" / "protein_class_enrichment"
+_OUT  = _PUB / "results" / "protein_class"
 
 # Import calc_enrichment and plot rcParams from variant_db_charts
 from variant_db_charts import calc_enrichment
 
 
 
-ANNOTATION_CSV = _PUB / "results_revisions" / "protein_class_annotations.csv"
-# Must match the model used for Fig 5 (SFVCFP). The older variant_dbs/ and
+ANNOTATION_CSV = _PUB / "results" / "protein_class" / "protein_class_annotations.csv"
+# Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
 # variant_dbs_classified/ trees hold SF-model predictions; mixing the two
 # across panels is what this path previously did.
-CLINVAR_TSV    = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "clinvar_mutpred_ppi_predictions.tsv"
-GNOMAD_TSV     = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "gnomad_mutpred_ppi_predictions.tsv"
+CLINVAR_TSV    = _PUB / "results" / "variant_dbs_all_data" / "clinvar_mutpred_ppi_predictions.tsv"
+GNOMAD_TSV     = _PUB / "results" / "variant_dbs_all_data" / "gnomad_mutpred_ppi_predictions.tsv"
 PATHOGENIC_PKL = ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"
 
 plt.rcParams.update({

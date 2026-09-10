@@ -1,3 +1,4 @@
+from utils import mutations  # noqa: E402
 #!/usr/bin/env python
 """Map gnomAD missense variants to the BioGRID direct-binding PPI network.
 
@@ -38,8 +39,8 @@ import os
 import pickle
 from collections import defaultdict
 
-from Bio import SeqIO
-from biogrid_common import (  # shared verbatim helpers
+from utils.sequences import first_token, read_fasta as read_fasta_shared
+from data_processing.variant_databases.biogrid_common import (  # noqa: E402
     clean_complexes,
     load_biogrid,
 )
@@ -48,6 +49,28 @@ from biogrid_common import (  # shared verbatim helpers
 # ---------------------------------------------------------------------------
 # Helpers shared by both modes
 # ---------------------------------------------------------------------------
+
+def _load_fasta_no_conflicts(fasta_path, header_parser):
+    """{key: sequence}, raising if one key names two DIFFERENT sequences.
+
+    `on_duplicate="all"` already deduplicates identical repeats into a list of
+    distinct sequences per key; a key mapping to more than one distinct
+    sequence is a genuine conflict in the source FASTA, not a repeat, and is
+    raised rather than silently resolved by picking one.
+    """
+    by_key = read_fasta_shared(fasta_path, header_parser, on_duplicate="all")
+    out = {}
+    for acc, seqs in by_key.items():
+        if len(seqs) > 1:
+            raise ValueError(f"Conflicting sequences for {acc}")
+        out[acc] = seqs[0]
+    return out
+
+
+def _uniprot_header_or_bare(header: str) -> str:
+    """`sp|Q30154|...` -> `Q30154`; the bare header if it has no `|`."""
+    return header.split("|")[1] if "|" in header else header
+
 
 def get_genes_in_biogrid(uniprot_wts, uniprot_to_interactors, uniprot_to_seq):
     """Return set of (uniprot_id, partner) for proteins in both gnomAD and BioGRID."""
@@ -118,7 +141,7 @@ def apply_mutations(uniprot_seq_dict, id_to_seq):
             continue
         wt_res = variant[0]
         try:
-            mt_idx = int(variant[1:-1]) - 1
+            mt_idx = mutations.index(variant)
         except ValueError:
             continue
         mt_res = variant[-1]
@@ -166,17 +189,8 @@ def run_subset_mode(args, uniprot_to_interactors, uniprot_to_seq):
     refseq_to_uniprot = {k: v for k, v in refseq_to_uniprot.items()}
 
     # Load WT sequences
-    seqs_by_id = defaultdict(list)
-    for rec in __import__("Bio.SeqIO", fromlist=["SeqIO"]).parse(
-        f"{gnomad_dir}/gnomad_uniprots.fasta", "fasta"
-    ):
-        acc = rec.id.split("|")[1] if "|" in rec.id else rec.id
-        seqs_by_id[acc].append(str(rec.seq))
-    uniprot_seq_dict = {}
-    for acc, seqs in seqs_by_id.items():
-        if len(set(seqs)) > 1:
-            raise ValueError(f"Conflicting sequences for {acc}")
-        uniprot_seq_dict[acc] = seqs[0]
+    uniprot_seq_dict = _load_fasta_no_conflicts(
+        f"{gnomad_dir}/gnomad_uniprots.fasta", _uniprot_header_or_bare)
 
     # Generate mutant sequences
     for vt_id in all_vts:
@@ -187,7 +201,7 @@ def run_subset_mode(args, uniprot_to_interactors, uniprot_to_seq):
         if uid not in uniprot_seq_dict:
             continue
         wt_seq = uniprot_seq_dict[uid]
-        wt_res, mt_idx, mt_res = variant[0], int(variant[1:-1]) - 1, variant[-1]
+        wt_res, mt_idx, mt_res = variant[0], mutations.index(variant), variant[-1]
         if mt_idx >= len(wt_seq) or wt_seq[mt_idx] != wt_res:
             continue
         vt_seq = list(wt_seq)
@@ -212,14 +226,7 @@ def run_all_mode(args, uniprot_to_interactors, uniprot_to_seq):
     print(f"Loaded {len(all_vts)} gnomAD variants")
 
     # Load WT sequences
-    seqs_by_id = defaultdict(list)
-    for rec in SeqIO.parse(args.wt_fasta, "fasta"):
-        seqs_by_id[rec.id].append(str(rec.seq))
-    uniprot_seq_dict = {}
-    for acc, seqs in seqs_by_id.items():
-        if len(set(seqs)) > 1:
-            raise ValueError(f"Conflicting sequences for {acc}")
-        uniprot_seq_dict[acc] = seqs[0]
+    uniprot_seq_dict = _load_fasta_no_conflicts(args.wt_fasta, first_token)
     print(f"Loaded {len(uniprot_seq_dict)} WT sequences")
 
     # Generate mutant sequences
@@ -229,7 +236,7 @@ def run_all_mode(args, uniprot_to_interactors, uniprot_to_seq):
         if uid not in uniprot_seq_dict:
             continue
         wt_seq = uniprot_seq_dict[uid]
-        wt_res, mt_idx, mt_res = variant[0], int(variant[1:-1]) - 1, variant[-1]
+        wt_res, mt_idx, mt_res = variant[0], mutations.index(variant), variant[-1]
         if mt_idx >= len(wt_seq) or wt_seq[mt_idx] != wt_res:
             continue
         vt_seq = list(wt_seq)

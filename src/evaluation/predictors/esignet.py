@@ -31,6 +31,7 @@ from .nn_base import load_cache, parse_mutation
 import sys as _sys
 from pathlib import Path as _Path
 from paths import EXTERNAL_DIR, REVISIONS_DIR  # noqa: E402
+from utils import mutations  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -200,10 +201,17 @@ def _compute_573(seq: str) -> Optional[np.ndarray]:
         return None
 
 
-def _apply_mutation(seq: str, mutation: str) -> str:
-    """Apply a point mutation to a sequence string (1-based notation)."""
-    _, pos0, mut_aa = parse_mutation(mutation)
-    return seq[:pos0] + mut_aa + seq[pos0 + 1:]
+def _apply_mutation(seq: str, mutation: str) -> str | None:
+    """Apply a point mutation (1-based), or None if it does not fit the sequence.
+
+    This used to substitute unconditionally: it wrote `mut_aa` at `pos0` whatever
+    residue was actually there, and did not check that the position was inside
+    the sequence at all. A row whose annotation disagreed with its sequence
+    therefore produced a mutant that differed from the wild type at the wrong
+    residue, and nothing downstream could tell. `mutations.apply` returns None
+    instead, and the caller counts it.
+    """
+    return mutations.apply(seq, mutation)
 
 
 def _esm_diff(cache: dict, interactor: str, mutation: str) -> np.ndarray:
@@ -252,14 +260,20 @@ def _build_tensors(
     same_arr = np.zeros(n, dtype=np.float32)       # WT ≠ mutant always
     esm_arr  = np.zeros((n, 1280), dtype=np.float32)
 
+    n_unmutatable = 0
     for i, (_, row) in enumerate(df.iterrows()):
         seq_wt = row["interactor_sequence"]
         seq_b  = row["partner_sequence"]
         seq_mt = _apply_mutation(seq_wt, row["mutation"])
+        if seq_mt is None:
+            # Row keeps its slot -- the arrays are positional and the caller
+            # aligns predictions to `df` by index -- but its mutant features stay
+            # zero rather than being computed from a wrongly-mutated sequence.
+            n_unmutatable += 1
 
         f0  = _compute_573(seq_wt)
         f1  = _compute_573(seq_b)
-        f02 = _compute_573(seq_mt)
+        f02 = _compute_573(seq_mt) if seq_mt is not None else None
         if f0  is not None: n0_arr[i]   = f0
         if f1  is not None: n1_arr[i]   = f1
         if f02 is not None: n0_2_arr[i] = f02
@@ -268,6 +282,11 @@ def _build_tensors(
 
         if esm_cache is not None:
             esm_arr[i] = _esm_diff(esm_cache, row["interactor"], row["mutation"])
+
+    if n_unmutatable:
+        logger.warning("%d/%d rows could not be mutated (position outside the "
+                       "sequence or wild-type residue mismatch); their mutant "
+                       "573-features are zero", n_unmutatable, n)
 
     return (
         torch.from_numpy(n0_arr),

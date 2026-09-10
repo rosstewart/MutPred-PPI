@@ -44,6 +44,12 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 # Install remaining dependencies
 pip install -r requirements.txt
+
+# Install this repo as a package.
+# `pyproject.toml` makes src/ the package root, so modules import as
+# `training.train_fold`, `utils.gcv_common`, `contact_graphs`, ... Scripts
+# outside src/inference/ will not import without this.
+pip install -e .
 ```
 
 `requirements.txt` pins the exact environment the published results were produced in
@@ -66,6 +72,20 @@ See [`docs/SETUP.md`](docs/SETUP.md) for where the code expects data to live.
 
 ## Quick Start
 
+> **Model checkpoint temporarily unavailable in this repo.** The trained
+> `weights/MutPred-PPI.pt` was fit on a since-corrected row ordering (the
+> 2026-09 canonical-table rebaseline) and has been retired pending retraining
+> on the corrected data — see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md). Until
+> an updated checkpoint is deposited, run predictions via:
+> - **Web server**: <https://mutpred.mutdb.org/mutpredppi> (AlphaFold 3 input,
+>   no local setup), or
+> - **v1.0 release**: <https://github.com/rosstewart/MutPred-PPI/releases/tag/v1.0.0>
+>   (an earlier checkpoint, trained on the pre-MegaScale/FoldX-RaSP pipeline —
+>   see `docs/METHOD_PROVENANCE.md` for how it differs from the current model).
+>
+> `notebooks/reproduce_all_figures.py` retrains the model from scratch on the
+> corrected data if you'd rather regenerate `weights/MutPred-PPI.pt` yourself.
+
 ```bash
 # Step 1: Prepare AlphaFold3 inputs (if using AlphaFold3)
 python src/inference/00_make_af3_json_input.py proteins.fasta variants.tsv af3_inputs/
@@ -80,7 +100,12 @@ python src/inference/02_run_mutpred-ppi_inference.py working_dir/
 ```
 
 For a small, ready-to-run example (no data download required), see
-[`examples/inference_quickstart/`](examples/inference_quickstart/).
+[`src/inference/example/`](src/inference/example/).
+
+> **Known issue (step 3).** On a clean working directory step 3 currently writes an empty
+> `wt_and_vt.fasta`, so step 4 has nothing to embed. See
+> [docs/INFERENCE.md](docs/INFERENCE.md#known-issue-empty-wt_and_vtfasta) for the cause and
+> the state of the fix.
 
 ## Data Availability
 
@@ -97,6 +122,7 @@ This README covers installation and a minimal inference example. For everything 
 - **[docs/SETUP.md](docs/SETUP.md)** — where the code looks for data, the three data tiers, environment variables
 - **[docs/INFERENCE.md](docs/INFERENCE.md)** — detailed inference usage, file formats, full worked example, troubleshooting
 - **[docs/TRAINING.md](docs/TRAINING.md)** — stability pretraining + model training from scratch
+- **[notebooks/reproduce_all_figures.py](notebooks/reproduce_all_figures.py)** — one runnable, cached, resumable script/notebook (jupytext percent format) that regenerates every figure and table end to end, from the Zenodo bundle. Set `QUICK = True` for a fast smoke test.
 - **[docs/REPRODUCING_ANALYSES.md](docs/REPRODUCING_ANALYSES.md)** — every figure/table in the paper (GCV benchmarking, VarChAMP blind test, variant-repository inference and enrichment analyses, supplementary figures), with exact commands
 - **[docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)** — where every dataset comes from and licensing notes
 - **[docs/METHOD_PROVENANCE.md](docs/METHOD_PROVENANCE.md)** — every comparison method's upstream commit and each way our usage deviates from it
@@ -108,23 +134,29 @@ MutPred-PPI/
 ├── src/
 │   ├── paths.py             # single point of path resolution — no absolute paths anywhere else
 │   ├── model.py             # the one GAT_mut_processor definition
+│   ├── contact_graphs.py    # ContactGraphStore: the HDF5 contact-graph store, keyed by sequence
+│   ├── ids.py               # accession / variant-id parsing
+│   ├── utils/               # shared layers: gcv_common, structures, mutpred_ppi_data
 │   ├── inference/           # public 3-step inference pipeline
-│   ├── training/            # stability pretraining + fine-tuning
+│   │   └── example/         # runnable end-to-end inference quickstart
+│   ├── training/            # stability pretraining, train_fold, final-model fitting
 │   ├── evaluation/          # cross-validation benchmarking + comparator methods
 │   ├── data_processing/     # dataset and variant-repository preparation
-│   ├── variant_db_inference/# large-scale variant-DB scoring
+│   ├── variant_db_inference/# large-scale variant-DB scoring + canonical DB tables
 │   └── analysis/            # figure/table generation + paper analyses
 ├── scripts/
 │   └── link_external.sh     # builds external/ (see docs/SETUP.md)
-├── examples/                # two runnable end-to-end quickstarts
+├── repro_test/              # table/store/structure builders and reproduction checks
 ├── docs/                    # setup, inference, training, reproduction, provenance
 ├── weights/                 # model checkpoints
 ├── figures/                 # generated LaTeX tables (PNGs are gitignored)
+├── archive/                 # superseded scripts and dataset references, kept for provenance
 ├── LICENSE
 └── README.md
 
 Not in git — created locally or delivered via Zenodo (see docs/SETUP.md):
-  datasets/        Zenodo bundle: CV reference, annotations, structures
+  datasets/        Zenodo bundle: canonical tables, contact-graph stores,
+                   CV reference, annotations, structures
   external/        symlinks to large machine-local data
   results/         generated by the evaluation scripts
   results_revisions/  generated: per-figure prediction/label artifacts

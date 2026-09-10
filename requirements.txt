@@ -45,6 +45,11 @@ matplotlib==3.10.3
 tqdm==4.67.1
 requests==2.32.4
 
+# --- reproduction notebook ----------------------------------------------------
+# notebooks/reproduce_all_figures.py is jupytext percent format; it runs as a
+# plain script without this, but `jupytext --to notebook` needs it.
+jupytext==1.16.4
+
 # --- not installed via pip ---------------------------------------------------
 # cd-hit          conda install -c bioconda cd-hit
 # prody           only needed by SAAMBE-3D, which has its own environment

@@ -12,7 +12,7 @@ Method:
   Bonferroni correction over 12 tests (6 bins × 2 categories).
 
 Output:
-    results_revisions/cosmic_stat_test/cosmic_onco_tsg_qn_vs_edgetic.tex
+    results/cosmic_stat_test/cosmic_onco_tsg_qn_vs_edgetic.tex
 
 Usage:
     conda run -n ppi python src/analysis/cosmic_onco_tsg_stat_test.py
@@ -35,12 +35,12 @@ from variant_db_charts import calc_enrichment
 
 
 
-# Must match the model used for Fig 5 (SFVCFP). The older variant_dbs/ and
+# Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
 # variant_dbs_classified/ trees hold SF-model predictions; mixing the two
 # across panels is what this path previously did.
-BOOTSTRAP_PKL = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "all_bootstrap_results.pkl"
-CLASSIFIED_DIR = _PUB / "results_revisions" / "variant_dbs_sfvfp" / "cosmic"
-OUT_DIR        = _PUB / "results_revisions" / "cosmic_stat_test"
+BOOTSTRAP_PKL = _PUB / "results" / "variant_dbs_all_data" / "all_bootstrap_results.pkl"
+CLASSIFIED_DIR = _PUB / "results" / "variant_dbs_all_data" / "cosmic"
+OUT_DIR        = _PUB / "results" / "cosmic_stat_test"
 
 BIN_LABELS   = ["Single", r"$\geq$2", r"$\geq$4", r"$\geq$8", r"$\geq$16", r"$\geq$32"]
 BIN_KEYS     = ["single", "2+", "4+", "8+", "16+", "32+"]

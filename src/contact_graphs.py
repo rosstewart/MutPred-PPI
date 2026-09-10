@@ -44,7 +44,8 @@ consumer separately -- and `run_stability_inference` forgot, so the stability GA
 was trained with self-attention and run without it. Rather than leave that to
 the caller, `load_dense`/`load_edge_index` always include self-loops, and the
 operation is idempotent, so a record written either way reads back the same.
-Pass `self_loops=False` only to inspect the raw contact geometry.
+There is deliberately no way to turn them off: a flag is how the training and
+inference paths diverged in the first place.
 
 The diagonal is not written to disk: it is exactly the N pairs (i, i) for every
 graph, so storing it would be redundant. `canonical_self_loops` in the root
@@ -67,6 +68,73 @@ def sha(seq: str) -> str:
     return hashlib.sha256(str(seq).encode()).hexdigest()[:16]
 
 
+# ── residue policy: MAP, never SKIP and never REJECT ────────────────────────
+#
+# Two graph builders used to disagree on what to do with a residue that is not
+# one of the standard 20: one REJECTED the whole structure (a modified residue
+# discarded an otherwise usable complex), the other SKIPPED the residue (which
+# shortens the sequence and shifts every later mutation position -- and because
+# the store is keyed on sha256(sequence), a gapped read hashes to a different
+# key than the true sequence and becomes unfindable by its own content).
+#
+# The policy here is MAP: a modified residue maps to its unmodified parent
+# letter (MSE -> M), and anything unrecognised maps to "X". Sequence length is
+# then always exactly the polymer-residue count, so positions never shift and
+# the sha stays meaningful. Measured 2026-09-10: 0 non-standard residues across
+# all 862 stability PDBs and a 200-file AF3 sample, so this is a correctness
+# guarantee for future inputs, not a rebaseline of anything currently held.
+
+def _load_extended_3to1() -> dict[str, str]:
+    """Three-letter -> one-letter map, covering the standard 20 AND known
+    modified residues (MSE, SEP, TPO, ...). Falls back to a small pinned table
+    if BioPython's extended table is not importable, so the MAP policy does not
+    depend on a BioPython version.
+    """
+    try:
+        from Bio.Data.PDBData import protein_letters_3to1_extended
+        return dict(protein_letters_3to1_extended)
+    except ImportError:
+        pass
+    return {
+        "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+        "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+        "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+        "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+        "MSE": "M", "SEP": "S", "TPO": "T", "PTR": "Y", "CSO": "C",
+        "HYP": "P", "MLY": "K", "KCX": "K", "CME": "C",
+    }
+
+
+EXTENDED_3TO1 = _load_extended_3to1()
+
+
+def residue_to_one(resname: str) -> str:
+    """Three-letter residue code -> one-letter, MAPPED never dropped.
+
+    Standard 20 and known modified residues map to their letter (MSE -> M).
+    `UNK` and anything else unrecognised map to "X". Never raises, so a caller
+    can always advance the sequence by exactly one residue -- unlike
+    `Bio.PDB.Polypeptide.three_to_index`, which raises `KeyError` on anything
+    outside the standard 20 and was the source of the REJECT policy.
+    """
+    return EXTENDED_3TO1.get(resname, "X")
+
+
+def _is_polymer_residue(residue) -> bool:
+    """True for anything that should occupy a sequence position.
+
+    `is_aa()` alone is not enough: `UNK` (an explicitly unidentified amino
+    acid) is NOT `is_aa()` under either the default or `standard=True` test,
+    so a naive `if not is_aa(residue): continue` still drops it -- reintroducing
+    the exact frame shift the MAP policy exists to close. `UNK` is a genuine
+    polymer residue, unlike water or a ligand, and must map to "X" and hold
+    its position.
+    """
+    from Bio import PDB
+    resname = residue.get_resname()
+    return PDB.is_aa(residue) or resname in EXTENDED_3TO1 or resname == "UNK"
+
+
 def pair_key(seq_a: str, seq_b: str = "") -> str:
     """Order-independent key for a chain pair, or a `mono_` key for one chain.
 
@@ -78,6 +146,108 @@ def pair_key(seq_a: str, seq_b: str = "") -> str:
         return f"mono_{sha(seq_a)}"
     ha, hb = sha(seq_a), sha(seq_b)
     return f"{min(ha, hb)}_{max(ha, hb)}"
+
+
+def contact_graph_from_structure(path, threshold: float = DEFAULT_THRESHOLD,
+                                  chains: tuple[str, ...] | None = None):
+    """(seq_a, seq_b, edge_index) for a structure file. None if unusable.
+
+    THE one contact-graph definition in this repo. An edge joins two residues when
+    ANY pair of their atoms is within `threshold` angstroms; self-residue pairs are
+    excluded and the diagonal is never stored, because readers add self-loops.
+
+    Atoms are keyed by name per residue, collapsing alternate locations -- that is
+    what the original `01_make_contact_graphs_and_fasta.make_graph` did, and the
+    rule has to match or edge counts drift.
+
+    Residue order is file order within a chain. Chain order is file order UNLESS
+    `chains` is given.
+
+    `chains`, if given, selects specific chain IDs in the given order instead of
+    taking every chain in file order, and does not filter out an empty one --
+    both differences the stability pretraining path needs. A single chain ID
+    produces a MONOMER record (`seq_b == ""`); two chain IDs produce a
+    two-chain record. Any requested chain ID absent from the structure makes
+    the whole call return None -- a complex missing a chain is not a complex.
+    With `chains=None` (the default, used by the PPI path), every chain in the
+    file is considered and empty ones (e.g. a water-only chain) are dropped;
+    exactly two non-empty chains are required.
+
+    Non-standard residues (including `UNK`) are MAPPED via `residue_to_one`,
+    never skipped and never rejected -- see the module-level note above
+    `residue_to_one` for why: skipping shifts every later position, and
+    rejecting discards an otherwise usable structure.
+    """
+    import gzip
+    import warnings
+
+    from scipy.spatial import cKDTree
+    warnings.filterwarnings("ignore")
+    from Bio.PDB import MMCIFParser, PDBParser
+
+    path = Path(path)
+    if not path.exists():
+        return None
+    opener = gzip.open if path.name.endswith(".gz") else open
+    parser = MMCIFParser(QUIET=True) if ".cif" in path.name else PDBParser(QUIET=True)
+    with opener(path, "rt") as fh:
+        model = parser.get_structure("x", fh)[0]
+
+    if chains is None:
+        raw_chains = list(model)
+        keep_empty = False
+    else:
+        raw_chains = []
+        for chain_id in chains:
+            try:
+                raw_chains.append(model[chain_id])
+            except KeyError:
+                return None                       # a requested chain is absent
+        keep_empty = True
+
+    parsed = []
+    for chain in raw_chains:
+        labels, coords = [], []
+        for residue in chain:
+            if not _is_polymer_residue(residue):
+                continue
+            labels.append(residue_to_one(residue.get_resname()))
+            coords.append(list({a.get_name(): a.coord for a in residue}.values()))
+        if labels or keep_empty:
+            parsed.append(("".join(labels), coords))
+
+    if chains is None:
+        if len(parsed) != 2:
+            return None
+    elif len(parsed) != len(chains):
+        return None
+
+    if len(parsed) == 1:
+        (seq_a, coords_a) = parsed[0]
+        seq_b, coords_b = "", []
+    else:
+        (seq_a, coords_a), (seq_b, coords_b) = parsed
+
+    residues = coords_a + coords_b
+    n = len(residues)
+    if n == 0:
+        return None
+
+    flat, atom_to_res = [], []
+    for idx, atoms in enumerate(residues):
+        for c in atoms:
+            flat.append(c)
+            atom_to_res.append(idx)
+    if not flat:
+        return None
+
+    G = np.zeros((n, n), dtype=np.uint8)
+    atom_to_res = np.asarray(atom_to_res)
+    for ai, aj in cKDTree(np.asarray(flat)).query_pairs(threshold):
+        ri, rj = atom_to_res[ai], atom_to_res[aj]
+        if ri != rj:
+            G[ri, rj] = G[rj, ri] = 1
+    return seq_a, seq_b, edges_from_dense(G)
 
 
 def edges_from_dense(G: np.ndarray) -> np.ndarray:
@@ -96,24 +266,25 @@ def dense_from_edges(edge_index: np.ndarray, n: int,
     return G
 
 
-def symmetric_edge_index(edge_index: np.ndarray, n: int,
-                         self_loops: bool = True) -> np.ndarray:
-    """Both directions (and optionally self-loops), as torch_geometric wants.
+def symmetric_edge_index(edge_index: np.ndarray, n: int) -> np.ndarray:
+    """Both directions plus self-loops, as torch_geometric wants.
 
-    The old path reached the same place via
-    `dense_to_sparse(torch.tensor(fill_diagonal(G.toarray(), 1)))`, which is why
-    `self_loops` defaults True -- it reproduces that graph exactly.
+    Self-loops are NOT optional. Training bakes the diagonal in
+    (`preprocess_stability_data.py` does `np.fill_diagonal(edge_mat_dense, 1)`),
+    so every read path must too or the two diverge. Making it a flag invited
+    exactly that divergence, so the flag is gone.
+
+    Idempotent: any stored diagonal is dropped before mirroring and re-added
+    here, so a record that carried one and a record that did not read back
+    identical.
     """
     i, j = edge_index
     off = i != j                      # drop any stored diagonal before mirroring
     src = np.concatenate([i[off], j[off]])
     dst = np.concatenate([j[off], i[off]])
-    if self_loops:
-        # Idempotent: the diagonal is added here and only here, so a record that
-        # already carried one and a record that did not read back identical.
-        d = np.arange(n, dtype=src.dtype)
-        src = np.concatenate([src, d])
-        dst = np.concatenate([dst, d])
+    d = np.arange(n, dtype=src.dtype)
+    src = np.concatenate([src, d])
+    dst = np.concatenate([dst, d])
     order = np.lexsort((dst, src))
     return np.vstack([src[order], dst[order]]).astype(np.int64)
 
@@ -168,7 +339,7 @@ class StructureResolver:
         self._idx: dict[frozenset, list[Path]] = {}
         if not p.exists():
             raise FileNotFoundError(
-                f"{p} not found -- run repro_test/canonicalize_structures.py")
+                f"{p} not found -- run src/data_processing/canonicalize_structures.py")
         root = p.parent
         with open(p) as fh:
             for r in csv.DictReader(fh):
@@ -303,19 +474,17 @@ class ContactGraphStore:
     # [0, len(interactor)) in everything returned here.
 
     def load_dense(self, *, interactor: str, partner: str = "",
-                   self_loops: bool = True, dtype=np.float64):
-        """Dense adjacency, interactor first. None on a miss."""
+                   dtype=np.float64):
+        """Dense adjacency with self-loops, interactor first. None on a miss."""
         hit = self.get(interactor, partner)
         if hit is None:
             return None
         ei, n, _ = hit
         G = dense_from_edges(ei, n, dtype=dtype)
-        if self_loops:
-            np.fill_diagonal(G, 1)
+        np.fill_diagonal(G, 1)
         return G
 
-    def load_edge_index(self, *, interactor: str, partner: str = "",
-                        self_loops: bool = True):
+    def load_edge_index(self, *, interactor: str, partner: str = ""):
         """(2, E) int64 edge_index, both directions, interactor first.
 
         This is what the GAT actually consumes. The previous path reached it by
@@ -326,7 +495,7 @@ class ContactGraphStore:
         if hit is None:
             return None
         ei, n, _ = hit
-        return symmetric_edge_index(ei, n, self_loops=self_loops)
+        return symmetric_edge_index(ei, n)
 
     def load_seqs(self, *, interactor: str, partner: str = ""):
         """(interactor, partner, len_interactor), or None on a miss."""

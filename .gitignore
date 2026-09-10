@@ -65,3 +65,4 @@ brca1/
 brca1_extra/
 scripts/
 *.egg-info/
+tests/_scratch/

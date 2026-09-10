@@ -17,6 +17,14 @@ Environment variables (all optional; defaults suit the original workstation):
     MUTPRED_CACHE_DIR   Large regenerable prediction/embedding caches
                         (mint_cache.pkl, pplm_cache.pkl, ...).
                         Default: $MUTPRED_DATA_ROOT/nm_revisions
+    MUTPRED_PPI_RESULTS_DIR
+                        Generated figure/table artifacts (GCV pickles, blind-test
+                        arrays, variant-DB predictions). Every results/<subdir>
+                        constant below derives from this one root, so a sandbox
+                        run (e.g. the reproduction notebook's QUICK mode) can
+                        redirect all of them at once without touching the
+                        canonical results/ tree that figures/*.png symlink into.
+                        Default: $REPO_ROOT/results
     MUTPRED_CDHIT       Path to the cd-hit binary. Default: found on PATH.
 
 Usage:
@@ -28,6 +36,11 @@ import os
 import shutil
 from pathlib import Path
 
+def _env_path(var: str, default: Path) -> Path:
+    val = os.environ.get(var)
+    return Path(val).expanduser().resolve() if val else default
+
+
 # ── repository-internal (never configurable; derived from this file) ──────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -35,12 +48,33 @@ SRC_DIR = REPO_ROOT / "src"
 WEIGHTS_DIR = REPO_ROOT / "weights"
 DATASETS_DIR = REPO_ROOT / "datasets"
 DATA_CACHES_DIR = REPO_ROOT / "data_caches"
-RESULTS_DIR = REPO_ROOT / "results"
-RESULTS_REV_DIR = REPO_ROOT / "results_revisions"
+# Overridable so a sandbox run (e.g. the reproduction notebook's QUICK mode) can
+# write to results_quick/ without ever touching the canonical results/ tree
+# that figures/*.png symlink into.
+RESULTS_DIR = _env_path("MUTPRED_PPI_RESULTS_DIR", REPO_ROOT / "results")
 FIGURES_DIR = REPO_ROOT / "figures"
 
-GCV_RESULTS_DIR = RESULTS_REV_DIR / "macro_aucs"
-VCFP_RESULTS_DIR = RESULTS_DIR / "varchamp_seqcnf_newvar_eval"
+# One results/ tree (2026-09-10): results_revisions/ is gone, its subdirectories
+# moved under results/ unchanged except the three renamed below. Every script
+# imports these constants rather than hardcoding "results/<subdir>", so a
+# future rename is a one-line change here instead of a repo-wide grep.
+GCV_RESULTS_DIR = RESULTS_DIR / "gcv"                          # was macro_aucs/
+ROBUSTNESS_DIR = RESULTS_DIR / "robustness"                    # was robustness_analyses/
+PROTEIN_CLASS_DIR = RESULTS_DIR / "protein_class"              # was protein_class_enrichment/
+VARCHAMP_BLIND_TEST_DIR = RESULTS_DIR / "varchamp_seqcnf_newvar_eval"
+# All variant-repository predictions MUST come from the single all-data
+# model (weights/MutPred-PPI.pt, trained on sahni_fragoza_varchamp_all_mapped090826).
+# There must be only one variant_dbs_* results tree; a second one scored by any
+# other model (SF-only, a fold ensemble, ...) is a correctness bug, not a valid
+# alternative -- see run_variant_db_inference.py::assert_all_data_model.
+VARIANT_DBS_DIR = RESULTS_DIR / "variant_dbs_all_data"
+VARIANT_DBS_STABILITY_DIR = RESULTS_DIR / "variant_dbs_stability"
+VARIANT_DBS_CLASSIFIED_DIR = RESULTS_DIR / "variant_dbs_classified"
+STABILITY_INTERACTION_DIR = RESULTS_DIR / "stability_interaction"
+COSMIC_STAT_TEST_DIR = RESULTS_DIR / "cosmic_stat_test"
+BICLASS_GCV_DIR = RESULTS_DIR / "biclass_gcv"
+DATASET_COMPARISON_DIR = RESULTS_DIR / "dataset_comparison"
+MASTER_VARIANT_DB_CSV = RESULTS_DIR / "master_variant_db_predictions.csv.gz"
 
 # Small annotation/label inputs copied into the repo so every analysis script
 # resolves inside the tree.  Delivered via the Zenodo bundle (datasets/ is
@@ -63,11 +97,6 @@ EXTERNAL_DIR = REPO_ROOT / "external"
 # simply does not exist elsewhere and is skipped).  Harmless to delete if you
 # have cd-hit installed: conda install -c bioconda cd-hit.
 _LEGACY_CDHIT = "/home/rcstewart/miniconda3/envs/pytorch_env/bin/cd-hit"
-
-
-def _env_path(var: str, default: Path) -> Path:
-    val = os.environ.get(var)
-    return Path(val).expanduser().resolve() if val else default
 
 
 # ── external, configurable ────────────────────────────────────────────────────
@@ -175,6 +204,7 @@ def describe() -> str:
         row("DATA_ROOT", DATA_ROOT, "MUTPRED_DATA_ROOT"),
         row("CV_DIR", CV_DIR, "MUTPRED_CV_DIR"),
         row("CACHE_DIR", CACHE_DIR, "MUTPRED_CACHE_DIR"),
+        row("RESULTS_DIR", RESULTS_DIR, "MUTPRED_PPI_RESULTS_DIR"),
     ]
     lines += ["", "in-repo (Zenodo-delivered; datasets/ is gitignored):"]
     lines += [
@@ -184,7 +214,11 @@ def describe() -> str:
         row("ESIGNET_SUPPLEMENTS_DIR", ESIGNET_SUPPLEMENTS_DIR),
         row("WEIGHTS_DIR", WEIGHTS_DIR),
         row("GCV_RESULTS_DIR", GCV_RESULTS_DIR),
-        row("VCFP_RESULTS_DIR", VCFP_RESULTS_DIR),
+        row("VARCHAMP_BLIND_TEST_DIR", VARCHAMP_BLIND_TEST_DIR),
+        row("ROBUSTNESS_DIR", ROBUSTNESS_DIR),
+        row("PROTEIN_CLASS_DIR", PROTEIN_CLASS_DIR),
+        row("VARIANT_DBS_DIR", VARIANT_DBS_DIR),
+        row("VARIANT_DBS_STABILITY_DIR", VARIANT_DBS_STABILITY_DIR),
     ]
     lines += ["", "symlinked (run scripts/link_external.sh):"]
     lines += [row("EXTERNAL_DIR", EXTERNAL_DIR)]

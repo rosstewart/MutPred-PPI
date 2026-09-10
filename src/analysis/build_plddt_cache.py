@@ -1,262 +1,252 @@
 #!/usr/bin/env python
-"""Rebuild datasets/annotations/plddt_cache.pkl from AlphaFold DB monomer models.
+"""Build the pLDDT cache from OUR OWN AF3 complex structures.
 
-Consumer: src/analysis/plddt_stratification.py, which reads
+Output format (pickle)::
 
-    {ACCESSION: {"plddt": float32[L], "cbeta": float32[L, 3]}}
+    {"A6NLX3__P35557": 74.63, ...}   # dict[str, float]
 
-keyed by a bare UniProt accession (uppercase, isoform suffix stripped) and looked
-up per protein of a complex ID.  Only "plddt" is used there, but "cbeta" is part
-of the on-disk object and is reproduced so the rebuilt file is a drop-in.
+KEY = THE PAIR, NOT THE ACCESSION.  The single consumer,
+src/analysis/plddt_stratification.py, needs exactly one scalar per complex: it
+bins the complex-level mean pLDDT at 70/85 and never indexes a per-residue or
+per-chain value.  The AF3 manifests are already one row per predicted complex
+with a `mean_plddt` column, so a pair key is a 1:1 re-keying of the source with
+no aggregation invented on our side.  Keying by accession would instead force
+the consumer to average two monomers and would silently drop the interface
+context that the complex model is the whole point of.
 
-Source: per-protein AlphaFold DB PDB models, NOT the AF3 complexes in
-datasets/af3_structures*/.  Those are pair models whose chains are trimmed to the
-assayed constructs, so their per-residue arrays do not line up with this cache
-(106 of 1,161 accessions differ in length, 101 are absent entirely).  pLDDT is
-the CA B-factor; cbeta is the CB coordinate, falling back to CA for glycine.
+Two further consequences of the pair key, both wanted:
 
-Only fragment F1 is read.  For proteins longer than 1,400 residues AlphaFold DB
-splits the model into F1..Fn, so the cached array covers the first fragment only
--- reproduced deliberately, since that is what the published cache contains.
+  * It is isoform-aware.  `O14787-2__Q13207` is its own structure, distinct from
+    `O14787__Q13207`.  The old accession-keyed AlphaFold DB cache had to fall
+    back to the parent accession's monomer for 89 isoform-bearing pairs.
+  * The key round-trips to a file on disk: key + ".cif.gz" is the `filename`
+    column of the manifest it came from.
 
-Usage (reproduces the published 1,161-entry cache bitwise):
-  python src/analysis/build_plddt_cache.py \
-      --extra-accession O43615 --extra-accession P10451 \
-      --output /tmp/plddt_cache.pkl \
-      --compare-to datasets/annotations/plddt_cache.pkl
+ORIENTATION.  The key preserves the manifest's own chain order
+(`chain_a_accession__chain_b_accession`) so that round-trip holds.  AF3 chain
+order is unrelated to the (interactor, partner) order a caller will have, so
+lookups must try both orientations -- use `lookup()` below rather than a bare
+`cache[key]`.
 
-The two --extra-accession values are legacy: they are in the published cache but
-in neither column of the current benchmark table, so they must have entered from
-an earlier revision of it.  The builder is incremental in spirit -- rerunning
-against a fresh accession list will not resurrect them on its own.
+DELIMITER.  `__` per the repo-wide convention: `_` breaks on RefSeq ids and a
+single `-` breaks on UniProt isoform suffixes.
+
+The AlphaFold DB monomer reading path and the `cbeta` coordinate arrays that
+used to live in this file are both gone.  `cbeta` was dead -- nothing outside
+this builder ever read it.
+
+Provenance of `mean_plddt`: the manifest builders take it from the mmCIF
+`_atom_site.B_iso_or_equiv` field located BY NAME in the loop header.  mmCIF
+column order varies between AF3 output variants, so fixed PDB column offsets
+must never be used on these files; doing so once returned -1.0 for 983 CIFs.
+This builder therefore copies the manifest value rather than re-parsing, and
+rejects any row whose pLDDT is outside (0, 100].
+
+Usage:
+  python src/analysis/build_plddt_cache.py --output /tmp/plddt_pair_cache.pkl
+  python src/analysis/build_plddt_cache.py --output /tmp/plddt_pair_cache.pkl \
+      --compare-legacy datasets/annotations/plddt_cache.pkl
 """
 from __future__ import annotations
 
 import argparse
-import gzip
 import pickle
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
-from paths import ANNOTATIONS_DIR
+from paths import ANNOTATIONS_DIR, DATASETS_DIR
 
-DEFAULT_AFDB_DIR = Path("/data/dbs/alphafold_db")
-# Provenance of the published key set: the interactor column of the 2026 mutppi
-# benchmark table.  Out of tree, hence overridable.
-DEFAULT_INTERACTOR_CSV = Path("/home/rcstewart/ppi_lossgain/2026/mutppi/benchmark/training_data.csv")
-DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "plddt_cache.pkl"
-# v4 before v6: the published cache was built when v4 was the newest release, and
-# the two releases give different coordinates for the same accession.
-DEFAULT_VERSIONS = "4,6,3,2"
+PAIR_SEP = "__"
+
+# Precedence order: the benchmark complexes first, the variant-database
+# complexes second.  The two manifests overlap on a few dozen pairs (some in
+# opposite chain orders) and the benchmark models are the ones the published
+# analysis is about, so they win any collision.
+DEFAULT_MANIFESTS = [
+    DATASETS_DIR / "af3_structures_canonical" / "manifest.csv",
+    DATASETS_DIR / "af3_structures_variant_dbs_canonical" / "manifest.csv",
+]
+DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "plddt_pair_cache.pkl"
+
+# pLDDT is a percentage; the -1.0 sentinel from the historical mmCIF column-offset
+# bug and any other out-of-range value must not reach the 70/85 bins.
+PLDDT_MIN, PLDDT_MAX = 0.0, 100.0
 
 
-def _bare(accession: str) -> str:
-    return accession.split("-")[0].strip().upper()
+def pair_key(a: str, b: str) -> str:
+    """Cache key for a protein pair, in the given chain order."""
+    return f"{a}{PAIR_SEP}{b}"
 
 
-def accessions_from_csv(path: Path, column: str) -> set[str]:
+def lookup(cache: dict, a: str, b: str):
+    """Mean pLDDT for the pair (a, b) in either chain orientation, else None."""
+    val = cache.get(pair_key(a, b))
+    if val is None:
+        val = cache.get(pair_key(b, a))
+    return val
+
+
+def load_manifest(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, usecols=["chain_a_accession", "chain_b_accession", "mean_plddt"])
+    df["mean_plddt"] = pd.to_numeric(df["mean_plddt"], errors="coerce")
+    return df
+
+
+def build(manifests: list[Path]) -> tuple[dict, dict]:
+    """Merge manifests into a pair-keyed cache.  Earlier manifests win collisions."""
+    cache: dict[str, float] = {}
+    stats = {"rows": 0, "bad_plddt": 0, "collisions_same_order": 0,
+             "collisions_flipped_order": 0, "max_collision_spread": 0.0}
+
+    for path in manifests:
+        df = load_manifest(path)
+        kept = 0
+        for a, b, val in zip(df["chain_a_accession"], df["chain_b_accession"], df["mean_plddt"]):
+            stats["rows"] += 1
+            if pd.isna(a) or pd.isna(b) or pd.isna(val) or not (PLDDT_MIN < val <= PLDDT_MAX):
+                stats["bad_plddt"] += 1
+                continue
+            val = float(val)
+            existing = lookup(cache, str(a), str(b))
+            if existing is not None:
+                key = "collisions_same_order" if pair_key(str(a), str(b)) in cache \
+                    else "collisions_flipped_order"
+                stats[key] += 1
+                stats["max_collision_spread"] = max(
+                    stats["max_collision_spread"], abs(existing - val))
+                continue  # first manifest wins
+            cache[pair_key(str(a), str(b))] = val
+            kept += 1
+        print(f"  {path}: {len(df)} rows, {kept} new pairs", flush=True)
+
+    return cache, stats
+
+
+# ── verification ───────────────────────────────────────────────────────────────
+
+def compare_legacy(cache: dict, legacy_path: Path) -> None:
+    """Measure the new cache against the accession-keyed AlphaFold DB cache.
+
+    Reports, over exactly the complex_ids the stratification analysis iterates:
+    coverage each way, how many low/medium/high bin assignments change, and the
+    correlation of the per-complex mean where both resolve.  The bin-change
+    count is the number that moves the figure.
+    """
+    # Imported lazily: plddt_stratification imports this module at top level.
+    from plddt_stratification import bin_plddt, complex_id_pairs, complex_mean_plddt
+    from paths import cv_reference_dir
+
+    with open(legacy_path, "rb") as f:
+        legacy = pickle.load(f)
+
     import pandas as pd
-    df = pd.read_csv(path, usecols=[column])
-    return {_bare(a) for a in df[column].dropna().astype(str)}
+    rows_path = cv_reference_dir() / "sahni_fragoza_train_rows.csv.gz"
+    canonical_rows = pd.read_csv(rows_path)
+    complex_ids = sorted({f"{r['interactor']}-{r['partner']}"
+                          for _, r in canonical_rows.iterrows()})
+    pairs = complex_id_pairs()
 
+    def legacy_mean(cid: str):
+        prots = pairs.get(cid)
+        if prots is None:
+            parts = cid.split("-")
+            if len(parts) < 2:
+                return None
+            prots = (parts[0], "-".join(parts[1:]))
+        arrays = []
+        for prot in prots:
+            entry = legacy.get(prot)
+            if entry is None:
+                entry = legacy.get(prot.split("-")[0])
+            if entry is None:
+                return None
+            arrays.append(entry["plddt"] if isinstance(entry, dict) else entry)
+        return float(np.mean(np.concatenate(arrays)))
 
-def accessions_from_vt_ids(path: Path) -> set[str]:
-    """Protein tokens the consumer will look up, split exactly as it splits them."""
-    with open(path, "rb") as f:
-        vt_ids = pickle.load(f)
-    out: set[str] = set()
-    for vt_id in vt_ids:
-        parts = str(vt_id).split(" ")[0].split("-")
-        if len(parts) < 2:
-            continue
-        out.add(_bare(parts[0]))
-        out.add(_bare("-".join(parts[1:])))
-    return out
+    old_vals, new_vals = {}, {}
+    for cid in complex_ids:
+        o = legacy_mean(cid)
+        if o is not None:
+            old_vals[cid] = o
+        n = complex_mean_plddt(cid, cache, pairs)
+        if n is not None:
+            new_vals[cid] = n
 
+    both = sorted(set(old_vals) & set(new_vals))
+    changed = [c for c in both if bin_plddt(old_vals[c]) != bin_plddt(new_vals[c])]
 
-def accessions_from_cache(path: Path) -> set[str]:
-    with open(path, "rb") as f:
-        return set(pickle.load(f))
+    print(f"\nComparison against legacy {legacy_path}")
+    print(f"  complex_ids in the analysis      : {len(complex_ids)}")
+    print(f"  covered by legacy (AFDB monomer) : {len(old_vals)}")
+    print(f"  covered by new (AF3 complex)     : {len(new_vals)}")
+    print(f"  gained (new only)                : {len(set(new_vals) - set(old_vals))}")
+    print(f"  lost (legacy only)               : {len(set(old_vals) - set(new_vals))}")
+    print(f"  resolved by both                 : {len(both)}")
+    print(f"  BIN ASSIGNMENTS CHANGED          : {len(changed)} "
+          f"({100.0 * len(changed) / max(len(both), 1):.1f}% of shared)")
 
+    transitions: dict[tuple[str, str], int] = {}
+    for c in changed:
+        t = (bin_plddt(old_vals[c]), bin_plddt(new_vals[c]))
+        transitions[t] = transitions.get(t, 0) + 1
+    for (o, n), k in sorted(transitions.items(), key=lambda kv: -kv[1]):
+        print(f"    {o:>6} -> {n:<6} {k}")
 
-def find_model(afdb_dir: Path, accession: str, versions: list[int]) -> Path | None:
-    for v in versions:
-        p = afdb_dir / f"AF-{accession}-F1-model_v{v}.pdb.gz"
-        if p.exists():
-            return p
-    return None
+    for label, vals in (("legacy", old_vals), ("new", new_vals)):
+        counts = {b: sum(1 for c in both if bin_plddt(vals[c]) == b)
+                  for b in ("low", "medium", "high")}
+        print(f"  {label} bin counts over shared: {counts}")
 
-
-def parse_model(path: Path) -> dict | None:
-    """Per-residue pLDDT and CB coordinates from a gzipped AlphaFold DB PDB."""
-    plddt_map: dict[int, float] = {}
-    ca_map: dict[int, np.ndarray] = {}
-    cb_map: dict[int, np.ndarray] = {}
-
-    opener = gzip.open if path.name.endswith(".gz") else open
-    try:
-        with opener(path, "rt") as f:
-            for line in f:
-                if not line.startswith("ATOM"):
-                    continue
-                atom_name = line[12:16].strip()
-                if atom_name not in ("CA", "CB"):
-                    continue
-                try:
-                    res_seq = int(line[22:26])
-                    coord = np.array(
-                        [float(line[30:38]), float(line[38:46]), float(line[46:54])],
-                        dtype=np.float32,
-                    )
-                    b_factor = float(line[60:66])
-                except ValueError:
-                    continue
-                if atom_name == "CA":
-                    plddt_map[res_seq] = b_factor
-                    ca_map[res_seq] = coord
-                else:
-                    cb_map[res_seq] = coord
-    except OSError:
-        return None
-
-    if not plddt_map:
-        return None
-
-    res_nums = sorted(plddt_map)
-    plddt = np.zeros(len(res_nums), dtype=np.float32)
-    cbeta = np.zeros((len(res_nums), 3), dtype=np.float32)
-    for i, rn in enumerate(res_nums):
-        plddt[i] = plddt_map[rn]
-        cbeta[i] = cb_map.get(rn, ca_map[rn])
-    return {"plddt": plddt, "cbeta": cbeta}
-
-
-def build(accessions: set[str], afdb_dir: Path, versions: list[int]) -> tuple[dict, list[str]]:
-    cache: dict[str, dict] = {}
-    not_found: list[str] = []
-    ordered = sorted(accessions)
-    for i, ac in enumerate(ordered, 1):
-        model = find_model(afdb_dir, ac, versions)
-        if model is None:
-            not_found.append(ac)
-            continue
-        entry = parse_model(model)
-        if entry is None:
-            not_found.append(ac)
-            continue
-        cache[ac] = entry
-        if i % 250 == 0:
-            print(f"  {i}/{len(ordered)} accessions processed, {len(cache)} parsed", flush=True)
-    return cache, not_found
-
-
-def compare(built: dict, reference_path: Path) -> None:
-    with open(reference_path, "rb") as f:
-        ref = pickle.load(f)
-
-    built_keys, ref_keys = set(built), set(ref)
-    shared = built_keys & ref_keys
-    print(f"\nComparison against {reference_path}")
-    print(f"  reference entries : {len(ref)}")
-    print(f"  built entries     : {len(built)}")
-    print(f"  shared keys       : {len(shared)}")
-    print(f"  missing (in reference, not built) : {len(ref_keys - built_keys)}")
-    print(f"  new (built, not in reference)     : {len(built_keys - ref_keys)}")
-    for label, extra in (("missing", ref_keys - built_keys), ("new", built_keys - ref_keys)):
-        if extra:
-            print(f"    {label} examples: {sorted(extra)[:5]}")
-
-    len_mismatch = [k for k in shared if len(built[k]["plddt"]) != len(ref[k]["plddt"])]
-    print(f"  length mismatches : {len(len_mismatch)} {sorted(len_mismatch)[:5]}")
-
-    comparable = sorted(shared - set(len_mismatch))
-    for field in ("plddt", "cbeta"):
-        identical = 0
-        max_diff = 0.0
-        for k in comparable:
-            a = np.asarray(built[k][field], dtype=np.float64)
-            b = np.asarray(ref[k][field], dtype=np.float64)
-            if np.array_equal(a, b):
-                identical += 1
-            max_diff = max(max_diff, float(np.max(np.abs(a - b))) if a.size else 0.0)
-        print(f"  {field}: {identical}/{len(comparable)} arrays bitwise identical, max abs diff {max_diff:.6g}")
-
-    if comparable:
-        a = np.concatenate([np.asarray(built[k]["plddt"], dtype=np.float64) for k in comparable])
-        b = np.concatenate([np.asarray(ref[k]["plddt"], dtype=np.float64) for k in comparable])
-        print(f"  pLDDT pearson r over {a.size} residues: {np.corrcoef(a, b)[0, 1]:.6f}")
+    if len(both) > 1:
+        a = np.array([old_vals[c] for c in both])
+        b = np.array([new_vals[c] for c in both])
+        print(f"  per-complex mean pearson r : {np.corrcoef(a, b)[0, 1]:.4f}")
+        print(f"  mean shift (new - legacy)  : {float(np.mean(b - a)):+.2f} "
+              f"(legacy {a.mean():.2f}, new {b.mean():.2f})")
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--afdb-dir", type=Path, default=DEFAULT_AFDB_DIR, help="AlphaFold DB PDB directory")
-    p.add_argument("--model-versions", default=DEFAULT_VERSIONS,
-                   help=f"AFDB model versions in preference order (default: {DEFAULT_VERSIONS})")
-    p.add_argument("--interactor-csv", type=Path, action="append", default=None,
-                   help=f"CSV of accessions (repeatable; default: {DEFAULT_INTERACTOR_CSV})")
-    p.add_argument("--csv-column", default="interactor", help="column of --interactor-csv to read")
-    p.add_argument("--vt-ids", type=Path, action="append", default=None,
-                   help="vt_ids pickle; adds every protein token the consumer looks up")
-    p.add_argument("--accession-file", type=Path, action="append", default=None,
-                   help="plain text file, one accession per line")
-    p.add_argument("--keys-from-cache", type=Path, default=None,
-                   help="reuse the key set of an existing cache (verification/refresh only)")
-    p.add_argument("--extra-accession", action="append", default=None, help="single accession (repeatable)")
-    p.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help=f"output pickle (default: {DEFAULT_OUTPUT})")
-    p.add_argument("--compare-to", type=Path, default=ANNOTATIONS_DIR / "plddt_cache.pkl",
-                   help="existing cache to diff against ('none' to skip)")
-    p.add_argument("--force", action="store_true", help="allow overwriting a file under datasets/annotations")
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--manifest", type=Path, action="append", default=None,
+                   help="AF3 manifest.csv (repeatable; earlier wins collisions). "
+                        f"Default: {[str(m) for m in DEFAULT_MANIFESTS]}")
+    p.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
+                   help=f"output pickle (default: {DEFAULT_OUTPUT})")
+    p.add_argument("--compare-legacy", type=Path, default=None,
+                   help="accession-keyed AlphaFold DB cache to measure the rebuild against")
+    p.add_argument("--force", action="store_true",
+                   help="allow overwriting a file under datasets/annotations")
     args = p.parse_args()
 
     out = args.output.resolve()
     if not args.force and ANNOTATIONS_DIR.resolve() in out.parents and out.exists():
         p.error(f"refusing to overwrite {out}; write to scratch and diff first, or pass --force")
 
-    versions = [int(v) for v in args.model_versions.split(",") if v.strip()]
-    if not args.afdb_dir.is_dir():
-        p.error(f"AlphaFold DB directory not found: {args.afdb_dir}")
+    manifests = args.manifest or DEFAULT_MANIFESTS
+    missing = [m for m in manifests if not Path(m).exists()]
+    if missing:
+        p.error(f"manifest not found: {missing} (pass --manifest)")
 
-    accessions: set[str] = set()
-    explicit = any((args.interactor_csv, args.vt_ids, args.accession_file, args.keys_from_cache))
-    for csv_path in (args.interactor_csv or ([] if explicit else [DEFAULT_INTERACTOR_CSV])):
-        if not Path(csv_path).exists():
-            p.error(f"accession CSV not found: {csv_path} (pass --interactor-csv/--accession-file)")
-        got = accessions_from_csv(Path(csv_path), args.csv_column)
-        print(f"  {csv_path} [{args.csv_column}]: {len(got)} accessions")
-        accessions |= got
-    for vt_path in (args.vt_ids or []):
-        got = accessions_from_vt_ids(Path(vt_path))
-        print(f"  {vt_path}: {len(got)} protein tokens")
-        accessions |= got
-    for list_path in (args.accession_file or []):
-        got = {_bare(x) for x in Path(list_path).read_text().split() if x.strip()}
-        print(f"  {list_path}: {len(got)} accessions")
-        accessions |= got
-    if args.keys_from_cache:
-        got = accessions_from_cache(Path(args.keys_from_cache))
-        print(f"  {args.keys_from_cache}: {len(got)} keys")
-        accessions |= got
-    accessions |= {_bare(a) for a in (args.extra_accession or [])}
-
-    if not accessions:
-        p.error("no accessions requested")
-    print(f"Requested accessions: {len(accessions)}")
-
-    cache, not_found = build(accessions, args.afdb_dir, versions)
-    print(f"Built {len(cache)} entries; {len(not_found)} accessions had no AlphaFold DB F1 model")
-    if not_found:
-        print(f"  examples: {not_found[:5]}")
+    print(f"Building from {len(manifests)} manifest(s)")
+    cache, stats = build([Path(m) for m in manifests])
+    print(f"Built {len(cache)} pairs from {stats['rows']} manifest rows")
+    print(f"  rejected pLDDT (missing or outside {PLDDT_MIN}-{PLDDT_MAX}): {stats['bad_plddt']}")
+    print(f"  duplicate pairs dropped: {stats['collisions_same_order']} same chain order, "
+          f"{stats['collisions_flipped_order']} flipped; "
+          f"max disagreement {stats['max_collision_spread']:.2f} pLDDT")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "wb") as f:
         pickle.dump(cache, f, protocol=4)
     print(f"Saved -> {out}")
 
-    if str(args.compare_to).lower() != "none" and Path(args.compare_to).exists():
-        compare(cache, Path(args.compare_to))
+    if args.compare_legacy and Path(args.compare_legacy).exists():
+        compare_legacy(cache, Path(args.compare_legacy))
     return 0
 
 

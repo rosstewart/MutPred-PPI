@@ -16,7 +16,7 @@ Usage:
         --mint-cache $MUTPRED_DATA_ROOT/2026/mint_cache/sahni_fragoza.pkl
 
     conda run -n ppi python mint_gcv_iter.py \\
-        --dataset sahni_fragoza_varchamp1p_cava \\
+        --dataset sahni_fragoza_mapped090826 \\
         --predictor site_diff \\
         --mint-cache /path/to/cache.pkl \\
         --n-gcv 30 \\
@@ -35,8 +35,8 @@ import pandas as pd
 # ── shared code (see src/evaluation/esignet_cv.py and
 #    src/evaluation/predictors/) ───────────────────────────────────────────────
 from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
-# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
-from evaluation.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
+# Shared GCV data-loading layer (see src/utils/gcv_common.py).
+from utils.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
 import evaluation.predictors.mint_mlp as _mint_mod   # noqa: E402
 from evaluation.predictors.mint_mlp import MINTSeqDiff, MINTSiteDiff  # noqa: E402

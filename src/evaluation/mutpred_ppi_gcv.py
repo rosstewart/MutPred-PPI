@@ -31,9 +31,9 @@ _HERE = Path(__file__).resolve().parent
 
 import joblib  # noqa: E402
 
-from evaluation.gcv_common import DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
-from evaluation.mutpred_ppi_data import build_tensors  # noqa: E402
-from evaluation.mutpred_ppi_cv import (  # noqa: E402
+from utils.gcv_common import DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
+from utils.mutpred_ppi_data import build_tensors  # noqa: E402
+from training.train_fold import (  # noqa: E402
     _MEGASCALE_SCALER_PATH, _V1_0_SCALER_PATH, train_fold)
 
 # Which pretrained scaler an ablation uses. Mirrors mutpred_ppi_cv.run(): the
@@ -65,7 +65,7 @@ def run(args: argparse.Namespace) -> None:
     # train_fold walks the whole tensor list, not just the fold's indices, so it
     # must be handed dense lists. Every row is usable, so position is identity.
     dense = {k: list(t[k])
-             for k in ("node_emb", "edge_mat", "pos_labels", "neg_labels",
+             for k in ("node_emb", "edge_index", "pos_labels", "neg_labels",
                        "clusters", "mut_diff", "seq_lengths")}
 
     # Pre-scale the mutation diffs once, exactly as mutpred_ppi_cv.run() does.
@@ -87,11 +87,11 @@ def run(args: argparse.Namespace) -> None:
         fold_seed = args.seed * 10000 + gcv_seed * 100 + fold
         preds, _labels = train_fold(
             tr, te, fold,
-            dense["node_emb"], dense["edge_mat"], dense["pos_labels"],
+            dense["node_emb"], dense["edge_index"], dense["pos_labels"],
             dense["neg_labels"], dense["clusters"], dense["mut_diff"],
             dense["seq_lengths"], device,
             ablation=args.ablation, seed=fold_seed,
-            prefit_scaler=prefit_scaler, precomputed_diffs=precomputed_diffs,
+            precomputed_diffs=precomputed_diffs,
         )
         # train_fold returns predictions in the order of `te`, which is test_idx.
         return np.asarray(preds, dtype=float)

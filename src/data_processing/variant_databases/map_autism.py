@@ -1,3 +1,4 @@
+from utils import mutations  # noqa: E402
 #!/usr/bin/env python
 """Map autism/NDD variant datasets to the BioGRID direct-binding PPI network.
 
@@ -56,8 +57,8 @@ import os
 import pickle
 import pandas as pd
 import requests
-from Bio import SeqIO
-from biogrid_common import (  # shared verbatim helpers
+from utils.sequences import first_token, read_fasta as read_fasta_shared
+from data_processing.variant_databases.biogrid_common import (  # noqa: E402
     build_variant_triplets,
     clean_complexes,
     get_complexes_in_biogrid,
@@ -93,7 +94,7 @@ def apply_variants(variant_seq_dict, id_to_seq):
             continue
         wt_res = variant[0]
         try:
-            mt_idx = int(variant[1:-1]) - 1
+            mt_idx = mutations.index(variant)
         except ValueError:
             continue
         mt_res = variant[-1]
@@ -150,11 +151,12 @@ def run_neurodev(args, output_dir):
 
     print("=== NeuroDev mode ===")
 
-    # Load case and control FASTA
-    seq_dict_case = {str(r.id): str(r.seq)
-                     for r in SeqIO.parse(args.neurodev_case, "fasta")}
-    seq_dict_control = {str(r.id): str(r.seq)
-                        for r in SeqIO.parse(args.neurodev_control, "fasta")}
+    # Load case and control FASTA. NeuroDev headers are pipe fields plus a
+    # trailing tab-delimited cohort tag (`NP_000005|A2M|p.G779R<TAB>case_dataset`);
+    # `first_token` keeps the pipe composite and drops the cohort tag, matching
+    # BioPython's `record.id` (which also stops at the first whitespace).
+    seq_dict_case = read_fasta_shared(args.neurodev_case, first_token, on_duplicate="last")
+    seq_dict_control = read_fasta_shared(args.neurodev_control, first_token, on_duplicate="last")
 
     # Remove shared variants
     shared = [k for k in seq_dict_control if k in seq_dict_case
@@ -189,7 +191,7 @@ def run_neurodev(args, output_dir):
         variant = variant[2:]  # strip 'p.'
         wt_res = variant[0]
         try:
-            mt_idx = int(variant[1:-1]) - 1
+            mt_idx = mutations.index(variant)
         except ValueError:
             continue
         mt_res = variant[-1]
@@ -348,7 +350,7 @@ def run_tulika(args, output_dir):
             continue
         wt_res = variant[0]
         try:
-            mt_idx = int(variant[1:-1]) - 1
+            mt_idx = mutations.index(variant)
         except ValueError:
             continue
         mt_res = variant[-1]

@@ -1,7 +1,7 @@
 """MutPred-PPI model definitions — the single source of truth.
 
 Previously `GAT_mut_processor` was defined verbatim in three places
-(`evaluation/mutpred_ppi_cv.py`, `training/pretrain_stability.py`, and
+(`training/train_fold.py`, `training/pretrain_stability.py`, and
 `inference/utils/model_loader.py` under the name `MutPred_PPI`).  All three were
 layer-for-layer identical, so a checkpoint written by one loaded into any other --
 but editing `hidden_dim`, `num_heads`, or the `binding_predictor` head in one copy

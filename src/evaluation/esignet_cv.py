@@ -9,7 +9,7 @@ from scratch on each fold's training data only.
 
 Usage:
     conda run -n ppi python esignet_gcv_iter.py --dataset sahni_fragoza --device cuda:0
-    conda run -n ppi python esignet_gcv_iter.py --dataset sahni_fragoza_varchamp1p_cava \\
+    conda run -n ppi python esignet_gcv_iter.py --dataset sahni_fragoza_mapped090826 \\
         --device cuda:0 --n-gcv 30 --outdir /path/to/results/
 """
 
@@ -38,9 +38,9 @@ from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # ── shared GCV infrastructure ─────────────────────────────────────────────────
-# Moved to gcv_common.py.  Re-exported here because mint_cv, pplm_cv, swing_gcv
-# and the two precompute_* scripts import these names from this module.
-from evaluation.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
+# Lives in src/utils/gcv_common.py: mint_cv, pplm_cv, swing_gcv and the two
+# precompute_* scripts each import these names from there, not from here.
+from utils.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
 
 

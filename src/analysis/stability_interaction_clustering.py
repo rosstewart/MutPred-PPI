@@ -11,9 +11,9 @@ Usage:
     conda run -n ppi python src/analysis/stability_interaction_clustering.py
 
 Output:
-    results_revisions/stability_interaction/clustering_kmeans.png
-    results_revisions/stability_interaction/clustering_gmm.png
-    results_revisions/stability_interaction/clustering_summary.tsv
+    results/stability_interaction/clustering_kmeans.png
+    results/stability_interaction/clustering_gmm.png
+    results/stability_interaction/clustering_summary.tsv
 """
 from __future__ import annotations
 
@@ -35,13 +35,14 @@ from matplotlib.patches import Ellipse
 import sys as _sys
 from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, HOME_DIR, REPO_ROOT
+from utils import mutations  # noqa: E402
 
 
 _PUB = REPO_ROOT
 _HOME = HOME_DIR
-_DB   = _PUB / "results_revisions" / "variant_dbs"
-_STAB = _PUB / "results_revisions" / "variant_dbs_stability"
-_OUT  = _PUB / "results_revisions" / "stability_interaction"
+_DB   = _PUB / "results" / "variant_dbs_all_data"
+_STAB = _PUB / "results" / "variant_dbs_stability"
+_OUT  = _PUB / "results" / "stability_interaction"
 
 from stability_interaction_scatter import load_tsv_grouped, aggregate_per_variant
 
@@ -100,7 +101,7 @@ def build_pooled_data() -> pd.DataFrame:
             if len(parts) == 2:
                 u, v1b = parts
                 try:
-                    var0 = f"{v1b[0]}{int(v1b[1:-1]) - 1}{v1b[-1]}"
+                    var0 = mutations.to_zero_based(v1b)
                 except ValueError:
                     continue
                 cosmic_high_rec.add((u, var0))

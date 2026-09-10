@@ -7,7 +7,7 @@ reverse pair (B, A) is evaluated independently. This captures pairs where the in
 can be either maintained or disrupted, depending on which specific residue is mutated.
 
 Output:
-    results_revisions/biclass_gcv/roc_sahni_fragoza_biclass_with_variance.png
+    results/biclass_gcv/roc_sahni_fragoza_biclass_with_variance.png
 
 Usage:
     conda run -n ppi python src/analysis/biclass_sf_gcv.py
@@ -23,6 +23,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import numpy as np
+import pandas as pd
 from sklearn.metrics import roc_curve, auc
 
 # --- repo-relative path resolution (see src/paths.py) ---
@@ -33,19 +34,24 @@ from paths import CV_DIR, REPO_ROOT  # noqa: E402
 
 _PUB = REPO_ROOT
 _CV = CV_DIR
-from roc_plots import compute_roc_with_variance, plot_roc_with_confidence, METHOD_DISPLAY_NAMES, WORKING_DIR
+from roc_plots import (compute_roc_with_variance, plot_roc_with_confidence,
+                       METHOD_DISPLAY_NAMES, WORKING_DIR)
+from utils.gcv_common import (
+    DATASET_CONFIGS, StaleCacheError, load_data, load_gcv_detailed_results,
+    load_positional_cache)
 
 
-LABEL_FILE   = _CV / "sahni_fragoza_all_vt_ids_and_labels.txt"
-IPTM_PKL     = _PUB / "results_revisions" / "macro_aucs" / "iptm_sahni_fragoza_gcv_splits.pkl"
-PKL_DIR      = _PUB / "results_revisions" / "macro_aucs"
-OUT_DIR      = _PUB / "results_revisions" / "biclass_gcv"
+CANONICAL_DATASET = "sahni_fragoza_mapped090826"
+PKL_DIR      = _PUB / "results" / "gcv"
+OUT_DIR      = _PUB / "results" / "biclass_gcv"
 
 DATASET = "sahni_fragoza"
+N_SEEDS = 30
 
-# Fixed-prediction baselines (not GCV-iterated) — evaluated on the raw label-file
-# order, which SAAMBE-3D/MutPPI/MutPPIPlus/mutpred2_standalone arrays share.
-SKEMPI_METHODS = ["SAAMBE-3D", "MutPPI", "MutPPIPlus"]  # DDMutPPI excluded: API returns NaN
+# Fixed-prediction baselines (not GCV-iterated) — evaluated by row position, so
+# their arrays must be computed under the canonical `row_index` order that
+# `load_pairs_in_row_order` reads.
+SKEMPI_METHODS = ["SAAMBE-3D", "MutPPI", "MutPPIPlus"]  # DDMutPPI excluded entirely: 87% job-timeout rate, see docs/METHOD_PROVENANCE.md
 
 # roc_plots.py's main() only registers these display names at runtime (line ~1083),
 # so biclass_sf_gcv.py must register them itself before calling plot_roc_with_confidence.
@@ -68,25 +74,74 @@ METHODS = [
 ]
 
 
-def load_biclass_pairs(label_file: Path) -> set[str]:
-    """Return set of complex_ids where interactor mutations span both labels 0 and 1."""
-    pair_labels: dict[str, set[int]] = defaultdict(set)
-    with open(label_file) as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) == 3:
-                pair_labels[parts[0]].add(int(parts[2]))
-    biclass = {cid for cid, lbls in pair_labels.items() if lbls == {0, 1}}
+def load_biclass_pairs() -> set[tuple[str, str]]:
+    """Ordered `(interactor, partner)` pairs whose mutations span labels 0 and 1.
+
+    Derived from the canonical row table's `perturbed` column. This previously
+    read `sahni_fragoza_all_vt_ids_and_labels.txt`, a pre-090826 artifact with no
+    producer in the tree and no copy in git -- 3,014 of its 5,894 rows name pairs
+    the 090826 remapping dropped outright, so it describes a row set that no
+    longer exists. On the 2,874 rows the two share the labels agree exactly
+    (0 disagreements), so nothing is lost by sourcing them here instead.
+    """
+    df = load_data(DATASET_CONFIGS[CANONICAL_DATASET])
+    pair_labels: dict[tuple[str, str], set[int]] = defaultdict(set)
+    for interactor, partner, label in zip(df["interactor"], df["partner"],
+                                          df["perturbed"]):
+        pair_labels[(str(interactor), str(partner))].add(int(label))
+    biclass = {pair for pair, lbls in pair_labels.items() if lbls == {0, 1}}
     n_total = len(pair_labels)
+    print(f"  Canonical rows:      {len(df):,}")
     print(f"  Total ordered pairs: {n_total:,}")
     print(f"  Biclass pairs:       {len(biclass):,} ({len(biclass)/n_total:.1%})")
     return biclass
 
 
+def build_row_ids_by_seed(canonical_rows: pd.DataFrame, n_seeds: int
+                          ) -> dict[int, dict[int, dict[str, list[tuple[str, str]]]]]:
+    """`{seed: {fold: {class_k: [(interactor, partner), ...]}}}`, in the same
+    per-fold/class order every GCV method pkl stores its `preds`/`labels`.
+
+    Replaces a byproduct pickle (`iptm_{dataset}_gcv_splits.pkl`) that used to
+    supply this same `(interactor, partner)` bookkeeping: it existed only to
+    carry ipTM/pTM scores this script never used (that analysis, `iptm_analysis.py`,
+    is not referenced by any manuscript figure), and its own row/fold structure
+    had gone stale relative to the canonical table -- the byproduct inherited a
+    staleness problem that has nothing to do with what this script needs. The
+    canonical row table plus the fold splits and per-row test classes already
+    used by `interface_analysis.py` / `plddt_stratification.py` /
+    `export_reconstruction_tables.py` are the single source of truth for which
+    pair sits at which (seed, fold, class) position.
+    """
+    result: dict[int, dict[int, dict[str, list[tuple[str, str]]]]] = {}
+    for seed in range(n_seeds):
+        fold_splits_path = Path(_CV) / f"sahni_fragoza_train_fold_splits_{seed}.pkl"
+        ptc_path = Path(_CV) / f"swing_train_pair_test_classes_{seed}.npy"
+        if not (fold_splits_path.exists() and ptc_path.exists()):
+            continue
+        with open(fold_splits_path, "rb") as f:
+            fold_splits = pickle.load(f)
+        ptc = np.load(ptc_path)
+
+        seed_result: dict[int, dict[str, list[tuple[str, str]]]] = {}
+        flat_cursor = 0
+        for fold, _train_idx, test_idx in sorted(fold_splits, key=lambda t: t[0]):
+            n_test = len(test_idx)
+            ptc_fold = ptc[flat_cursor:flat_cursor + n_test]
+            per_class: dict[int, list[tuple[str, str]]] = {1: [], 2: [], 3: []}
+            for ridx, cls in zip(test_idx, ptc_fold):
+                row = canonical_rows.iloc[ridx]
+                per_class[int(cls)].append((str(row["interactor"]), str(row["partner"])))
+            seed_result[fold] = {f"class_{c}": per_class[c] for c in (1, 2, 3)}
+            flat_cursor += n_test
+        result[seed] = seed_result
+    return result
+
+
 def filter_detailed_results(
     detailed_results: dict,
-    iptm_data: dict,
-    biclass_pairs: set[str],
+    row_ids_by_seed: dict[int, dict[int, dict[str, list[tuple[str, str]]]]],
+    biclass_pairs: set[tuple[str, str]],
 ) -> dict:
     """Build a new detailed_results dict restricted to biclass-pair entries."""
     filtered: dict = {"iterations": {}}
@@ -94,23 +149,22 @@ def filter_detailed_results(
 
     for it, iter_data in detailed_results["iterations"].items():
         filtered["iterations"][it] = {"folds": {}}
-        iptm_iter = iptm_data["iterations"][it]["folds"]
+        row_ids_iter = row_ids_by_seed.get(it, {})
 
         for fd, fold_data in iter_data["folds"].items():
             filtered["iterations"][it]["folds"][fd] = {}
-            iptm_fold = iptm_iter[fd]
+            row_ids_fold = row_ids_iter.get(fd, {})
 
             for cl in ["class_1", "class_2", "class_3"]:
-                orig     = fold_data[cl]
-                cids_raw = iptm_fold[cl]["complex_ids"]
-                cids     = [c.replace("|", "-") for c in cids_raw]
+                orig = fold_data[cl]
+                cids = row_ids_fold.get(cl, [])
 
-                n_iptm = len(cids)
+                n_expected = len(cids)
                 n_pred = len(orig["preds"])
 
-                if n_iptm != n_pred:
-                    # Length mismatch: iptm pkl does not align with this method's fold
-                    # — skip this fold (empty entry, no contribution to AUC)
+                if n_expected != n_pred:
+                    # Length mismatch: this method's fold does not align with the
+                    # canonical fold structure — skip (empty entry, no AUC contribution)
                     filtered["iterations"][it]["folds"][fd][cl] = {
                         "preds": np.array([]), "labels": np.array([]), "auc": 0.0
                     }
@@ -132,51 +186,51 @@ def filter_detailed_results(
     return filtered
 
 
-def load_complex_ids_raw_order(label_file: Path) -> np.ndarray:
-    """Complex_id per line of the label file, in raw file order.
+def load_pairs_in_row_order() -> list[tuple[str, str]]:
+    """`(interactor, partner)` per canonical row, in canonical row order.
 
     The fixed-prediction baseline arrays (SAAMBE-3D, MutPPI, MutPPIPlus,
-    mutpred2_standalone) are stored in this exact order (verified empirically:
-    cross-correlations between baseline arrays under this ordering assumption
-    are all highly significant, e.g. MutPPIPlus vs SAAMBE-3D r=0.39, p=1.3e-211).
+    mutpred2_standalone) are keyed by ROW POSITION, so they are only meaningful
+    against the ordering they were computed under. That used to be the raw line
+    order of `sahni_fragoza_all_vt_ids_and_labels.txt`; it is now the `row_index`
+    order of `sahni_fragoza_train_rows.csv.gz`, which `export_cv_reference.py`
+    writes and every other consumer already joins on.
+
+    The two orderings differ (5,894 vs 6,219 rows), so the existing `.npy`
+    caches cannot be reindexed onto this one -- they must be recomputed. The
+    caller raises rather than skipping so that never happens silently.
     """
-    ids = []
-    with open(label_file) as f:
-        for line in f:
-            ids.append(line.strip().split()[0])
-    return np.array(ids)
+    rows = pd.read_csv(_CV / "sahni_fragoza_train_rows.csv.gz")
+    rows = rows.sort_values("row_index")
+    return list(zip(rows["interactor"].astype(str), rows["partner"].astype(str)))
 
 
-def filter_baseline_predictions(dataset: str, biclass_pairs: set[str],
-                                 complex_ids: np.ndarray) -> dict:
-    """Mirror roc_plots.load_baseline_predictions(), restricted to biclass pairs."""
+def filter_baseline_predictions(dataset: str, biclass_pairs: set[tuple[str, str]],
+                                 complex_ids: list[tuple[str, str]]) -> dict:
+    """Mirror roc_plots.load_baseline_predictions(), restricted to biclass pairs.
+
+    Positional-cache staleness is checked by the one shared implementation,
+    `utils.gcv_common.load_positional_cache` -- each array is checked
+    independently against the canonical row count, which is equivalent to (and
+    pinpoints the culprit better than) the previous three-way equality check.
+    """
     baseline_results: dict = {}
     biclass_mask_all = np.array([c in biclass_pairs for c in complex_ids])
+    n_rows = len(complex_ids)
 
     labels_file       = os.path.join(WORKING_DIR, f"{dataset}_mutpred2_standalone_labels.npy")
     test_classes_file = os.path.join(WORKING_DIR, f"{dataset}_SAAMBE-3D_test_classes.npy")
-    if not (os.path.exists(labels_file) and os.path.exists(test_classes_file)):
+    labels_all = load_positional_cache(labels_file, n_rows)
+    test_classes_all = load_positional_cache(test_classes_file, n_rows)
+    if labels_all is None or test_classes_all is None:
         print("  [SKIP] baseline labels/test_classes files not found", flush=True)
-        return baseline_results
-
-    labels_all       = np.load(labels_file)
-    test_classes_all = np.load(test_classes_file)
-
-    if not (len(labels_all) == len(test_classes_all) == len(complex_ids)):
-        print(f"  [SKIP] baseline array length mismatch "
-              f"(labels={len(labels_all)}, test_classes={len(test_classes_all)}, "
-              f"complex_ids={len(complex_ids)})", flush=True)
         return baseline_results
 
     for method in SKEMPI_METHODS:
         preds_file = os.path.join(WORKING_DIR, f"{dataset}_{method}_preds.npy")
-        if not os.path.exists(preds_file):
+        preds_all = load_positional_cache(preds_file, n_rows)
+        if preds_all is None:
             print(f"  [SKIP] {method}: preds file not found", flush=True)
-            continue
-        preds_all = np.load(preds_file)
-        if len(preds_all) != len(complex_ids):
-            print(f"  [SKIP] {method}: preds length {len(preds_all)} != "
-                  f"complex_ids length {len(complex_ids)}", flush=True)
             continue
 
         method_key = f"{method.replace('-', '_').lower()}_{dataset}"
@@ -207,26 +261,22 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[str],
               flush=True)
 
     preds_file = os.path.join(WORKING_DIR, f"{dataset}_mutpred2_standalone_preds.npy")
-    if os.path.exists(preds_file):
-        preds_all = np.load(preds_file)
-        if len(preds_all) == len(complex_ids):
-            mask     = biclass_mask_all & ~np.isnan(preds_all) & (labels_all >= 0)
-            preds_c  = preds_all[mask]
-            labels_c = labels_all[mask]
-            method_key = f"mutpred2_standalone_{dataset}"
-            if len(preds_c) > 0 and len(np.unique(labels_c)) >= 2:
-                fpr, tpr, _ = roc_curve(labels_c, preds_c)
-                score = auc(fpr, tpr)
-                baseline_results[method_key] = {
-                    f"class_{c}": {"fprs": [fpr], "tprs": [tpr], "aucs": [score],
-                                   "ns": [len(preds_c)]}
-                    for c in [1, 2, 3]
-                }
-                print(f"  mutpred2_standalone: biclass n={len(preds_c):,}  AUC={score:.3f}",
-                      flush=True)
-        else:
-            print(f"  [SKIP] mutpred2_standalone: preds length {len(preds_all)} != "
-                  f"complex_ids length {len(complex_ids)}", flush=True)
+    preds_all = load_positional_cache(preds_file, n_rows)
+    if preds_all is not None:
+        mask     = biclass_mask_all & ~np.isnan(preds_all) & (labels_all >= 0)
+        preds_c  = preds_all[mask]
+        labels_c = labels_all[mask]
+        method_key = f"mutpred2_standalone_{dataset}"
+        if len(preds_c) > 0 and len(np.unique(labels_c)) >= 2:
+            fpr, tpr, _ = roc_curve(labels_c, preds_c)
+            score = auc(fpr, tpr)
+            baseline_results[method_key] = {
+                f"class_{c}": {"fprs": [fpr], "tprs": [tpr], "aucs": [score],
+                               "ns": [len(preds_c)]}
+                for c in [1, 2, 3]
+            }
+            print(f"  mutpred2_standalone: biclass n={len(preds_c):,}  AUC={score:.3f}",
+                  flush=True)
 
     return baseline_results
 
@@ -234,12 +284,12 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[str],
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Loading biclass pairs from label file...", flush=True)
-    biclass_pairs = load_biclass_pairs(LABEL_FILE)
+    print("Loading biclass pairs from the canonical row table...", flush=True)
+    biclass_pairs = load_biclass_pairs()
+    canonical_rows = load_data(DATASET_CONFIGS[CANONICAL_DATASET])
 
-    print("Loading iptm pkl (complex_id ordering)...", flush=True)
-    with open(IPTM_PKL, "rb") as f:
-        iptm_data = pickle.load(f)
+    print("Building per-fold row identity from canonical rows + fold splits...", flush=True)
+    row_ids_by_seed = build_row_ids_by_seed(canonical_rows, N_SEEDS)
 
     results_dict: dict = {}
 
@@ -249,10 +299,9 @@ def main() -> None:
             print(f"  [SKIP] {pkl_name} not found", flush=True)
             continue
         print(f"\nProcessing {method_key}...", flush=True)
-        with open(pkl_path, "rb") as f:
-            detailed_results = pickle.load(f)
+        detailed_results = load_gcv_detailed_results(pkl_path, CANONICAL_DATASET)
 
-        filtered = filter_detailed_results(detailed_results, iptm_data, biclass_pairs)
+        filtered = filter_detailed_results(detailed_results, row_ids_by_seed, biclass_pairs)
         roc      = compute_roc_with_variance(filtered)
 
         n_curves_c3 = len(roc["class_3"]["aucs"])
@@ -268,7 +317,7 @@ def main() -> None:
 
     print(f"\nProcessing fixed-prediction baselines (SAAMBE-3D, MutPPI, MutPPI+, MutPred2)...",
           flush=True)
-    complex_ids = load_complex_ids_raw_order(LABEL_FILE)
+    complex_ids = load_pairs_in_row_order()
     baseline_results = filter_baseline_predictions(DATASET, biclass_pairs, complex_ids)
     results_dict.update(baseline_results)
 

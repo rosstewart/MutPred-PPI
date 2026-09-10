@@ -20,9 +20,9 @@ Usage:
     conda run -n ppi python src/analysis/stability_interaction_scatter.py [--cosmic-min-recurrence 32]
 
 Output:
-    results_revisions/stability_interaction/scatter_per_variant.png
-    results_revisions/stability_interaction/scatter_per_variant_kde.png
-    results_revisions/stability_interaction/per_variant_summary.tsv
+    results/stability_interaction/scatter_per_variant.png
+    results/stability_interaction/scatter_per_variant_kde.png
+    results/stability_interaction/per_variant_summary.tsv
 """
 from __future__ import annotations
 
@@ -42,17 +42,19 @@ from scipy.stats import gaussian_kde
 import sys as _sys
 from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
+from roc_plots import StaleCacheError  # noqa: E402
+from utils import mutations  # noqa: E402
 
 
 _PUB = REPO_ROOT
 _BASE = DATA_ROOT
 _HOME  = _BASE / "home"
-# Must match the model used for Fig 5 (SFVCFP). The older variant_dbs/ and
+# Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
 # variant_dbs_classified/ trees hold SF-model predictions; mixing the two
 # across panels is what this path previously did.
-_DB    = _PUB / "results_revisions" / "variant_dbs_sfvfp"
-_STAB  = _PUB / "results_revisions" / "variant_dbs_stability"
-_OUT   = _PUB / "results_revisions" / "stability_interaction"
+_DB    = _PUB / "results" / "variant_dbs_all_data"
+_STAB  = _PUB / "results" / "variant_dbs_stability"
+_OUT   = _PUB / "results" / "stability_interaction"
 
 ONCO_TSG_FILE = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
 AR_AD_FILE    = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
@@ -65,7 +67,7 @@ SUBSET_PKLS = {
     "HGMD":               (ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl",        "hgmd"),
 }
 
-# Fig 5 reference n's (variant_db_charts.py, results_revisions/variant_dbs_sfvfp) — for sanity check
+# Fig 5 reference n's (variant_db_charts.py, results/variant_dbs_all_data) — for sanity check
 FIG5_REFERENCE_N = {
     "ClinVar Pathogenic": 27843,
     "ClinVar Benign":     14579,
@@ -91,38 +93,62 @@ GROUP_COLORS = {
 }
 
 
+def _check_tsv_schema(path: Path, expected_cols: set[str]) -> None:
+    """Raise StaleCacheError if the TSV still uses the old composite-id schema."""
+    with open(path) as f:
+        header = f.readline().rstrip("\n")
+    cols = set(header.split("\t"))
+    if "complex_id" in cols:
+        raise StaleCacheError(
+            f"{path.name} still uses the old `complex_id` schema. "
+            f"Regenerate it with the migrated inference scripts "
+            f"(`run_variant_db_inference.py` / `run_stability_inference.py`) "
+            f"which emit `interactor / partner / mutation / score|ddg_kcalmol`.")
+    if not expected_cols.issubset(cols):
+        raise StaleCacheError(
+            f"{path.name} header lacks expected columns {expected_cols - cols}.")
+
+
 def load_tsv_grouped(pred_tsv: Path, stab_tsv: Path) -> dict[tuple[str, str], list[tuple[str, float, float]]]:
-    """Return {(uniprot, variant): [(partner, score, ddg), ...]} joined on complex_id+variant."""
+    """Return {(interactor, variant_0b): [(partner, score, ddg), ...]} joined on explicit columns.
+
+    Both files must use the new explicit-column schema. Existing on-disk TSVs use
+    the old `complex_id` schema and will raise StaleCacheError until regenerated.
+
+    Internal representation uses 0-based variant strings for consistency with the
+    subset PKLs (which store 1-based variants; the conversion happens at the join in
+    aggregate_per_variant). The `uniprot` key is the interactor accession.
+    """
     if not pred_tsv.exists() or not stab_tsv.exists():
         return {}
 
-    # Load stability: (complex_id, variant_1b) -> ddg
-    stab: dict[tuple[str, str], float] = {}
-    with open(stab_tsv) as f:
-        f.readline()
-        for line in f:
-            p = line.strip().split("\t")
-            if len(p) < 3:
-                continue
-            stab[(p[0], p[1])] = float(p[2])
+    _check_tsv_schema(pred_tsv, {"interactor", "partner", "mutation", "score"})
+    _check_tsv_schema(stab_tsv, {"interactor", "partner", "mutation", "ddg_kcalmol"})
 
-    # Group (partner, score, ddg) tuples by (uniprot, variant_0b) — partner identity
-    # is retained so aggregate_per_variant() can filter per-partner, not just per-variant.
+    # Load stability: (interactor, partner, mutation_1b) -> ddg
+    stab: dict[tuple[str, str, str], float] = {}
+    stab_df = pd.read_csv(stab_tsv, sep="\t")
+    for _, row in stab_df.iterrows():
+        stab[(str(row["interactor"]), str(row["partner"]), str(row["mutation"]))] = float(row["ddg_kcalmol"])
+
+    # Group (partner, score, ddg) tuples by (interactor, variant_0b).
+    # partner identity is retained so aggregate_per_variant() can filter per-partner.
     result: dict[tuple[str, str], list[tuple[str, float, float]]] = defaultdict(list)
-    with open(pred_tsv) as f:
-        f.readline()
-        for line in f:
-            p = line.strip().split("\t")
-            if len(p) < 3:
-                continue
-            complex_id, variant_1b, score = p[0], p[1], float(p[2])
-            under = complex_id.index("_")
-            uniprot = complex_id[:under]
-            partner = complex_id[under + 1:]
-            var0 = f"{variant_1b[0]}{int(variant_1b[1:-1]) - 1}{variant_1b[-1]}"
-            ddg = stab.get((complex_id, variant_1b))
-            if ddg is not None:
-                result[(uniprot, var0)].append((partner, score, ddg))
+    pred_df = pd.read_csv(pred_tsv, sep="\t")
+    n_no_stab = 0
+    for _, row in pred_df.iterrows():
+        interactor = str(row["interactor"])
+        partner    = str(row["partner"])
+        mut_1b     = str(row["mutation"])
+        score      = float(row["score"])
+        ddg = stab.get((interactor, partner, mut_1b))
+        if ddg is not None:
+            var0 = mutations.to_zero_based(mut_1b)
+            result[(interactor, var0)].append((partner, score, ddg))
+        else:
+            n_no_stab += 1
+    if n_no_stab:
+        print(f"  {n_no_stab:,} pred rows had no matching stability entry (skipped)", flush=True)
 
     return result
 
@@ -142,7 +168,7 @@ def aggregate_per_variant(
         allowed: dict[tuple[str, str], set[str]] = defaultdict(set)
         for u, v1b, p in subset:
             try:
-                var0 = f"{v1b[0]}{int(v1b[1:-1]) - 1}{v1b[-1]}"
+                var0 = mutations.to_zero_based(str(v1b))
             except ValueError:
                 continue  # skip malformed entries (e.g. accession in variant field)
             allowed[(u, var0)].add(p)
@@ -284,7 +310,11 @@ def plot_kde_contours(groups: dict[str, pd.DataFrame], out: Path, cosmic_min_rec
 
 
 def _cosmic_recurrence_set(vt_to_sites: dict[str, list[str]], min_recurrence: int) -> set[tuple[str, str]]:
-    """{(uniprot, variant_0b)} for COSMIC entries with tumor-site recurrence >= min_recurrence."""
+    """{(uniprot, variant_0b)} for COSMIC entries with tumor-site recurrence >= min_recurrence.
+
+    The COSMIC recurrence dict keys are `"ACC MUT_1b"` (space-delimited, 1-based mutation).
+    Internal representation is 0-based for consistency with `load_tsv_grouped`.
+    """
     out = set()
     for key, sites in vt_to_sites.items():
         if len(sites) >= min_recurrence:
@@ -292,7 +322,7 @@ def _cosmic_recurrence_set(vt_to_sites: dict[str, list[str]], min_recurrence: in
             if len(parts) == 2:
                 u, v1b = parts
                 try:
-                    var0 = f"{v1b[0]}{int(v1b[1:-1]) - 1}{v1b[-1]}"
+                    var0 = mutations.to_zero_based(v1b)
                 except ValueError:
                     continue  # skip malformed entries (e.g. delins notation)
                 out.add((u, var0))

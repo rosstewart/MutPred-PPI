@@ -81,14 +81,8 @@ def split_wt_id(wt_id: str) -> tuple[str, str]:
     raise ValueError(f"Could not split complex id into two proteins: {wt_id!r}")
 
 
-def parse_mutation(mutation: str) -> tuple[str, int, str]:
-    """`'E80K'` (1-based) -> `('E', 79, 'K')` with a 0-based position."""
-    return mutation[0], int(mutation[1:-1]) - 1, mutation[-1]
-
-
 __all__ = [
     "is_uniprot_accession",
     "get_gene_name",
     "split_wt_id",
-    "parse_mutation",
 ]

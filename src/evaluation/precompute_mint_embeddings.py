@@ -28,7 +28,7 @@ Usage:
 
     # Extend an existing cache with new keys only:
     conda run -n ppi python precompute_mint_embeddings.py \\
-        --dataset sahni_fragoza_varchamp1p_cava --device cuda:0 --compute-residue
+        --dataset sahni_fragoza_mapped090826 --device cuda:0 --compute-residue
 
 Model checkpoint: $MUTPRED_DATA_ROOT/2026/mint/mint.ckpt
 Config:           $MUTPRED_DATA_ROOT/2026/mint/esm2_t33_650M_UR50D.json
@@ -47,8 +47,8 @@ import torch
 import torch.nn as nn
 
 # ── dataset configs (vendored in-repo) ───────────────────────────────────────
-# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
-from evaluation.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+# Shared GCV data-loading layer (see src/utils/gcv_common.py).
+from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
 
 # ── MINT package ─────────────────────────────────────────────────────────────
 

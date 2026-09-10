@@ -75,6 +75,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
 from data_processing.variant_databases.biogrid_common import (  # noqa: E402
     build_variant_triplets, clean_complexes,
 )
+from utils import mutations  # noqa: E402
+from utils.sequences import read_fasta as read_fasta_shared  # noqa: E402
 
 TIERS = ("benign", "pathogenic", "vus")
 
@@ -180,23 +182,16 @@ def _dedup_preserving_order(variants):
     return out
 
 
+def _uniprot_header_key(header: str) -> str:
+    """`sp|Q30154|DRB5_HUMAN ...` -> `Q30154`; falls back to the whole header
+    if there is no second pipe field."""
+    parts = header.split("|")
+    return parts[1] if len(parts) > 1 else header
+
+
 def parse_uniprot_fasta(path) -> dict:
     """UniProt FASTA -> {accession: sequence}, keyed on the '|'-delimited id."""
-    out, key, buf = {}, None, []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if line.startswith(">"):
-                if key and buf:
-                    out[key] = "".join(buf)
-                parts = line.split("|")
-                key = parts[1] if len(parts) > 1 else line[1:]
-                buf = []
-            else:
-                buf.append(line)
-    if key and buf:
-        out[key] = "".join(buf)
-    return out
+    return read_fasta_shared(path, _uniprot_header_key, on_duplicate="last")
 
 
 def write_wts_and_mts(uniprot_variants: dict, seqs: dict, out_path) -> int:
@@ -213,7 +208,7 @@ def write_wts_and_mts(uniprot_variants: dict, seqs: dict, out_path) -> int:
             for variant in variants:
                 wt_aa, mt_aa = variant[0], variant[-1]
                 try:
-                    idx = int(variant[1:-1]) - 1
+                    idx = mutations.index(variant)
                 except ValueError:
                     continue
                 for acc in candidates:

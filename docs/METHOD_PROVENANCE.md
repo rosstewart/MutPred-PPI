@@ -44,7 +44,8 @@ consider using each method's published configuration the fairer reading, but the
 and readers should weigh it.
 
 **Featurization is ours, because upstream ships none.** eSIG-Net publishes the *output* of its
-573-dim feature pipeline (`datasets/embeddings/sdnn_corrected_ppi.h5`, 1094 proteins × 573) but not
+573-dim feature pipeline (upstream's own `datasets/embeddings/sdnn_corrected_ppi.h5`, 1094
+proteins × 573 — a path in the eSIG-Net checkout, not in this repo) but not
 the code that produced it. `_compute_573` reconstructs it as AAC (20) + Conjoint Triad (343) +
 auto-covariance (210). `repro_test/validate_esignet_features.py` audits that reconstruction against
 the shipped h5.
@@ -222,10 +223,14 @@ after 5 resubmissions each**, an 87% NaN rate over 664 cached variants. Where jo
 scores are sensible (305 predictions, ΔΔG range 0.007–1.812), so the service works — it simply fails
 to complete most jobs for these complexes.
 
-The exclusion comments in `src/analysis/biclass_sf_gcv.py` and `src/analysis/roc_plots.py` say "API
-returns NaN for all variants". That wording is imprecise and should read: *a majority of jobs time
-out server-side even with retries; the completed minority is too small and non-random to benchmark
-on.*
+**Removed from the codebase (2026-09-10).** `src/evaluation/ddmutppi_cv.py` is archived to
+`archive/dead_scripts_20260910/`; DDMutPPI no longer appears in `METHODS_TO_COMPARE`
+(`varchamp_blind_test.py`), `roc_plots.py`'s color/baseline tables, `biclass_sf_gcv.py`'s
+`SKEMPI_METHODS`, or `method_names.py`'s baseline prefixes. The zero-row VCFP arrays
+(`results/varchamp_seqcnf_newvar_eval/DDMutPPI*`, orphan **O4** in
+`docs/FIGURE_INVENTORY.md`) have been deleted rather than regenerated. The exclusion comments
+that remain in `biclass_sf_gcv.py` and `roc_plots.py` now cite this section directly instead of
+repeating the imprecise "API returns NaN for all variants" wording.
 
 ---
 
@@ -242,6 +247,16 @@ model change). RaSP is referenced only as the provenance of the pre-MegaScale ab
 ---
 
 ## SFVCFP dataset definition change (2026-09-07)
+
+> **Historical record.** The loaders and scripts named below no longer exist under `src/`.
+> `load_sahni_fragoza_varchamp_full_pooled` and its siblings lived in `mutpred_ppi_cv.py`, which
+> has since been reduced to `src/training/train_fold.py` (training loop only, no loaders, no
+> CLI); data loading is now `src/utils/gcv_common.py` + `src/utils/mutpred_ppi_data.py` reading
+> the canonical tables. The `supplement_*_vc1pcava.py`, `merge_vc1pcava_into_main.py` and
+> `restratify_vcfp_blind_test.py` workaround scripts are in `archive/dead_scripts_20260907/`.
+> The live datasets are the `*_mapped090826` tables listed in
+> [`docs/REPRODUCING_ANALYSES.md`](REPRODUCING_ANALYSES.md). This section is kept because it
+> explains why the SFVCFP numbers changed.
 
 `sahni_fragoza_varchamp_full_pooled` (SFVCFP) previously mixed two identifier
 namespaces. `load_sahni_fragoza_varchamp_full_pooled` normalised only the Sahni+Fragoza

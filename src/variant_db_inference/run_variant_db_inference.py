@@ -18,8 +18,11 @@ Prerequisites:
 3. Trained model checkpoints in weights/ (the SFVCFP model — variant-DB inference
    is not a blind test, so the model trained on the most data is used)
 
-Output TSV is unchanged: `complex_id`, `variant` (1-BASED), `score`, where
-`complex_id` is `{interactor}_{partner}`.
+Output TSV carries EXPLICIT columns: `interactor`, `partner`, `mutation` (1-BASED),
+`score`. The old composite `complex_id` = `{interactor}_{partner}` is gone --
+downstream code had to split it back apart on `_`, and every such split is a
+latent bug when an identifier contains the delimiter. Resume keys are tuples for
+the same reason.
 
 Usage (nohup recommended for large datasets):
     nohup conda run -n ppi python run_variant_db_inference.py \\
@@ -53,6 +56,7 @@ from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E
 from inference.utils.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
 from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
+from utils import mutations  # noqa: E402
 
 
 # ── dataset path registry ─────────────────────────────────────────────────────
@@ -81,17 +85,29 @@ def _load_embeddings_h5(h5_path: str) -> dict[str, np.ndarray]:
     return embs
 
 
-def _load_done(out_path: str) -> set[str]:
-    """Return set of 'complex_id\tvariant' keys already in the output TSV."""
-    done: set[str] = set()
+def _load_done(out_path: str) -> set[tuple[str, str, str]]:
+    """Already-scored `(interactor, partner, mutation)` triplets, for resume.
+
+    Reads both the current explicit-column schema and the legacy
+    `complex_id/variant/score` one, so an interrupted legacy run can still be
+    resumed. The legacy branch splits on the FIRST underscore, which is safe only
+    because UniProt accessions contain none.
+    """
+    done: set[tuple[str, str, str]] = set()
     if not Path(out_path).exists():
         return done
     with open(out_path) as f:
-        next(f, None)  # skip header
+        header = next(f, None)
+        cols = header.rstrip("\n").split("\t") if header else []
+        legacy = cols[:1] == ["complex_id"]
         for line in f:
-            parts = line.strip().split("\t")
-            if len(parts) >= 2:
-                done.add(f"{parts[0]}\t{parts[1]}")
+            parts = line.rstrip("\n").split("\t")
+            if legacy and len(parts) >= 2:
+                inter, _, partner = parts[0].partition("_")
+                if partner:
+                    done.add((inter, partner, parts[1]))
+            elif len(parts) >= 3:
+                done.add((parts[0], parts[1], parts[2]))
     return done
 
 
@@ -162,7 +178,7 @@ def run_inference(
 
     out_file = open(out_path, "a")
     if len(done) == 0:
-        out_file.write("complex_id\tvariant\tscore\n")
+        out_file.write("interactor\tpartner\tmutation\tscore\n")
 
     if use_subgraph:
         # The 2-hop subgraphs already carry their own graph, so the store is only
@@ -187,14 +203,14 @@ def _run_inference_subgraph(rows, subgraph_h5, scaler, models, device,
     sg_file = h5py.File(subgraph_h5, "r")
 
     for n_rows, r in enumerate(rows, 1):
-        complex_id = f"{r['interactor']}_{r['partner']}"
+        interactor, partner = r["interactor"], r["partner"]
         mut_1b = r["mutation"]
-        if f"{complex_id}\t{mut_1b}" in done:
+        if (interactor, partner, mut_1b) in done:
             stats["skipped"] += 1
             continue
 
         variant = vr.to_zero_based(mut_1b)   # subgraph H5 variant keys are 0-based
-        cgrp = sg_file.get(complex_id)
+        cgrp = sg_file.get(f"{interactor}_{partner}")   # H5 group key, legacy layout
         if cgrp is None:
             stats["pair absent from the subgraph H5"] += 1
             continue
@@ -221,7 +237,7 @@ def _run_inference_subgraph(rows, subgraph_h5, scaler, models, device,
             stats["model returned no score"] += 1
             continue
 
-        out_file.write(f"{complex_id}\t{mut_1b}\t{float(score):.6f}\n")
+        out_file.write(f"{interactor}\t{partner}\t{mut_1b}\t{float(score):.6f}\n")
         out_file.flush()
         stats["scored"] += 1
 
@@ -250,7 +266,6 @@ def _run_inference_full_emb(rows, embs, store, scaler, models, device,
 
     for pair_idx, (key, muts) in enumerate(sorted(grouped.items()), 1):
         interactor, partner = key
-        complex_id = f"{interactor}_{partner}"
         iseq, pseq = pair_seqs[key]
 
         if interactor not in embs:
@@ -268,21 +283,18 @@ def _run_inference_full_emb(rows, embs, store, scaler, models, device,
             _count_reason(stats, examples, reason, len(muts))
             continue
 
-        # self_loops=False reproduces the .mat exactly: those matrices carry a
-        # zero diagonal and model_predict never added one.
-        edge_mat = store.load_dense(interactor=iseq, partner=pseq,
-                                    self_loops=False)
+        edge_mat = store.load_dense(interactor=iseq, partner=pseq)
         if edge_mat is None:
             stats["pair has no graph in the contact-graph store"] += len(muts)
             continue
 
         for mut_1b in sorted(muts):
-            if f"{complex_id}\t{mut_1b}" in done:
+            if (interactor, partner, mut_1b) in done:
                 stats["skipped"] += 1
                 continue
 
             variant = vr.to_zero_based(mut_1b)   # ProtT5 keys are 0-based
-            mut_idx = int(variant[1:-1])
+            mut_idx = mutations.position(variant)   # H5 keys are 0-based
             vt_id = f"{interactor} {variant}"
             if vt_id not in embs:
                 stats["variant embedding missing"] += 1
@@ -309,13 +321,36 @@ def _run_inference_full_emb(rows, embs, store, scaler, models, device,
                 stats["model returned no score"] += 1
                 continue
 
-            out_file.write(f"{complex_id}\t{mut_1b}\t{float(score):.6f}\n")
+            out_file.write(f"{interactor}\t{partner}\t{mut_1b}\t{float(score):.6f}\n")
             out_file.flush()
             stats["scored"] += 1
 
         if pair_idx % 100 == 0:
             print(f"[{pair_idx}/{len(grouped)}] scored={stats['scored']}  "
                   f"skipped={stats['skipped']}", flush=True)
+
+
+def assert_all_data_model(models_dir: str) -> None:
+    """Refuse to score a variant repository with anything but the all-data model.
+
+    `get_models()` falls back to a fold-ensemble glob
+    (`MutPred-PPI_*_megascale_all_*.pt`) when `MutPred-PPI.pt` is absent from
+    `models_dir` -- a fallback meant for GCV reproducibility, not variant-DB
+    scoring. Pointing `--models-dir` at `weights/folds/` (the Sahni+Fragoza-only
+    per-fold checkpoints) would silently satisfy that glob and score every
+    variant repository with the wrong model -- exactly how the now-archived
+    `results/variant_dbs/` tree (see archive/results_stale/variant_dbs) came to
+    exist alongside the correct `results/variant_dbs_all_data/`. There must be
+    only one variant-DB results tree, scored by one model.
+    """
+    primary = Path(models_dir) / "MutPred-PPI.pt"
+    if not primary.is_file():
+        raise FileNotFoundError(
+            f"{primary} not found. Variant-database inference must use the single "
+            f"all-data model (trained on sahni_fragoza_varchamp_all_mapped090826), "
+            f"never a fold ensemble or any other checkpoint set -- point --models-dir "
+            f"at the directory containing MutPred-PPI.pt (default: weights/)."
+        )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -342,6 +377,7 @@ def main(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     models_dir = str(args.models_dir or _MODELS_DIR)
+    assert_all_data_model(models_dir)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     run_inference(

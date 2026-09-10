@@ -50,6 +50,7 @@ import scipy.sparse as sp
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
 from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
+from utils import mutations  # noqa: E402
 
 
 _BASE = DATA_ROOT
@@ -203,10 +204,7 @@ def compress(db: str, h5_in_path: str, h5_out_path: str, rows_path: str,
                 _count_reason(stats, examples, reason, len(muts))
                 continue
 
-            # self_loops=False reproduces the .mat exactly: those matrices carry a
-            # zero diagonal and neither this script nor model_predict added one.
-            ei = store.load_edge_index(interactor=iseq, partner=pseq,
-                                       self_loops=False)
+            ei = store.load_edge_index(interactor=iseq, partner=pseq)
             if ei is None:
                 stats["pair has no graph in the contact-graph store"] += len(muts)
                 continue
@@ -226,7 +224,7 @@ def compress(db: str, h5_in_path: str, h5_out_path: str, rows_path: str,
                     n_skipped += 1
                     continue
 
-                mut_idx = int(variant[1:-1])  # 0-based position in interactor
+                mut_idx = mutations.position(variant)   # H5 keys are 0-based
                 if mut_idx >= n_inter:
                     stats["mutation position past the end of the interactor"] += 1
                     continue

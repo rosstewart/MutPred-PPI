@@ -230,7 +230,13 @@ def build(db: str, out_path: Path, store: ContactGraphStore,
 
     has_embedding = embedding_lookup(db) if check_embeddings else None
 
-    cols = CORE_COLUMNS + EXTRA_COLUMNS[db]
+    # When the embedding scan is skipped the column is OMITTED, not emitted
+    # empty. An all-blank column reads back as float64 NaN, which silently makes
+    # the table non-comparable to one built with the scan; a missing column says
+    # plainly that the information was not gathered.
+    cols = [c for c in CORE_COLUMNS
+            if c != "in_embedding_store" or has_embedding is not None]
+    cols += EXTRA_COLUMNS[db]
     stats, n = Counter(), 0
     with gzip.open(out_path, "wt", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
@@ -250,9 +256,9 @@ def build(db: str, out_path: Path, store: ContactGraphStore,
                 "interactor": i, "partner": p, "mutation": m,
                 "pair_key": pair_key(iseq, pseq),
                 "clingen_moi": "AR" if i in ann["ar"] else "AD" if i in ann["ad"] else "",
-                "in_embedding_store": ("" if has_embedding is None
-                                       else int(has_embedding(i, p, m))),
             }
+            if has_embedding is not None:
+                row["in_embedding_store"] = int(has_embedding(i, p, m))
             if db == "clinvar":
                 row["clinical_significance"] = ann["sig"].get(triplet, "")
                 row["allele_frequency"] = ann["af"].get(variant, "")

@@ -32,7 +32,9 @@ from transformers import T5EncoderModel, T5Tokenizer
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-from paths import DATASETS_DIR, DATA_CACHES_DIR  # noqa: E402
+from paths import DATASETS_DIR  # noqa: E402
+from utils import mutations  # noqa: E402
+from utils.embeddings import embed_sequences as _embed_sequences_shared  # noqa: E402
 
 
 logging.basicConfig(level=logging.INFO,
@@ -40,7 +42,6 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("pooled_t5")
 
 TRANSFORMER_LINK = "Rostlab/prot_t5_xl_half_uniref50-enc"
-TRAINING_CSV = str(DATA_CACHES_DIR / "training_data_internal.csv")
 MAX_RESIDUES = 4000   # per-batch residue budget -- the actual memory control
 MAX_BATCH = 100
 # No MAX_SEQ_LEN. ProtT5 uses relative position embeddings and has no architectural
@@ -64,17 +65,6 @@ def load_model(device: torch.device):
     return model, vocab
 
 
-def apply_mutation(seq: str, mutation: str) -> str:
-    """Apply single amino acid substitution. mutation like 'E80K' (1-based)."""
-    wt_aa = mutation[0]
-    mut_aa = mutation[-1]
-    pos_1b = int("".join(c for c in mutation[1:-1] if c.isdigit()))
-    pos_0b = pos_1b - 1
-    if pos_0b >= len(seq) or seq[pos_0b] != wt_aa:
-        return seq  # sequence mismatch — return unchanged
-    lst = list(seq)
-    lst[pos_0b] = mut_aa
-    return "".join(lst)
 
 
 def collect_sequences(df: pd.DataFrame) -> Dict[str, str]:
@@ -98,39 +88,31 @@ def collect_sequences(df: pd.DataFrame) -> Dict[str, str]:
         if partner_seq and partner_id not in seqs:
             seqs[partner_id] = partner_seq
 
-    # Mutant sequences for each (interactor, mutation) pair
+    # Mutant sequences for each (interactor, mutation) pair.
+    #
+    # A mutation that does not fit its sequence is SKIPPED and counted. The
+    # previous local `apply_mutation` returned the sequence UNCHANGED on a
+    # mismatch, which stored a wild-type sequence under a variant key -- the
+    # resulting mutation-site diff is exactly zero, so the model sees no signal
+    # and nothing anywhere reports it. Measured on the canonical tables: 0 of
+    # 53,239 rows mismatch today, so this guards the future rather than changing
+    # the present.
+    n_skipped = 0
     for _, row in df.iterrows():
         inter_id = str(row["interactor"])
         mutation = str(row["mutation"])
         mut_key = f"{inter_id}_{mutation}"
         if mut_key not in seqs and inter_id in seqs:
-            mut_seq = apply_mutation(seqs[inter_id], mutation)
+            mut_seq = mutations.apply(seqs[inter_id], mutation)
+            if mut_seq is None:
+                n_skipped += 1
+                continue
             seqs[mut_key] = mut_seq
+    if n_skipped:
+        logger.warning("%d mutations did not match their sequence and were skipped",
+                       n_skipped)
 
     return seqs
-
-
-def embed_batch(
-    ids: List[str],
-    seqs: List[str],
-    model,
-    vocab,
-    device: torch.device,
-) -> Dict[str, np.ndarray]:
-    results: Dict[str, np.ndarray] = {}
-    # Add spaces between amino acids for ProtT5 tokenizer
-    spaced = [" ".join(list(s.upper().replace("U", "X").replace("Z", "X").replace("O", "X").replace("B", "X")))
-              for s in seqs]
-    ids_batch = vocab.batch_encode_plus(spaced, add_special_tokens=True, padding="longest")
-    input_ids = torch.tensor(ids_batch["input_ids"]).to(device)
-    attention_mask = torch.tensor(ids_batch["attention_mask"]).to(device)
-    with torch.no_grad():
-        out = model(input_ids=input_ids, attention_mask=attention_mask)
-    embeddings = out.last_hidden_state.cpu().float().numpy()
-    for i, (key, seq) in enumerate(zip(ids, seqs)):
-        L = len(seq)
-        results[key] = embeddings[i, :L]  # strip padding and EOS token
-    return results
 
 
 def embed_all(
@@ -141,40 +123,54 @@ def embed_all(
     existing: Dict[str, np.ndarray],
     out_path: str,
 ) -> Dict[str, np.ndarray]:
+    """Embed every not-yet-cached sequence, checkpointing to `out_path` every
+    SAVE_EVERY newly-embedded keys.
+
+    A thin wrapper around `utils.embeddings.embed_sequences`. This dataset's
+    full embedding set fits in memory (unlike the ~1 TB variant-DB FASTAs
+    `precompute_prott5.py` handles), so the whole cache stays resident and is
+    periodically re-dumped in full -- matching this entry point's previous
+    checkpointing granularity (a full pickle overwrite every SAVE_EVERY keys,
+    not a per-key H5 append). `map_b=True` preserves this entry point's
+    historical, and only, mapping of the ambiguity code B (Asx) -> X; see
+    `utils.embeddings.clean_sequence`. `single_sequence_threshold=None` and
+    `on_oom="raise"` reproduce this entry point's previous behaviour exactly:
+    no early single-sequence split (an oversized sequence becomes its own
+    batch purely through the residue-budget overflow, once `batch` is
+    non-empty), and no OOM handling at all -- a RuntimeError kills the run.
+    """
     cache = dict(existing)
-    todo = [(k, v) for k, v in sequences.items() if k not in cache and len(v) > 0]
-    longest = max((len(v) for _, v in todo), default=0)
+    todo = {k: v for k, v in sequences.items() if k not in cache and len(v) > 0}
+    longest = max((len(v) for v in todo.values()), default=0)
     logger.info("%d sequences to embed (%d already cached, longest %d aa)",
                 len(todo), len(existing), longest)
     if longest > MAX_RESIDUES:
         logger.warning("longest sequence %d aa exceeds MAX_RESIDUES=%d; it will be "
                        "embedded alone in its own batch", longest, MAX_RESIDUES)
 
-    batch_ids: List[str] = []
-    batch_seqs: List[str] = []
-    n_residues = 0
+    total = len(todo) + len(existing)
+    since_checkpoint = 0
 
-    for i, (key, seq) in enumerate(todo):
-        L = len(seq)
-        if (n_residues + L > MAX_RESIDUES or len(batch_ids) >= MAX_BATCH) and batch_ids:
-            cache.update(embed_batch(batch_ids, batch_seqs, model, vocab, device))
-            batch_ids, batch_seqs, n_residues = [], [], 0
-
-        batch_ids.append(key)
-        batch_seqs.append(seq)
-        n_residues += L
-
-        if (i + 1) % SAVE_EVERY == 0:
-            if batch_ids:
-                cache.update(embed_batch(batch_ids, batch_seqs, model, vocab, device))
-                batch_ids, batch_seqs, n_residues = [], [], 0
-            logger.info("Saving checkpoint (%d/%d keys)...", len(cache), len(todo) + len(existing))
+    def sink(batch: Dict[str, np.ndarray]) -> None:
+        nonlocal since_checkpoint
+        cache.update(batch)
+        since_checkpoint += len(batch)
+        if since_checkpoint >= SAVE_EVERY:
+            logger.info("Saving checkpoint (%d/%d keys)...", len(cache), total)
             with open(out_path, "wb") as f:
                 pickle.dump(cache, f)
+            since_checkpoint = 0
 
-    if batch_ids:
-        cache.update(embed_batch(batch_ids, batch_seqs, model, vocab, device))
-
+    _embed_sequences_shared(
+        todo, model, vocab, device,
+        batch_residue_budget=MAX_RESIDUES,
+        single_sequence_threshold=None,
+        max_batch=MAX_BATCH,
+        map_nonstandard=True,
+        map_b=True,
+        on_oom="raise",
+        sink=sink,
+    )
     return cache
 
 
@@ -198,7 +194,7 @@ def main():
     else:
         import sys as _s
         _s.path.insert(0, str(Path(__file__).resolve().parents[1] / "evaluation"))
-        from evaluation.gcv_common import DATASET_CONFIGS, load_data  # noqa: E402
+        from utils.gcv_common import DATASET_CONFIGS, load_data  # noqa: E402
         logger.info("Loading canonical dataset: %s", args.dataset)
         df = load_data(DATASET_CONFIGS[args.dataset])
         stem = args.dataset

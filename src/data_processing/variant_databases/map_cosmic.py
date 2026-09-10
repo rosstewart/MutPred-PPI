@@ -38,7 +38,9 @@ import os
 import pickle
 import pandas as pd
 import requests
-from biogrid_common import load_biogrid
+from data_processing.variant_databases.biogrid_common import load_biogrid
+from utils import mutations  # noqa: E402
+from utils.sequences import read_fasta as read_fasta_shared  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -121,25 +123,18 @@ def get_complexes_in_biogrid(gene_symbol_to_uniprot, uniprot_to_interactors, uni
     return wt_complexes
 
 
+def _cosmic_header_key(header: str) -> str:
+    """`sp|Q30154|DRB5_HUMAN ...` -> `Q30154`; falls back to the whole header
+    if there is no second pipe field. COSMIC's own UniProt FASTA is uniformly
+    the `sp|acc|name` format (verified 2026-09-10), so the fallback is
+    defensive and has not been observed to trigger on real input.
+    """
+    parts = header.split("|")
+    return parts[1] if len(parts) > 1 else header
+
+
 def read_fasta(file_path):
-    fasta_dict = {}
-    with open(file_path) as f:
-        header, seq = None, []
-        for line in f:
-            line = line.strip()
-            if line.startswith(">"):
-                if header:
-                    fasta_dict[header] = "".join(seq)
-                try:
-                    header = line.split("|")[1]
-                except IndexError:
-                    header = line[1:]
-                seq = []
-            else:
-                seq.append(line)
-        if header:
-            fasta_dict[header] = "".join(seq)
-    return fasta_dict
+    return read_fasta_shared(file_path, _cosmic_header_key, on_duplicate="last")
 
 
 def build_variant_triplets_with_recurrence(id_to_seq, complexes, recurrence_dict):
@@ -306,7 +301,7 @@ def main(args):
             continue
         wt_res = variant[0]
         try:
-            mt_idx = int(variant[1:-1]) - 1
+            mt_idx = mutations.index(variant)
         except ValueError:
             continue
         mt_res = variant[-1]

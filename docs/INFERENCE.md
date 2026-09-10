@@ -70,11 +70,52 @@ python src/inference/01_make_contact_graphs_and_fasta.py \
 - `working_dir`: Output directory for graphs and sequences
 - `mmcif_dir`: Directory containing structure files (.cif or .mmcif)
 - `variants_file`: Same TSV file from Step 1
-- `n_jobs`: Number of parallel jobs (default: 1). Parallel processing is recommended for large-scale analysis. Large protein complexes may take several minutes to process.
+- `n_jobs`: Number of parallel jobs (default: `-1`, i.e. all cores). Large protein complexes may take several minutes to process.
 
 **Outputs:**
-- `working_dir/af3_graphs/`: Contact graph matrices (.mat and helper files)
+- `working_dir/af3_graphs/contact_graphs.h5`: a `ContactGraphStore`
+  ([`src/contact_graphs.py`](../src/contact_graphs.py)) — one HDF5 store for every graph,
+  content-addressed rather than filename-addressed. There are no per-complex `.mat` files any more.
+- `working_dir/af3_graphs/complexes.csv`: columns `complex_id, interactor, partner,
+  interactor_sequence, partner_sequence`. Step 3 joins on this and looks graphs up **by
+  sequence**, so it never has to split an accession out of a filename.
+- `working_dir/af3_graphs/`: per-complex `.labels`, `.labels_separated`, `.num_residues_a`
+  and `.interaction_loss_pos`/`_neg` helper files for the variant/FASTA steps
 - `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences for ProtT5 embedding generation
+
+### The contact-graph store
+
+Graphs are keyed on the sorted pair of `sha256(chain_sequence)[:16]`, so one pair of sequences
+has exactly one key regardless of which accessions, filenames or chain order produced it
+(`contact_graphs.pair_key`; single-chain entries get a `mono_` prefix). Accessors are
+**keyword-only and take sequences, not accessions**:
+
+```python
+from contact_graphs import ContactGraphStore
+
+with ContactGraphStore("working_dir/af3_graphs/contact_graphs.h5") as store:
+    G  = store.load_dense(interactor=seq_a, partner=seq_b)       # dense adjacency
+    ei = store.load_edge_index(interactor=seq_a, partner=seq_b)  # what the GAT consumes
+```
+
+Both return the graph **already oriented to the requested interactor** — the interactor occupies
+nodes `[0, len(interactor))` — so orientation is never re-derived downstream and the old `NRR`
+split point is gone. Self-loops are added on read, unconditionally; they are not stored and
+cannot be disabled.
+
+An edge joins two residues when any pair of their atoms is within 4.5 Å
+(`contact_graphs.contact_graph_from_structure`), which is the single contact-graph definition in
+the repo.
+
+#### Known issue: empty `wt_and_vt.fasta`
+
+Verified on a clean working directory at the current HEAD: step 2 writes the store and the
+`.labels` files correctly, but `generate_fasta_output` still gates each complex on the existence
+of a per-complex `.mat` file, which step 2 no longer produces. Every complex is therefore
+skipped and `wt_and_vt.fasta` comes out **0 bytes**, leaving step 3 with nothing to embed. A
+working directory left over from before the `.mat` removal still has those files and so still
+runs, which is why the bundled example does not surface it. There is no workaround command —
+the gate is in `src/inference/01_make_contact_graphs_and_fasta.py`.
 
 ## Step 3: Run MutPred-PPI Inference
 
@@ -93,6 +134,15 @@ python src/inference/02_run_mutpred-ppi_inference.py \
 **Output:**
 - `working_dir/results/MutPred-PPI_preds.tsv`: Prediction scores for each input variant
   - Tab-separated format with headers: `complex_id`, `variant`, `score`
+    (`src/inference/utils/inference_utils.py::write_output`)
+
+**Note on schema.** This standalone pipeline still writes the composite `complex_id`
+(`{interactor}_{partner}`). The *variant-database* pipeline
+(`src/variant_db_inference/run_variant_db_inference.py`) does not: it writes explicit
+`interactor / partner / mutation / score` columns, because splitting a composite id on `_`
+mis-assigns isoform and RefSeq accessions. See
+[`docs/REPRODUCING_ANALYSES.md`](REPRODUCING_ANALYSES.md). The two schemas are not
+interchangeable; check the header before parsing.
 
 ## File Formats
 
@@ -110,20 +160,36 @@ The pipeline accepts mmCIF files with flexible naming:
 - `prefix_PROT1_PROT2_suffix.mmcif`
 - Case-insensitive matching supported
 
+`find_mmcif_file` recovers chain order from the filename here (it detects the swapped case and
+reassigns chains A/B accordingly), so accessions must be splittable out of the name.
+
+The structure trees shipped with the paper do **not** use this convention. They are canonicalized
+to `{ACC_LO}__{ACC_HI}.cif.gz` — accessions uppercase, sorted, joined by a double underscore, one
+gzipped mmCIF per pair, alongside a `manifest.csv`. Because the accessions are sorted, **the
+filename encodes no orientation**; orientation is a property of a row and is resolved from
+sequences at load time. See [`docs/REPRODUCING_ANALYSES.md`](REPRODUCING_ANALYSES.md#af3-structures).
+
 ## Full Example Workflow
 
 A runnable end-to-end example ships in
-[`examples/inference_quickstart/`](../examples/inference_quickstart/) — three protein pairs
+[`src/inference/example/`](../src/inference/example/) — three protein pairs
 with their AlphaFold 3 structures bundled, so it needs no download and no cluster:
 
 ```bash
 conda activate ppi
-bash examples/inference_quickstart/run_example.sh                # GPU
-bash examples/inference_quickstart/run_example.sh --device cpu   # CPU, a few minutes
+bash src/inference/example/run_example.sh                # GPU
+bash src/inference/example/run_example.sh --device cpu   # CPU, a few minutes
 ```
 
-It runs steps 2 and 3 of the real pipeline and prints the predictions, then copies them to
-`expected_output/` so you can diff against the committed reference.
+It runs steps 2 and 3 of the real pipeline and prints the predictions, then diffs them against
+the committed `expected_output/MutPred-PPI_preds.tsv` (it does not overwrite that reference —
+it only writes it if it is missing).
+
+**This currently fails on a fresh clone.** `af3_graphs/`, `results/` and `wt_and_vt.fasta` are
+gitignored inside the example, so a clone starts from a clean working directory and hits the
+empty-`wt_and_vt.fasta` problem described above; step 3 then has no embeddings to read. Only a
+checkout that still carries a pre-existing `af3_graphs/` from before the `.mat` removal will
+complete.
 
 **Note:** the bundled AlphaFold 3 structures are subject to the AlphaFold 3 Output Terms of
 Use and are provided for non-commercial research only. See
@@ -136,8 +202,8 @@ job inputs for your own pairs:
 
 ```bash
 python src/inference/00_make_af3_json_input.py \
-    examples/inference_quickstart/test_proteins.fasta \
-    examples/inference_quickstart/test_variants.tsv \
+    src/inference/example/test_proteins.fasta \
+    src/inference/example/test_variants.tsv \
     my_af3_inputs/
 ```
 
@@ -148,10 +214,12 @@ directory, and then run steps 2 and 3 as the quickstart does.
 
 ```
 complex_id	variant	score
-Q4ACX1_O43765	L171R	0.9620879888534546
-O75603_Q96LI6	G63S	0.6895588040351868
 P40259_O43765	G137S	0.972222626209259
+O75603_Q96LI6	G63S	0.6895588040351868
+Q4ACX1_O43765	L171R	0.9620879888534546
 ```
+
+(`run_example.sh` compares sorted, so row order does not matter.)
 
 ## Performance
 
@@ -198,7 +266,7 @@ pip install -r src/inference/requirements.txt --upgrade
 ```bash
 # If having package conflicts, create fresh environment
 conda deactivate
-conda env remove -n mutpred-ppi
+conda env remove -n ppi
 conda create -n ppi python=3.10 -y
 conda activate ppi
 # Then reinstall following Installation steps in the main README

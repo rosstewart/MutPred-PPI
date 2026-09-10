@@ -10,6 +10,17 @@ Check what resolves where at any time:
 conda run -n ppi python src/paths.py      # prints every resolved path and whether it exists
 ```
 
+## Install the package first
+
+`pyproject.toml` makes `src/` the package root, so modules import as top-level packages —
+`training.train_fold`, `utils.gcv_common`, `evaluation.mint_cv`, `analysis.roc_plots` — plus the
+standalone modules `paths`, `ids`, `model`, `contact_graphs`. Nothing outside
+`src/inference/` imports without this:
+
+```bash
+pip install -e .
+```
+
 ## The three tiers
 
 **1. In the repo — nothing to configure.**
@@ -18,6 +29,10 @@ unpublished and the AF3 tars are large), so it arrives via the Zenodo bundle:
 
 | Directory | Size | Contents |
 |---|---|---|
+| `datasets/mapped090826/` | — | The canonical train/eval layer: `<dataset>_rows.csv.gz`, `<dataset>_splits.csv.gz`, `sequences.csv.gz`, `af3_index.csv.gz`, and `contact_graphs.h5` (39 MB). |
+| `datasets/variant_dbs/` | — | `{clinvar,cosmic,gnomad,hgmd,autism}_rows.csv.gz` plus `contact_graphs.h5` (248 MB). One self-contained table per variant database. |
+| `datasets/af3_structures_canonical/` | 510 MB | 3,854 gzipped mmCIFs, one per pair, `{ACC_LO}__{ACC_HI}.cif.gz` + `manifest.csv`. |
+| `datasets/af3_structures_variant_dbs_canonical/` | 5.7 GB | 22,239 gzipped mmCIFs, same naming + `manifest.csv`. |
 | `datasets/cv_reference/` | 355 MB | Canonical row orderings, cd-hit clusters, fold splits, per-seed test classes, label tables. Replaces the external `cv_splits/` the code used to read. |
 | `datasets/annotations/` | 258 MB | Allele frequencies, ClinVar variant subsets, pLDDT/Pfam caches, ID maps, ClinGen MOI, SWING label files. |
 | `datasets/annotations_licensed/` | 143 MB | COSMIC and HGMD derived summaries. **Not in the Zenodo deposit** — licence-restricted. Analyses that need them report a clear message and skip when absent. |
@@ -47,13 +62,19 @@ These are model output caches. Deleting them costs compute, not information:
 | `esm2_residue_embeddings*.pkl` | 28 / 40 GB | eSIG-Net's own precompute step |
 | `{clinvar,gnomad,cosmic}/prott5_subgraphs.h5` | 122–164 GB | `precompute_prott5.py` then `compress_to_subgraphs.py` |
 | `megascale_preprocessed/` | 97 GB | `src/training/preprocess_stability_data.py` |
+| `contact_graphs.h5` (either tier) | 39 MB / 248 MB | `src/data_processing/rebuild_graphs_from_structures.py --structures <canonical dir> --out <h5>` |
+| `datasets/annotations/plddt_cache.pkl` | small | `src/analysis/build_plddt_cache.py` (AlphaFold DB monomers) |
+| `datasets/annotations/confidence_scores.pkl` | small | `src/analysis/build_confidence_cache.py` (AF3 `*_summary_confidences.json`) |
 | `data_caches/*_cache.pkl` | up to 222 GB | Optional. `--data-cache` defaults to off; passing it trades ~10 h of reload time for disk. |
 
-**One file in `data_caches/` is not a cache.** `data_caches/training_data_internal.csv`
-(26 MB) is a required input for five modules, including the Table 1 generator. It is
-VarChAMP-derived (~56% of its rows) and so is neither in git nor in the Zenodo deposit —
-see [`docs/ZENODO_MANIFEST.md`](ZENODO_MANIFEST.md). Do not delete it when clearing caches;
-`repro_test/reclaim_disk.sh` preserves it.
+`data_caches/training_data_internal.csv` was previously believed to be a required,
+non-regenerable input for several modules. Neither is true: it has no producer anywhere
+in git history (an external/manual artifact, never tracked), and its only two code
+references (`swing_common.py`'s `load_benchmark()` and a constant in
+`precompute_prott5_datasets.py`) were both dead — the first had zero callers, the second
+was referenced nowhere else in its own file. Its seven columns of actual use are all
+served by `load_data(DATASET_CONFIGS[...])` over the canonical row tables. It has been
+moved to `archive/pre_090826/data_caches/` (2026-09-10).
 
 ## Environment variables
 

@@ -1,22 +1,37 @@
 #!/usr/bin/env python
-"""Export the canonical CV reference artifacts (orderings, fold splits, test classes).
+"""Export the CV reference artifacts (row ordering, fold splits, test classes).
 
-These are generated inline by src/evaluation/mutpred_ppi_cv.py during a run, but
-several downstream analyses need them without re-running cross-validation, and
-they are small enough to distribute (a few MB per dataset). Writing them here
-removes the last dependency on the external cv_splits directory and guarantees
-consumers see the same class labels the GCV results were scored with.
+Several downstream analyses need the splits without re-running cross-validation,
+and they are small enough to distribute (a few MB per dataset).
 
-File names match the historical cv_splits layout so existing consumers only need
-their CV_DIR pointed at the output directory.
+Driven entirely by the CANONICAL row tables. The previous version rebuilt the
+ordering from `mutpred_ppi_cv.load_dataset`, which globbed `.mat` files and
+carried a parallel `data` dict of embeddings, graphs and `vt_id` strings; that
+loader is gone. The ordering is now just the canonical table's own row order, so
+`row_index` means the same thing here, in the emitted rows file, and in the
+tables every other consumer reads.
+
+OUTPUT
+    {prefix}rows.csv.gz            row_index, interactor, partner, mutation
+    {prefix}fold_splits_{seed}.pkl [(fold, train_idx, test_idx)]
+    {ptc_prefix}pair_test_classes_{seed}.npy   C1/C2/C3 per test row, fold order
+    {prefix}clusters.pkl           cd-hit cluster id per row
+
+`vt_id` pickles are NO LONGER written. They were
+`'{interactor}-{partner} {mutation}'` composites with a 0-based mutation, and
+that welding is ambiguous the moment an accession carries an isoform suffix --
+261 of 2,785 ids in the sahni_fragoza reference contain more than one `-`.
+Consumers join on explicit columns instead.
 
 Usage:
-    conda run -n ppi python src/analysis/export_cv_reference.py --dataset sahni_fragoza
-    conda run -n ppi python src/analysis/export_cv_reference.py --dataset all
+    python src/analysis/export_cv_reference.py --dataset sahni_fragoza_mapped090826
+    python src/analysis/export_cv_reference.py --dataset all
 """
 from __future__ import annotations
 
 import argparse
+import csv
+import gzip
 import pickle
 import sys
 from pathlib import Path
@@ -24,111 +39,85 @@ from pathlib import Path
 import numpy as np
 
 from paths import DATASETS_DIR  # noqa: E402
-import evaluation.mutpred_ppi_cv as cv  # noqa: E402
-from variant_db_inference import variant_rows as vr  # noqa: E402
+from utils.gcv_common import (  # noqa: E402
+    DATASET_CONFIGS, complex_clusters, compute_pair_test_classes, load_data,
+    make_fold_splits,
+)
 
 OUT_DIR = DATASETS_DIR / "cv_reference"
 
-# dataset -> (vt_ids/fold_splits prefix, pair_test_classes prefix)
+# dataset -> (rows/fold_splits prefix, pair_test_classes prefix). The two differ
+# because the class arrays were historically named after the SWING/combined run
+# that first produced them; consumers still look them up by those names.
 NAMING = {
-    "sahni":                              ("", ""),
-    "sahni_fragoza":                      ("sahni_fragoza_train_", "swing_train_"),
-    "sahni_fragoza_varchamp1p_cava":      ("sahni_fragoza_varchamp1p_cava_train_",
-                                           "combined_sahni_fragoza_varchamp1p_cava_seq_confirmed_"),
-    "sahni_varchamp1p_cava":              ("sahni_varchamp1p_cava_train_",
-                                           "combined_sahni_varchamp1p_cava_seq_confirmed_concat_clust_"),
-    "sahni_fragoza_varchamp_full":        ("sahni_fragoza_varchamp_full_train_",
-                                           "combined_sahni_fragoza_varchamp_full_"),
-    "sahni_fragoza_varchamp_pooled":      ("sahni_fragoza_varchamp_pooled_train_",
-                                           "combined_sahni_fragoza_varchamp_pooled_"),
-    "sahni_fragoza_varchamp_full_pooled": ("sahni_fragoza_varchamp_full_pooled_train_",
-                                           "combined_sahni_fragoza_varchamp_full_pooled_"),
+    "sahni_fragoza_mapped090826":              ("sahni_fragoza_train_", "swing_train_"),
+    "sahni_fragoza_varchamp_all_mapped090826": ("sahni_fragoza_varchamp_all_train_",
+                                                "combined_sahni_fragoza_varchamp_all_"),
+    "varchamp_all_mapped090826":               ("varchamp_all_train_",
+                                                "combined_varchamp_all_"),
+    "sahni_only_mapped090826":                 ("sahni_only_train_", "sahni_only_"),
+    "fragoza_only_mapped090826":               ("fragoza_only_train_", "fragoza_only_"),
 }
 
 
-def _write_canonical_rows(path: Path, ordered: dict) -> None:
-    """The CV ordering in canonical columns, replacing the `vt_id` composite.
+def _write_rows(path: Path, df) -> None:
+    """The canonical ordering in explicit columns.
 
-        row_index, interactor, partner, mutation
-
-    `vt_id` is a `'{interactor}-{partner} {mutation}'` string with a 0-based
-    mutation: two identifiers welded together with `-`, which is ambiguous the
-    moment an accession is an isoform (261 of 2,785 `complex_id`s in the
-    sahni_fragoza reference contain more than one `-`, e.g. `O43889-2-J3QKU0`).
-    Consumers should read THIS file and join on explicit columns.
-
-    `row_index` is the position in the canonical ordering, so it indexes
-    `fold_splits_{seed}.pkl` and `pair_test_classes_{seed}.npy` directly -- that
-    alignment is the reason the ordering may never be re-derived.
-
-    The `.pkl` outputs are still written unchanged: they are what every existing
-    consumer and every published number depend on. This is an additional view,
-    not a replacement, until those consumers are migrated.
+    `row_index` is the position in this ordering, so it indexes
+    `fold_splits_{seed}.pkl` and `pair_test_classes_{seed}.npy` directly.
     """
-    import csv
-    import gzip
-
-    vt_ids, pairs = ordered["all_vt_ids"], ordered["all_pairs"]
     with gzip.open(path, "wt", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["row_index", "interactor", "partner", "mutation"])
-        for idx, (vt_id, (inter, partner)) in enumerate(zip(vt_ids, pairs)):
-            # Split on the SPACE, which is unambiguous; never on the '-'.
-            mut0 = vt_id.split(" ")[1] if " " in vt_id else ""
-            try:
-                mut = vr.to_one_based(mut0)      # canonical 1-based
-            except ValueError:
-                mut = mut0
-            w.writerow([idx, inter, partner, mut])
-    print(f"  canonical rows -> {path.name}", flush=True)
+        for idx, (i, p, m) in enumerate(zip(df["interactor"], df["partner"],
+                                            df["mutation"])):
+            w.writerow([idx, i, p, m])
 
 
-def export(dataset: str, n_seeds: int = 30) -> None:
+def export(dataset: str, n_seeds: int = 30, identity: float = 0.5) -> None:
     prefix, ptc_prefix = NAMING[dataset]
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"\n=== {dataset} ===", flush=True)
-    cfg = cv.DATASET_CONFIGS[dataset]
-    data = cv.load_dataset(cfg)
-    canonical = cv.canonical_vt_ids_path(cfg)
-    if canonical.exists():
-        # Preserve the established ordering; never re-derive it, or fold splits
-        # silently stop matching every previously published run.
-        ordered = cv.align_to_vt_ids(data, canonical)
-    else:
-        print(f"  no canonical ordering yet; establishing one by shuffle", flush=True)
-        ordered = cv.shuffle_data(data)
-    vt_ids = ordered["all_vt_ids"]
-    print(f"  {len(vt_ids)} rows", flush=True)
+    df = load_data(DATASET_CONFIGS[dataset]).reset_index(drop=True)
+    print(f"  {len(df)} rows", flush=True)
 
-    with open(OUT_DIR / f"{prefix}all_vt_ids.pkl", "wb") as f:
-        pickle.dump(vt_ids, f)
+    # Groups are cd-hit clusters of the FULL COMPLEX sequence, never one chain.
+    clusters = complex_clusters(df, identity=identity)
+    print(f"  {len(set(clusters))} clusters at {identity:.0%} identity", flush=True)
+    with open(OUT_DIR / f"{prefix}clusters.pkl", "wb") as f:
+        pickle.dump(clusters, f)
+
+    _write_rows(OUT_DIR / f"{prefix}rows.csv.gz", df)
+
+    pairs = list(zip(df["interactor"], df["partner"]))
     for s in range(n_seeds):
-        with open(OUT_DIR / f"{prefix}all_vt_ids_{s}.pkl", "wb") as f:
-            pickle.dump(vt_ids, f)
-
-    _write_canonical_rows(OUT_DIR / f"{prefix}rows.csv.gz", ordered)
-
-    for s in range(n_seeds):
-        fold_splits = cv.make_fold_splits(ordered, s)
-        ptc = cv.compute_pair_test_classes(ordered, fold_splits)
+        fold_splits = make_fold_splits(clusters, s)
+        ptc = compute_pair_test_classes(pairs, fold_splits)
         with open(OUT_DIR / f"{prefix}fold_splits_{s}.pkl", "wb") as f:
             pickle.dump(fold_splits, f)
         np.save(OUT_DIR / f"{ptc_prefix}pair_test_classes_{s}.npy", ptc)
     counts = np.bincount(ptc, minlength=4)[1:]
-    print(f"  wrote {n_seeds} seeds; last-seed class counts C1/C2/C3 = {counts}", flush=True)
+    print(f"  wrote {n_seeds} seeds; last-seed class counts C1/C2/C3 = {counts}",
+          flush=True)
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dataset", default="sahni_fragoza", choices=sorted(NAMING) + ["all"])
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dataset", default="sahni_fragoza_mapped090826",
+                    choices=sorted(NAMING) + ["all"])
     ap.add_argument("--n-seeds", type=int, default=30)
+    ap.add_argument("--identity", type=float, default=0.5,
+                    help="cd-hit identity for the GroupKFold groups")
     args = ap.parse_args()
 
     targets = sorted(NAMING) if args.dataset == "all" else [args.dataset]
     for ds in targets:
-        try:
-            export(ds, args.n_seeds)
-        except Exception as e:
-            print(f"  FAILED: {type(e).__name__}: {e}", flush=True)
+        export(ds, args.n_seeds, args.identity)
     print(f"\nOutput: {OUT_DIR}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

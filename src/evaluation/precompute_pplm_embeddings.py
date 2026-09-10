@@ -38,7 +38,7 @@ Usage:
 
     # Extend an existing cache (only embeds missing keys):
     conda run -n ppi python precompute_pplm_embeddings.py \\
-        --dataset sahni_fragoza_varchamp1p_cava --device cuda:0
+        --dataset sahni_fragoza_mapped090826 --device cuda:0
 
 Model weights: $MUTPRED_DATA_ROOT/2026/PPLM/weights/pplm_t33_650M.pt
 """
@@ -54,8 +54,8 @@ import numpy as np
 import torch
 
 # ── dataset configs (vendored in-repo) ───────────────────────────────────────
-# Shared GCV data-loading layer (see src/evaluation/gcv_common.py).
-from evaluation.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+# Shared GCV data-loading layer (see src/utils/gcv_common.py).
+from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
 
 # ── PPLM package ─────────────────────────────────────────────────────────────
 

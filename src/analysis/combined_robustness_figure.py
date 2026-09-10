@@ -9,7 +9,7 @@ still produces its own PNG/TSV independently; this just also assembles them
 into one combined figure.
 
 Output:
-  results_revisions/robustness_analyses/combined_robustness_by_class.png
+  results/robustness/combined_robustness_by_class.png
 
 Usage:
   conda run -n ppi python src/analysis/combined_robustness_figure.py

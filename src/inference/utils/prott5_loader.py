@@ -10,6 +10,8 @@ import time
 import torch
 import h5py
 from transformers import T5EncoderModel, T5Tokenizer
+from utils.embeddings import embed_sequences  # noqa: E402
+from utils.sequences import h5_safe_key, read_fasta as _read_fasta_shared  # noqa: E402
 
 
 def get_T5_model(model_dir, device, transformer_link = "Rostlab/prot_t5_xl_half_uniref50-enc"):
@@ -30,104 +32,47 @@ def get_T5_model(model_dir, device, transformer_link = "Rostlab/prot_t5_xl_half_
     return model, vocab
 
 
-def read_fasta( fasta_path ):
-    '''
-        Reads in fasta file containing multiple sequences.
-        Returns dictionary of holding multiple sequences or only single 
-        sequence, depending on input file.
-    '''
-    
-    sequences = dict()
-    with open( fasta_path, 'r' ) as fasta_f:
-        for line in fasta_f:
-            # get uniprot ID from header and create new entry
-            if line.startswith('>'):
-                uniprot_id = line.replace('>', '').strip()
-                # replace tokens that are mis-interpreted when loading h5
-                uniprot_id = uniprot_id.replace("/","_").replace(".","_")
-                sequences[ uniprot_id ] = ''
-            else:
-                # repl. all whie-space chars and join seqs spanning multiple lines
-                sequences[ uniprot_id ] += ''.join( line.split() ).upper().replace("-","") # drop gaps and cast to upper-case
-                
-    return sequences
+def read_fasta(fasta_path):
+    """{key: sequence} from a WT_VT-format FASTA (`>P25054` / `>P25054 S305R`).
+
+    `key` is the WHOLE header, H5-safe-mangled (`whole=True`): the wild type and
+    each of its variants must key to DIFFERENT H5 dataset names, so first-token
+    keying (which collapses `P25054 S305R` onto `P25054`) is not an option here.
+    `on_duplicate="last"` matches this function's previous behaviour, which
+    reset a repeated header's accumulator to empty and rebuilt it from the
+    later occurrence only.
+    """
+    return _read_fasta_shared(fasta_path, lambda h: h5_safe_key(h, whole=True),
+                              on_duplicate="last")
 
 
-def get_embeddings( seq_path, 
-                   emb_path, 
-                   model, 
-                   vocab, 
-                   per_protein, # whether to derive per-protein (mean-pooled) embeddings
-                   device, 
-                   max_residues=4000, # number of cumulative residues per batch
-                   max_seq_len=1000, # max length after which we switch to single-sequence processing to avoid OOM
-                   max_batch=100 # max number of sequences per single batch
-                   ):
-    
-    seq_dict = dict()
-    emb_dict = dict()
+def get_embeddings(seq_path,
+                   emb_path,
+                   model,
+                   vocab,
+                   per_protein,          # mean-pool to one vector per protein
+                   device,
+                   batch_residue_budget=4000,
+                   single_sequence_threshold=1000,   # above this, a sequence is batched ALONE
+                   max_batch=100):
+    """Embed every sequence in `seq_path` and write them to `emb_path`.
 
-    # read in fasta
-    seq_dict = read_fasta( seq_path )
+    Batching is shared with the other ProtT5 entry points via
+    `utils.embeddings`. Neither budget limits what gets embedded -- an
+    oversized sequence becomes its own batch and is embedded in full.
+    `embed_sequences` asserts one row per residue, so a truncation cannot
+    pass silently.
+    """
+    seq_dict = read_fasta(seq_path)
+    emb_dict = embed_sequences(
+        seq_dict, model, vocab, device,
+        per_protein=per_protein,
+        batch_residue_budget=batch_residue_budget,
+        single_sequence_threshold=single_sequence_threshold,
+        max_batch=max_batch,
+        on_oom="skip",     # historical behaviour of this entry point
+    )
 
-    # print('########################################')
-    # print('Example sequence: {}\n{}'.format( next(iter(
-            # seq_dict.keys())), next(iter(seq_dict.values()))) )
-    # print('########################################')
-    # print('Total number of sequences: {}'.format(len(seq_dict)))
-
-    avg_length = sum([ len(seq) for _, seq in seq_dict.items()]) / len(seq_dict)
-    n_long     = sum([ 1 for _, seq in seq_dict.items() if len(seq)>max_seq_len])
-    seq_dict   = sorted( seq_dict.items(), key=lambda kv: len( seq_dict[kv[0]] ), reverse=True )
-    
-    # print("Average sequence length: {}".format(avg_length))
-    # print("Number of sequences >{}: {}".format(max_seq_len, n_long))
-    
-    start = time.time()
-    batch = list()
-    for seq_idx, (pdb_id, seq) in enumerate(seq_dict,1):
-        seq = seq.replace('U','X').replace('Z','X').replace('O','X')
-        seq_len = len(seq)
-        seq = ' '.join(list(seq))
-        batch.append((pdb_id,seq,seq_len))
-
-        # count residues in current batch and add the last sequence length to
-        # avoid that batches with (n_res_batch > max_residues) get processed 
-        n_res_batch = sum([ s_len for  _, _, s_len in batch ]) + seq_len 
-        if len(batch) >= max_batch or n_res_batch>=max_residues or seq_idx==len(seq_dict) or seq_len>max_seq_len:
-            pdb_ids, seqs, seq_lens = zip(*batch)
-            batch = list()
-
-            token_encoding = vocab.batch_encode_plus(seqs, add_special_tokens=True, padding="longest")
-            input_ids      = torch.tensor(token_encoding['input_ids']).to(device)
-            attention_mask = torch.tensor(token_encoding['attention_mask']).to(device)
-            
-            try:
-                with torch.no_grad():
-                    embedding_repr = model(input_ids, attention_mask=attention_mask)
-            except RuntimeError:
-                print("RuntimeError during embedding for {} (L={}). Try lowering batch size. ".format(pdb_id, seq_len) +
-                      "If single sequence processing does not work, you need more vRAM to process your protein.")
-                continue
-            
-            # batch-size x seq_len x embedding_dim
-            # extra token is added at the end of the seq
-            for batch_idx, identifier in enumerate(pdb_ids):
-                s_len = seq_lens[batch_idx]
-                # slice-off padded/special tokens
-                emb = embedding_repr.last_hidden_state[batch_idx,:s_len]
-                
-                if per_protein:
-                    emb = emb.mean(dim=0)
-            
-                # if len(emb_dict) == 0:
-                #     print("Embedded protein {} with length {} to emb. of shape: {}".format(
-                        # identifier, s_len, emb.shape))
-
-                emb_dict[ identifier ] = emb.detach().cpu().numpy().squeeze()
-
-    end = time.time()
-    
     with h5py.File(str(emb_path), "w") as hf:
         for sequence_id, embedding in emb_dict.items():
             # noinspection PyUnboundLocalVariable
