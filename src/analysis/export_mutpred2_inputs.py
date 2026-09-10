@@ -3,7 +3,7 @@
 
 MutPred2 is run externally (no trainable model in this repo); this writes
 the input file it expects and stops there -- see
-`docs/METHOD_PROVENANCE.md`'s "MutPred2, RaSP, SPURS" section for why (it is
+the module notes below for why (it is
 "run externally; ... only parses its output CSV. No deviation is possible.").
 
 Usage:

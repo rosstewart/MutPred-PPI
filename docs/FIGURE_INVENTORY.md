@@ -59,7 +59,7 @@ C1=1,867 → C1=9,236. Nothing keyed by position survives that.
 
 | class | meaning |
 |---|---|
-| **canonical** | derived from `P/datasets/{cv_reference,variant_dbs}/*rows.csv.gz`, `P/datasets/sfvcfp_rows.csv.gz`, `P/datasets/mapped090826/*`, a contact-graph `.h5` store, or `P/datasets/af3_structures*_canonical/` |
+| **canonical** | derived from `P/datasets/{cv_reference,variant_dbs}/*rows.csv.gz`, `P/datasets/sfvcfp_rows.csv.gz`, `P/datasets/training_eval/*`, a contact-graph `.h5` store, or `P/datasets/af3_structures*_canonical/` |
 | **position-keyed** | a per-row array/pickle aligned to a row ORDERING. Everything under `GCV/`, every `VCFP/*.npy`, every `*_predictions.tsv` prediction cache. **These are the dangerous ones.** |
 | **pre-090826** | built under the old mapping (mtime < 2026-09-08 *and* keyed to old row set) |
 | **external** | third-party, not generated here (BioGRID, UniProt, ClinVar, COSMIC, HGMD, gnomAD, ClinGen, SKEMPI, `datasets/mega_splits.pkl`) |
@@ -380,8 +380,8 @@ rows, under a completely different stratification rule.**
 | `datasets/annotations/plddt_pair_cache.pkl` | **unknown/missing** | **DOES NOT EXIST** — **O11** |
 | `datasets/annotations/plddt_cache.pkl` | **unknown/missing producer** (legacy AFDB monomer) | 2026-09-09; read only via `--compare-legacy` |
 | `datasets/annotations/pfam_domains_cache.pkl` | external (InterPro/Pfam), **no producer** — **O13** | 2026-07-26 |
-| `datasets/mapped090826/contact_graphs.h5` (interface residues) | **canonical** | 2026-09-09 20:41 |
-| `datasets/mapped090826/{sahni_fragoza_mapped090826_rows,sequences}.csv.gz` | **canonical** | 2026-09-08 |
+| `datasets/training_eval/contact_graphs.h5` (interface residues) | **canonical** | 2026-09-09 20:41 |
+| `datasets/training_eval/{sahni_fragoza_mapped090826_rows,sequences}.csv.gz` | **canonical** | 2026-09-08 |
 
 **Verified by execution — all three die:**
 
@@ -480,7 +480,7 @@ dropped or repointed at `sahni_fragoza_varchamp_all`.
 | `generate_training_table.py` | RUNS, silently stale | **TESTED** import; reads 2025-dated label `.txt` |
 | `extract_variant_db_stats.py` | RUNS, silently stale | **TESTED** import |
 | `export_reconstruction_tables.py` | RUNS, **silently blanks id columns** | inferred from the count-consistency guard + verified 5,894 vs 6,219 inputs |
-| `export_cv_reference.py` | RUNS, canonical | inputs are `mapped090826/*` — the only purely canonical figure-chain script |
+| `export_cv_reference.py` | RUNS, canonical | inputs are `training_eval/*` — the only purely canonical figure-chain script |
 | `run_vcfp_blind_test.py` | RUNS, canonical | **TESTED** import; reads `sfvcfp_rows.csv.gz` |
 
 > Import note: `stability_interaction_clustering.py`, `cosmic_onco_tsg_stat_test.py` and
@@ -504,8 +504,8 @@ position-keyed against an earlier one.
 
 ### Stage 1 — contact graphs + confidence caches
 ```
-python src/data_processing/rebuild_graphs_from_structures.py      # -> datasets/mapped090826/contact_graphs.h5
-python repro_test/build_af3_index.py                     # -> datasets/mapped090826/af3_index.csv.gz
+python src/data_processing/rebuild_graphs_from_structures.py      # -> datasets/training_eval/contact_graphs.h5
+python repro_test/build_af3_index.py                     # -> datasets/training_eval/af3_index.csv.gz
 # NOTE both builders default to /tmp and refuse to write datasets/annotations/ without --force
 python src/analysis/build_plddt_cache.py \
     --output datasets/annotations/plddt_pair_cache.pkl --force        # O11 -- currently MISSING
@@ -519,7 +519,7 @@ python src/analysis/build_confidence_cache.py \
 
 ### Stage 2 — canonical row tables
 ```
-python repro_test/build_canonical_tables.py              # -> datasets/mapped090826/*_rows.csv.gz, sequences.csv.gz
+python repro_test/build_canonical_tables.py              # -> datasets/training_eval/*_rows.csv.gz, sequences.csv.gz
 python repro_test/build_sfvcfp_table.py                  # -> datasets/sfvcfp_rows.csv.gz            (22,338)
 python src/variant_db_inference/build_variant_db_tables.py --db all   # -> datasets/variant_dbs/*_rows.csv.gz
 python src/analysis/export_cv_reference.py --dataset all # -> CV/*rows.csv.gz, fold_splits, pair_test_classes, clusters
@@ -539,7 +539,7 @@ python src/evaluation/precompute_pplm_embeddings.py       # CUDA_VISIBLE_DEVICES
 python src/variant_db_inference/precompute_prott5.py
 python src/variant_db_inference/compress_to_subgraphs.py  # clinvar/cosmic NOT re-runnable (O10)
 ```
-- **Unblocks:** nothing. Note `datasets/mapped090826/*_{prott5,esm2,mint,pplm}.pkl` were
+- **Unblocks:** nothing. Note `datasets/training_eval/*_{prott5,esm2,mint,pplm}.pkl` were
   already rebuilt 2026-09-08/09 — verify against the new graphs before trusting them.
 
 ### Stage 4 — training

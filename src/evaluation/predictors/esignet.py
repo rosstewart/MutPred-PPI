@@ -36,7 +36,7 @@ from utils import mutations  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# Upstream eSIG-Net source, imported by file path (see docs/METHOD_PROVENANCE.md).
+# Upstream eSIG-Net source, imported by file path.
 # Resolved via external/esignet -> the pristine clone; run scripts/link_external.sh.
 _SDNN_MODEL_PATH = EXTERNAL_DIR / "esignet" / "backbones" / "sdnn" / "sdnn_model.py"
 _ESM_CACHE_PATH = str(REVISIONS_DIR / "esm2_residue_embeddings.pkl")

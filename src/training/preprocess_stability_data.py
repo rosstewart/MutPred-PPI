@@ -93,7 +93,6 @@ import pandas as pd
 import torch
 from joblib import Parallel, delayed
 from sklearn.preprocessing import StandardScaler
-from transformers import T5EncoderModel, T5Tokenizer
 
 from contact_graphs import (  # noqa: E402
     DEFAULT_THRESHOLD,
@@ -103,7 +102,8 @@ from contact_graphs import (  # noqa: E402
 )
 from paths import DATASETS_DIR  # noqa: E402
 from utils import mutations  # noqa: E402
-from utils.embeddings import embed_sequences as _embed_sequences_shared  # noqa: E402
+from utils.embeddings import (PROTT5_MODEL,  # noqa: E402
+                              embed_sequences as _embed_sequences_shared, load_prott5)
 from utils.identifiers import variant_id  # noqa: E402
 
 
@@ -374,19 +374,13 @@ def expand_emb(item) -> np.ndarray:
 # make on purpose with a rerun, not as part of a format migration.
 
 def _load_prott5(device: torch.device):
-    link = "Rostlab/prot_t5_xl_half_uniref50-enc"
-    print(f"  loading {link}...", flush=True)
-    model = T5EncoderModel.from_pretrained(link)
-    if device.type == "cpu":
-        model = model.to(torch.float32)
-    model = model.to(device).eval()
-    vocab = T5Tokenizer.from_pretrained(link, do_lower_case=False)
-    return model, vocab
+    """Alias for the one shared loader; see `utils.embeddings.load_prott5`."""
+    print(f"  loading {PROTT5_MODEL}...", flush=True)
+    return load_prott5(device)
 
 
 def compute_embeddings(seq_dict: dict, device: torch.device,
                        batch_residue_budget: int = 4000,
-                       single_sequence_threshold: int = 1000,
                        max_batch: int = 100) -> dict:
     """Compute per-residue ProtT5 embeddings.
 
@@ -407,8 +401,16 @@ def compute_embeddings(seq_dict: dict, device: torch.device,
     0.0; embedding alongside a zero-padding same-length sequence differs from
     a single-item batch by the same ~1e-6 as embedding alongside a heavily
     padded one, which is what rules out the attention mask as the cause).
-    `on_oom="retry_individually"` was already this loop's own default and
-    needed no change; `map_b` stays `False` (this loop never mapped `B`).
+    `retry_individually` was already this loop's own OOM behaviour and is now
+    the only policy, so nothing changed here either.
+
+    The `single_sequence_threshold=1000` argument was removed on 2026-09-10
+    (see `utils.embeddings`). It is a no-op for this pipeline regardless: every
+    megascale sequence is 40-120 aa, so none ever crossed it. Where it does
+    change batch composition for other callers, the ~5e-6 relative bound
+    measured above is the governing number -- ordinary batch-shape float noise,
+    not a semantic change. `map_b` is likewise gone; this loop never mapped `B`
+    and `B` occurs in no canonical sequence.
     """
     model, vocab = _load_prott5(device)
     total = len(seq_dict)
@@ -420,10 +422,8 @@ def compute_embeddings(seq_dict: dict, device: torch.device,
     emb_dict = _embed_sequences_shared(
         seq_dict, model, vocab, device,
         batch_residue_budget=batch_residue_budget,
-        single_sequence_threshold=single_sequence_threshold,
         max_batch=max_batch,
         map_nonstandard=True,
-        on_oom="retry_individually",
         progress=progress,
     )
 

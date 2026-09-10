@@ -25,7 +25,7 @@ C1/C2/C3 classing is NOT one rule for every method:
   - MutPred2: constant across C1/C2/C3 (partner-agnostic); handled entirely
     by `import_mutpred2_varchamp_scores.py`, not here.
 DDMutPPI is not a method here at all -- excluded outright, see
-docs/METHOD_PROVENANCE.md.
+the method's own module docstring.
 
 Usage:
     conda run -n ppi python src/evaluation/run_varchamp_blind_test.py --method mutpredppi [--device cuda:1]
@@ -56,7 +56,7 @@ from sklearn.metrics import roc_auc_score
 _EVAL_DIR = Path(__file__).resolve().parent          # src/evaluation
 _PUB = _EVAL_DIR.parent.parent                       # repo root
 
-from paths import DATASETS_DIR, REPO_ROOT, VARCHAMP_BLIND_TEST_DIR, WEIGHTS_DIR  # noqa: E402
+from paths import DATASETS_DIR, REPO_ROOT, TRAINING_EVAL_DIR, VARCHAMP_BLIND_TEST_DIR, WEIGHTS_DIR  # noqa: E402
 from utils import mutations  # noqa: E402
 from utils.gcv_common import (  # noqa: E402
     DATASET_CONFIGS, PREDICTOR_COLS, compute_blind_test_classes, load_data,
@@ -169,8 +169,7 @@ def _score_mutpredppi(train_df: pd.DataFrame, test_df: pd.DataFrame,
     """Train on all of Sahni+Fragoza (no fold split), predict on all of VarChAMP."""
     import torch
 
-    from model import MutPred_PPI
-    from inference.utils.model_loader import model_predict
+    from inference.utils.model_loader import load_model, model_predict
     from training.train_fold import _MEGASCALE_SCALER_PATH
     from utils.mutpred_ppi_data import build_tensors
 
@@ -198,9 +197,7 @@ def _score_mutpredppi(train_df: pd.DataFrame, test_df: pd.DataFrame,
         scaler = joblib.load(_MEGASCALE_SCALER_PATH)
 
     dev = torch.device(device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
-    model = MutPred_PPI(input_dim=1024).to(dev)
-    model.load_state_dict(torch.load(ckpt_path, weights_only=True, map_location=dev))
-    model.eval()
+    model = load_model(ckpt_path, dev)
 
     n = len(test_df)
     scores = np.full(n, np.nan, dtype=np.float32)
@@ -225,8 +222,8 @@ def _score_esignet(train_df: pd.DataFrame, test_df: pd.DataFrame,
     from evaluation.predictors.esignet import ESigNetPredictor
 
     merged = _merge_pickle_caches(
-        [DATASETS_DIR / "mapped090826" / f"{train_dataset}_esm2.pkl",
-         DATASETS_DIR / "mapped090826" / f"{TEST_CFG.name}_esm2.pkl"],
+        [TRAINING_EVAL_DIR / f"{train_dataset}_esm2.pkl",
+         TRAINING_EVAL_DIR / f"{TEST_CFG.name}_esm2.pkl"],
         _merged_cache_dir() / f"esm2_train_{train_dataset}_test_va.pkl")
     _esignet_mod._ESM_CACHE_PATH = str(merged)
 
@@ -256,8 +253,8 @@ def _score_cachemlp(train_df: pd.DataFrame, test_df: pd.DataFrame,
     }[(method, predictor_name)]
 
     merged = _merge_pickle_caches(
-        [DATASETS_DIR / "mapped090826" / f"{train_dataset}_{cache_stem}.pkl",
-         DATASETS_DIR / "mapped090826" / f"{TEST_CFG.name}_{cache_stem}.pkl"],
+        [TRAINING_EVAL_DIR / f"{train_dataset}_{cache_stem}.pkl",
+         TRAINING_EVAL_DIR / f"{TEST_CFG.name}_{cache_stem}.pkl"],
         _merged_cache_dir() / f"{cache_stem}_train_{train_dataset}_test_va.pkl")
     _mod.CACHE_PATH = str(merged)
     PredictorClass._cache_path = str(merged)

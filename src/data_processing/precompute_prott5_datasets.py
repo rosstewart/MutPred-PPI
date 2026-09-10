@@ -27,21 +27,18 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import torch
-from transformers import T5EncoderModel, T5Tokenizer
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from paths import DATASETS_DIR  # noqa: E402
+from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 from utils import mutations  # noqa: E402
-from utils.embeddings import embed_sequences as _embed_sequences_shared  # noqa: E402
+from utils.embeddings import (PROTT5_MODEL,  # noqa: E402
+                              embed_sequences as _embed_sequences_shared, load_prott5)
 
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("pooled_t5")
 
-TRANSFORMER_LINK = "Rostlab/prot_t5_xl_half_uniref50-enc"
 MAX_RESIDUES = 4000   # per-batch residue budget -- the actual memory control
 MAX_BATCH = 100
 # No MAX_SEQ_LEN. ProtT5 uses relative position embeddings and has no architectural
@@ -56,13 +53,9 @@ SAVE_EVERY = 500
 
 
 def load_model(device: torch.device):
-    logger.info("Loading ProtT5 from %s", TRANSFORMER_LINK)
-    model = T5EncoderModel.from_pretrained(TRANSFORMER_LINK)
-    if device.type == "cpu":
-        model = model.to(torch.float32)
-    model = model.to(device).eval()
-    vocab = T5Tokenizer.from_pretrained(TRANSFORMER_LINK, do_lower_case=False)
-    return model, vocab
+    """Alias for the one shared loader; see `utils.embeddings.load_prott5`."""
+    logger.info("Loading ProtT5 from %s", PROTT5_MODEL)
+    return load_prott5(device)
 
 
 
@@ -131,13 +124,18 @@ def embed_all(
     `precompute_prott5.py` handles), so the whole cache stays resident and is
     periodically re-dumped in full -- matching this entry point's previous
     checkpointing granularity (a full pickle overwrite every SAVE_EVERY keys,
-    not a per-key H5 append). `map_b=True` preserves this entry point's
-    historical, and only, mapping of the ambiguity code B (Asx) -> X; see
-    `utils.embeddings.clean_sequence`. `single_sequence_threshold=None` and
-    `on_oom="raise"` reproduce this entry point's previous behaviour exactly:
-    no early single-sequence split (an oversized sequence becomes its own
-    batch purely through the residue-budget overflow, once `batch` is
-    non-empty), and no OOM handling at all -- a RuntimeError kills the run.
+    not a per-key H5 append).
+
+    Two behaviours were removed on 2026-09-10, neither of which changes this
+    entry point's output. `map_b=True` was this script's private mapping of the
+    ambiguity code B (Asx) -> X; B does not occur in any canonical sequence, so
+    folding it unconditionally in `clean_sequence` is identical here. And
+    `on_oom="raise"` (kill the run on any OOM) is replaced by the single shared
+    policy -- retry each sequence alone, skip and report only what still cannot
+    fit -- so a transient OOM no longer discards a partially built cache that
+    took hours to fill. Anything genuinely unembeddable is named on stderr and
+    is simply absent from the pickle, which `assert_untruncated` and the
+    downstream key lookups already treat as a hard error.
     """
     cache = dict(existing)
     todo = {k: v for k, v in sequences.items() if k not in cache and len(v) > 0}
@@ -164,11 +162,8 @@ def embed_all(
     _embed_sequences_shared(
         todo, model, vocab, device,
         batch_residue_budget=MAX_RESIDUES,
-        single_sequence_threshold=None,
         max_batch=MAX_BATCH,
         map_nonstandard=True,
-        map_b=True,
-        on_oom="raise",
         sink=sink,
     )
     return cache
@@ -180,7 +175,7 @@ def main():
     p.add_argument("--dataset", default="sahni_fragoza_varchamp_all_mapped090826",
                    help="canonical dataset to embed (see gcv_common.DATASET_CONFIGS)")
     p.add_argument("--out", default=None,
-                   help="output pkl (default: datasets/mapped090826/<dataset>_prott5.pkl)")
+                   help="output pkl (default: datasets/training_eval/<dataset>_prott5.pkl)")
     p.add_argument("--csv", default=None,
                    help="embed an arbitrary rows CSV instead of a named dataset")
     args = p.parse_args()
@@ -200,7 +195,7 @@ def main():
         stem = args.dataset
     logger.info("rows: %d", len(df))
 
-    out_path = args.out or str(DATASETS_DIR / "mapped090826" / f"{stem}_prott5.pkl")
+    out_path = args.out or str(TRAINING_EVAL_DIR / f"{stem}_prott5.pkl")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     logger.info("Collecting sequences...")

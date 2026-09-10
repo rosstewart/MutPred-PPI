@@ -60,14 +60,17 @@ def test_clean_sequence_leaves_standard_residues_alone():
     assert clean_sequence("MKTAYIAKQRQ") == "MKTAYIAKQRQ"
 
 
-def test_clean_sequence_leaves_b_alone_by_default():
-    # B (Asx) is only mapped by precompute_prott5_datasets.py, historically.
-    # The other three callers must see no change from this migration.
-    assert clean_sequence("MBK") == "MBK"
+def test_clean_sequence_maps_all_ambiguity_codes():
+    # The per-caller `map_b` flag was removed 2026-09-10: B does not occur in
+    # any canonical sequence, so mapping it unconditionally is identical on
+    # every input this repo embeds, and B is an ambiguity code (Asx), not a
+    # residue ProtT5 models.
+    assert clean_sequence("MBK") == "MXK"
+    assert clean_sequence("MBUZOK") == "MXXXXK"
 
 
-def test_clean_sequence_maps_b_when_requested():
-    assert clean_sequence("MBK", map_b=True) == "MXK"
+def test_clean_sequence_passthrough_when_disabled():
+    assert clean_sequence("MBUZOK", map_nonstandard=False) == "MBUZOK"
 
 
 # -- assert_untruncated ---------------------------------------------------------
@@ -90,32 +93,41 @@ def test_assert_untruncated_one_residue():
 
 def test_batched_by_residues_sorts_longest_first():
     items = [("a", "M" * 10), ("b", "M" * 100), ("c", "M" * 50)]
-    batches = list(batched_by_residues(items, batch_residue_budget=1000,
-                                       single_sequence_threshold=None))
+    batches = list(batched_by_residues(items, batch_residue_budget=1000))
     flat = [k for batch in batches for k, _ in batch]
     assert flat == ["b", "c", "a"]
 
 
 def test_batched_by_residues_respects_budget():
     items = [(str(i), "M" * 60) for i in range(5)]
-    batches = list(batched_by_residues(items, batch_residue_budget=100,
-                                       single_sequence_threshold=None))
+    batches = list(batched_by_residues(items, batch_residue_budget=100))
     assert all(sum(len(s) for _, s in b) <= 100 for b in batches)
     assert sum(len(b) for b in batches) == 5  # nothing dropped
 
 
-def test_batched_by_residues_single_sequence_threshold_isolates_long_ones():
-    items = [("long", "M" * 2000), ("short", "M" * 10)]
-    batches = list(batched_by_residues(items, batch_residue_budget=4000,
-                                       single_sequence_threshold=1000))
+def test_batched_by_residues_oversized_sequence_still_embedded_whole():
+    # No length threshold exists any more (removed 2026-09-10). A sequence
+    # longer than the WHOLE budget must still be emitted -- alone, in full,
+    # never split and never dropped.
+    items = [("long", "M" * 9000), ("short", "M" * 10)]
+    batches = list(batched_by_residues(items, batch_residue_budget=4000))
     assert [k for k, _ in batches[0]] == ["long"]
+    assert len(batches[0][0][1]) == 9000
     assert [k for k, _ in batches[1]] == ["short"]
+
+
+def test_batched_by_residues_packs_by_budget_only():
+    # Under the old threshold=1000 rule "long" would have been isolated.
+    # Now the only question is whether the residue budget fits.
+    items = [("long", "M" * 3000), ("short", "M" * 900)]
+    batches = list(batched_by_residues(items, batch_residue_budget=4000))
+    assert len(batches) == 1
+    assert [k for k, _ in batches[0]] == ["long", "short"]
 
 
 def test_batched_by_residues_drops_nothing():
     items = [(str(i), "M" * (i + 1)) for i in range(37)]
-    batches = list(batched_by_residues(items, batch_residue_budget=50,
-                                       single_sequence_threshold=30))
+    batches = list(batched_by_residues(items, batch_residue_budget=50))
     seen = {k for batch in batches for k, _ in batch}
     assert seen == {str(i) for i in range(37)}
 
@@ -179,7 +191,75 @@ def test_embed_sequences_progress_reports_running_total_with_sink():
     counts = []
     embed_sequences(seqs, _FakeModel(), _FakeVocab(), "cpu",
                     sink=lambda batch: None, progress=counts.append,
-                    batch_residue_budget=1000, single_sequence_threshold=None,
-                    max_batch=2)
+                    batch_residue_budget=1000, max_batch=2)
     assert counts[-1] == 5
     assert counts == sorted(counts)  # monotonically non-decreasing
+
+
+# -- OOM policy: one policy, no silent batch loss -------------------------------
+#
+# Before 2026-09-10 `on_oom` was a per-caller parameter and three of the four
+# call sites passed "skip", which discarded EVERY sequence in an OOMing batch
+# (up to max_batch=100) without naming any of them. These tests pin the single
+# replacement policy: retry each sequence alone, skip only what still fails,
+# and report it.
+
+class _OOMOnBatchModel(_FakeModel):
+    """Raises on any multi-sequence batch; succeeds on a single sequence."""
+
+    def __call__(self, ids, attention_mask=None):
+        if ids.shape[0] > 1:
+            raise RuntimeError("CUDA out of memory (simulated)")
+        return super().__call__(ids, attention_mask=attention_mask)
+
+
+class _AlwaysOOMForKeyModel(_FakeModel):
+    """Raises for one specific sequence length, even alone."""
+
+    def __init__(self, bad_len):
+        self.bad_len = bad_len
+
+    def __call__(self, ids, attention_mask=None):
+        if any(int(m.sum()) == self.bad_len for m in attention_mask):
+            raise RuntimeError("CUDA out of memory (simulated)")
+        return super().__call__(ids, attention_mask=attention_mask)
+
+
+def test_batch_oom_retries_individually_and_loses_nothing():
+    seqs = {str(i): "M" * (i + 1) for i in range(6)}
+    out = embed_sequences(seqs, _OOMOnBatchModel(), _FakeVocab(), "cpu",
+                          batch_residue_budget=1000, max_batch=6)
+    assert set(out) == set(seqs)          # every sequence recovered
+    assert out.skipped == []
+    for k, v in out.items():
+        assert v.shape[0] == len(seqs[k])
+
+
+def test_only_the_unembeddable_sequence_is_skipped():
+    seqs = {"good1": "M" * 5, "bad": "M" * 7, "good2": "M" * 3}
+    out = embed_sequences(seqs, _AlwaysOOMForKeyModel(bad_len=7), _FakeVocab(),
+                          "cpu", batch_residue_budget=1000, max_batch=3)
+    # The whole batch OOMs because of "bad", but its neighbours survive.
+    assert set(out) == {"good1", "good2"}
+    assert out.skipped == ["bad"]
+
+
+def test_skipped_keys_are_reported_via_callback():
+    seqs = {"good": "M" * 5, "bad": "M" * 7}
+    seen = []
+    embed_sequences(seqs, _AlwaysOOMForKeyModel(bad_len=7), _FakeVocab(), "cpu",
+                    batch_residue_budget=1000, max_batch=2, on_skip=seen.append)
+    assert seen == ["bad"]
+
+
+def test_skipped_is_reported_even_when_a_sink_is_used():
+    # With a sink the result dict is empty by design -- .skipped must still
+    # survive, or a streaming caller has no way to learn about the hole.
+    seqs = {"good": "M" * 5, "bad": "M" * 7}
+    received = {}
+    out = embed_sequences(seqs, _AlwaysOOMForKeyModel(bad_len=7), _FakeVocab(),
+                          "cpu", batch_residue_budget=1000, max_batch=2,
+                          sink=received.update)
+    assert out == {}
+    assert out.skipped == ["bad"]
+    assert set(received) == {"good"}

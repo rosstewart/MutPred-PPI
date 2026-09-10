@@ -185,7 +185,7 @@ def build_d2v(df_combined: pd.DataFrame):
     """Train Doc2Vec on a combined mutant+wild-type frame.
 
     Hyperparameters are upstream SWING's and must not be tuned -- see
-    docs/METHOD_PROVENANCE.md.
+    this module's own notes above.
     """
     from gensim.models.doc2vec import Doc2Vec
 

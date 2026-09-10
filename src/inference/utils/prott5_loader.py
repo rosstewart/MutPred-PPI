@@ -9,27 +9,17 @@ Created on Wed Sep 23 18:33:22 2020
 import time
 import torch
 import h5py
-from transformers import T5EncoderModel, T5Tokenizer
-from utils.embeddings import embed_sequences  # noqa: E402
+
+from utils.embeddings import embed_sequences, load_prott5  # noqa: E402
 from utils.sequences import h5_safe_key, read_fasta as _read_fasta_shared  # noqa: E402
 
 
-def get_T5_model(model_dir, device, transformer_link = "Rostlab/prot_t5_xl_half_uniref50-enc"):
-    print("Loading: {}".format(transformer_link))
-    if model_dir is not None:
-        print("##########################")
-        print("Loading cached model from: {}".format(model_dir))
-        print("##########################")
-    model = T5EncoderModel.from_pretrained(transformer_link, cache_dir=model_dir)
-    # only cast to full-precision if no GPU is available
-    if device==torch.device("cpu"):
-        print("Casting model to full precision for running on CPU ...")
-        model.to(torch.float32)
+def get_T5_model(model_dir, device):
+    """Thin alias for `utils.embeddings.load_prott5` -- the only loader.
 
-    model = model.to(device)
-    model = model.eval()
-    vocab = T5Tokenizer.from_pretrained(transformer_link, do_lower_case=False )
-    return model, vocab
+    Kept as a name because the 3-step inference pipeline's docs refer to it.
+    """
+    return load_prott5(device, cache_dir=model_dir)
 
 
 def read_fasta(fasta_path):
@@ -53,24 +43,22 @@ def get_embeddings(seq_path,
                    per_protein,          # mean-pool to one vector per protein
                    device,
                    batch_residue_budget=4000,
-                   single_sequence_threshold=1000,   # above this, a sequence is batched ALONE
                    max_batch=100):
     """Embed every sequence in `seq_path` and write them to `emb_path`.
 
     Batching is shared with the other ProtT5 entry points via
-    `utils.embeddings`. Neither budget limits what gets embedded -- an
+    `utils.embeddings`. The budget does not limit what gets embedded -- an
     oversized sequence becomes its own batch and is embedded in full.
     `embed_sequences` asserts one row per residue, so a truncation cannot
-    pass silently.
+    pass silently, and an OOM can no longer drop a whole batch: it falls back
+    to single-sequence execution and reports anything it still cannot embed.
     """
     seq_dict = read_fasta(seq_path)
     emb_dict = embed_sequences(
         seq_dict, model, vocab, device,
         per_protein=per_protein,
         batch_residue_budget=batch_residue_budget,
-        single_sequence_threshold=single_sequence_threshold,
         max_batch=max_batch,
-        on_oom="skip",     # historical behaviour of this entry point
     )
 
     with h5py.File(str(emb_path), "w") as hf:

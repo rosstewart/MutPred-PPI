@@ -55,7 +55,7 @@ from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  #
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-from paths import DATASETS_DIR, EXTERNAL_DIR, REVISIONS_DIR, cache_file  # noqa: E402
+from paths import DATASETS_DIR, EXTERNAL_DIR, REVISIONS_DIR, TRAINING_EVAL_DIR, cache_file  # noqa: E402
 
 _MINT_DIR = REVISIONS_DIR / "mint"
 sys.path.insert(0, str(_MINT_DIR))
@@ -284,7 +284,7 @@ def run(args: argparse.Namespace) -> None:
     # ── load or initialise existing cache ─────────────────────────────────────
     # Default: one cache per dataset, beside the canonical tables.
     output_path = Path(args.output or
-                       DATASETS_DIR / "mapped090826" / f"{args.dataset}_mint.pkl")
+                       TRAINING_EVAL_DIR / f"{args.dataset}_mint.pkl")
     existing_cache: dict = {}
     if output_path.exists():
         print(f"Loading existing cache from {output_path}...", flush=True)

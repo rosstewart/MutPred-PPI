@@ -34,7 +34,7 @@ import pandas as pd
 
 # ── shared code (see src/evaluation/esignet_cv.py and
 #    src/evaluation/predictors/) ───────────────────────────────────────────────
-from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
+from paths import DATASETS_DIR, GCV_RESULTS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 # Shared GCV data-loading layer (see src/utils/gcv_common.py).
 from utils.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
@@ -137,7 +137,7 @@ def run(args: argparse.Namespace) -> None:
         MINTSiteDiff._cache_path = args.mint_cache
         print(f"MINT cache path overridden: {args.mint_cache}", flush=True)
     else:
-        canonical = DATASETS_DIR / "mapped090826" / f"{args.dataset}_mint.pkl"
+        canonical = TRAINING_EVAL_DIR / f"{args.dataset}_mint.pkl"
         if canonical.exists():
             _mint_mod.CACHE_PATH = str(canonical)
             MINTSeqDiff._cache_path  = str(canonical)

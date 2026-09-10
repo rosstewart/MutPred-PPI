@@ -51,7 +51,7 @@ N_SEEDS = 30
 # Fixed-prediction baselines (not GCV-iterated) — evaluated by row position, so
 # their arrays must be computed under the canonical `row_index` order that
 # `load_pairs_in_row_order` reads.
-SKEMPI_METHODS = ["SAAMBE-3D", "MutPPI", "MutPPIPlus"]  # DDMutPPI excluded entirely: 87% job-timeout rate, see docs/METHOD_PROVENANCE.md
+SKEMPI_METHODS = ["SAAMBE-3D", "MutPPI", "MutPPIPlus"]  # DDMutPPI excluded entirely: 87% job-timeout rate on its public API
 
 # roc_plots.py's main() only registers these display names at runtime (line ~1083),
 # so biclass_sf_gcv.py must register them itself before calling plot_roc_with_confidence.

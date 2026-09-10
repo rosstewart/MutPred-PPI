@@ -51,8 +51,13 @@ ross_MutInt_group_cross_validation_example_results.pkl
 # Archived obsolete/superseded content (not part of the pipeline)
 archive/
 
-# Internal Zenodo packaging checklist (not for public docs/)
+# Internal working docs -- deposit bookkeeping and method-by-method provenance
+# notes. These track OUR process (what has been uploaded, which upstream commit
+# each comparator was run from, how our usage deviates); a user of the repo has
+# no use for them. Kept on disk, out of git.
 ZENODO_CHECKLIST.md
+docs/ZENODO_MANIFEST.md
+docs/METHOD_PROVENANCE.md
 
 # Reproducibility test scratch (generated)
 repro_test/

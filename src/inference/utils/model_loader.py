@@ -1,34 +1,54 @@
 import torch
 from torch_geometric.utils import dense_to_sparse
-import glob
 import numpy as np
-
+from pathlib import Path
 
 # Single definition lives in src/model.py; see its docstring for why.
-import sys as _sys
-from pathlib import Path as _Path
 from model import MutPred_PPI  # noqa: E402,F401
+
+INPUT_DIM = 1024
+CANONICAL_CHECKPOINT = "MutPred-PPI.pt"
+
+
+def load_model(checkpoint_path, device):
+    """Load ONE MutPred-PPI checkpoint. The only place a checkpoint is read.
+
+    `run_varchamp_blind_test.py` used to hand-roll this exact three-line
+    sequence because `get_models` could only be pointed at a directory.
+    """
+    model = MutPred_PPI(input_dim=INPUT_DIM).to(device)
+    model.load_state_dict(
+        torch.load(str(checkpoint_path), weights_only=True, map_location=device))
+    model.eval()
+    return model
 
 
 def get_models(model_dir, device):
-    input_dim = 1024
+    """Load `MutPred-PPI.pt` from `model_dir`. Returns a 1-element list.
 
-    models = []
-    primary = f'{model_dir}/MutPred-PPI.pt'
-    if glob.glob(primary):
-        model_paths = [primary]
-    else:
-        # Ensemble directory (e.g. per-fold checkpoints): load every matching file.
-        model_paths = glob.glob(f'{model_dir}/MutPred-PPI_*_megascale_all_*.pt')
+    NO GLOB FALLBACK (removed 2026-09-10). This used to fall back to
+    `glob("MutPred-PPI_*_megascale_all_*.pt")` and load every match as an
+    ensemble when `MutPred-PPI.pt` was absent -- an artifact of the retired
+    verbose checkpoint naming. It was actively dangerous: pointing
+    `--models-dir` at a per-fold directory silently satisfied the glob and
+    scored a whole variant repository with the wrong (Sahni+Fragoza-only)
+    model, which is how the archived duplicate `results/variant_dbs/` tree came
+    to exist. `assert_all_data_model()` in `run_variant_db_inference.py` was
+    written to defend against exactly this; with the glob gone, a wrong
+    `--models-dir` is now a plain FileNotFoundError naming the file it wanted.
 
-    for model_path in model_paths:
-        model = MutPred_PPI(input_dim=input_dim).to(device)
-        model.load_state_dict(torch.load(model_path, weights_only=True, map_location=device))
-        model.eval()
-        models.append(model)
-
-    assert len(models) != 0, f"No model checkpoints found in {model_dir}"
-    return models
+    The list return type is kept because both call sites average over it, and
+    the ensemble-averaging code path is still how a fold ensemble would be
+    evaluated -- but it must be assembled explicitly via `load_model`, never
+    conjured from a directory listing.
+    """
+    path = Path(model_dir) / CANONICAL_CHECKPOINT
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No MutPred-PPI checkpoint at {path}. Expected the canonical "
+            f"all-data model. See weights/README.md; the repo no longer "
+            f"guesses at alternative checkpoints in this directory.")
+    return [load_model(path, device)]
 
 
 # helper function to format input for ppi model

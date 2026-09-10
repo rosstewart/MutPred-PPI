@@ -26,7 +26,7 @@ store adds them on read, unconditionally.
 Usage:
     python src/data_processing/rebuild_graphs_from_structures.py \\
         --structures datasets/af3_structures_canonical \\
-        --out datasets/mapped090826/contact_graphs_rebuilt.h5
+        --out datasets/training_eval/contact_graphs_rebuilt.h5
 
     # verify against the migrated store before promoting
     python src/data_processing/rebuild_graphs_from_structures.py \\

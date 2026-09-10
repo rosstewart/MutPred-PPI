@@ -333,14 +333,17 @@ def _run_inference_full_emb(rows, embs, store, scaler, models, device,
 def assert_all_data_model(models_dir: str) -> None:
     """Refuse to score a variant repository with anything but the all-data model.
 
-    `get_models()` falls back to a fold-ensemble glob
-    (`MutPred-PPI_*_megascale_all_*.pt`) when `MutPred-PPI.pt` is absent from
-    `models_dir` -- a fallback meant for GCV reproducibility, not variant-DB
-    scoring. Pointing `--models-dir` at `weights/folds/` (the Sahni+Fragoza-only
-    per-fold checkpoints) would silently satisfy that glob and score every
-    variant repository with the wrong model -- exactly how the now-archived
+    The fold-ensemble glob this guard was written against is GONE (removed
+    2026-09-10): `get_models()` now reads `MutPred-PPI.pt` and nothing else, and
+    raises if it is missing. Pointing `--models-dir` at `weights/folds/` used to
+    silently satisfy that glob and score every variant repository with the wrong
+    (Sahni+Fragoza-only) model -- exactly how the now-archived
     `results/variant_dbs/` tree (see archive/results_stale/variant_dbs) came to
-    exist alongside the correct `results/variant_dbs_all_data/`. There must be
+    exist alongside the correct `results/variant_dbs_all_data/`.
+
+    The guard is KEPT deliberately, as defence in depth and as documentation:
+    it fails before any embedding is loaded, with a message that names the
+    all-data requirement, rather than at first checkpoint access. There must be
     only one variant-DB results tree, scored by one model.
     """
     primary = Path(models_dir) / "MutPred-PPI.pt"

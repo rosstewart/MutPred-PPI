@@ -3,7 +3,7 @@
 # Pinned exactly, because several numbers depend on library internals:
 #   scikit-learn  — MLPClassifier drives the MINT and PPLM baseline heads
 #   xgboost       — SWING's classifier, and SAAMBE-3D's shipped .model files
-#                   fail to load on some versions (see docs/METHOD_PROVENANCE.md)
+#                   fail to load on some versions
 #   gensim        — SWING's Doc2Vec
 #   numpy         — pinned <2.0 for torch_geometric / protlearn compatibility
 #

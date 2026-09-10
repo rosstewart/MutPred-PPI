@@ -250,16 +250,21 @@ python src/inference/02_run_mutpred-ppi_inference.py working_dir/ --device cuda:
 - Verify correct protein pairing in filenames
 
 **Invalid amino acids in sequences:**
-- Only standard 20 amino acids supported (ACDEFGHIKLMNPQRSTVWY)
-- Remove non-standard residues or replace with closest standard amino acid
+- Do NOT edit or remove non-standard residues; the pipeline handles them. The
+  ambiguity/rare codes `B`, `U`, `Z`, `O` are folded to `X` before embedding
+  (`utils.embeddings.clean_sequence`), and `MSE` (selenomethionine) is read as
+  `M` when parsing structures. Nothing is ever truncated or dropped.
 
 **Module import errors:**
 ```bash
 # Ensure you're in the correct directory
 cd mutpred-ppi/
 
-# Reinstall dependencies
-pip install -r src/inference/requirements.txt --upgrade
+# Reinstall dependencies (one requirements file for the whole repo)
+pip install -r requirements.txt --upgrade
+
+# The package itself must be installed for `contact_graphs`/`utils` to import
+pip install -e .
 ```
 
 **Conda environment issues:**

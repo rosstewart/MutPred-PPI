@@ -30,7 +30,7 @@ import numpy as np
 import torch
 
 from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
-from paths import DATASETS_DIR  # noqa: E402
+from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 
 SAVE_EVERY = 500
 
@@ -87,7 +87,7 @@ def main() -> int:
 
     device = torch.device(args.device)
     out = Path(args.output or
-               DATASETS_DIR / "mapped090826" / f"{args.dataset}_esm2.pkl")
+               TRAINING_EVAL_DIR / f"{args.dataset}_esm2.pkl")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading canonical dataset: {args.dataset}", flush=True)

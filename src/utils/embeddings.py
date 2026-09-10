@@ -17,22 +17,42 @@ that looked like caps were all batching budgets:
     `MAX_RESIDUES=4000`  "per-batch residue budget"; an oversized sequence simply
                          becomes its own batch
 
-They are renamed `batch_residue_budget` / `single_sequence_threshold` so they can
-never again be read as limits on what gets embedded. The behaviour is kept
-because removing it would OOM on long proteins rather than embed them -- which
-would be a length cap by another name.
+`max_seq_len` is GONE (2026-09-10). A number that reads as a length threshold has
+no place in this module even when it only steers batching -- and it was never the
+thing keeping long proteins alive. Batching is now purely by residue budget, and
+OOM is handled by falling back to single-sequence execution (below), which is what
+actually rescues a long protein. The one thing the threshold bought was avoiding
+`padding="longest"` waste when a very long sequence shares a batch with short
+ones; the OOM fallback covers that case correctly instead of pre-empting it.
+
+`batch_residue_budget` is the only knob, and it is a budget, not a cap: a sequence
+longer than the whole budget still becomes its own batch and is embedded in full.
 
 `assert_untruncated` is the enforcement: every writer calls it, so an embedding
 whose row count disagrees with its sequence length is a hard error rather than a
 silently short array.
+
+ONE OOM POLICY
+--------------
+There used to be three (`skip` / `raise` / `retry_individually`), chosen per
+caller. `skip` dropped an entire batch -- up to 100 sequences -- on one OOM,
+silently. That is now impossible. The single policy is:
+
+    batch OOMs  ->  retry every sequence in it alone
+    still OOMs  ->  skip that ONE sequence, and report it
+
+and the skipped keys are both warned about on stderr and returned via
+`EmbeddingResult.skipped`, so a caller can fail on them rather than discover a
+hole in an H5 later.
 """
 from __future__ import annotations
 
+import sys as _sys
 from collections.abc import Iterator
 
 __all__ = [
-    "PROTT5_MODEL", "assert_untruncated", "batched_by_residues",
-    "clean_sequence", "embed_sequences",
+    "PROTT5_MODEL", "EmbeddingResult", "assert_untruncated",
+    "batched_by_residues", "clean_sequence", "embed_sequences", "load_prott5",
 ]
 
 PROTT5_MODEL = "Rostlab/prot_t5_xl_half_uniref50-enc"
@@ -40,21 +60,36 @@ PROTT5_MODEL = "Rostlab/prot_t5_xl_half_uniref50-enc"
 # Non-standard residues ProtT5 does not model. Only `prott5_loader` did this
 # mapping; the others passed the letters through. Applied by default because the
 # tokenizer maps unknown letters to <unk> anyway -- this makes it explicit.
-_NONSTANDARD = str.maketrans({"U": "X", "Z": "X", "O": "X"})
-# `B` (Asx: Asn or Asp, an ambiguity code) is mapped only by
-# `precompute_prott5_datasets.py`, historically. The other three callers leave
-# it untranslated, so the tokenizer maps it to `<unk>` rather than to `X` --
-# a DIFFERENT vocab entry, and therefore a different embedding. `map_b=False`
-# is the default so that migrating a caller onto this shared function never
-# silently changes an already-computed embedding cache; only the one entry
-# point that always mapped `B` passes `map_b=True`.
-_NONSTANDARD_WITH_B = str.maketrans({"U": "X", "Z": "X", "O": "X", "B": "X"})
+# Ambiguity/rare codes ProtT5 does not model, all folded to `X`.
+#
+# `B` (Asx: Asn or Asp) used to be a per-caller flag (`map_b`): one entry point
+# mapped it to `X`, the other three left it for the tokenizer to turn into
+# `<unk>` -- a different vocab entry, hence a different embedding. The flag
+# existed only to avoid invalidating already-computed caches. It is gone: `B`
+# does not occur in ANY canonical sequence (0 occurrences across all 2,806 rows
+# of `datasets/training_eval/sequences.csv.gz`; the only non-standard residue
+# present anywhere is a single `U`), so the two behaviours were identical on
+# every input this repo has ever embedded. Folding `B` here is the defensible
+# resolution: it is an ambiguity code, not a residue.
+_NONSTANDARD = str.maketrans({"U": "X", "Z": "X", "O": "X", "B": "X"})
 
 
-def clean_sequence(seq: str, map_nonstandard: bool = True, map_b: bool = False) -> str:
+class EmbeddingResult(dict):
+    """`{key: ndarray}` that also carries the keys an OOM forced us to skip.
+
+    A plain dict makes a skipped sequence indistinguishable from one that was
+    never requested. Callers writing an H5 should check `.skipped`.
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.skipped: list = []
+
+
+def clean_sequence(seq: str, map_nonstandard: bool = True) -> str:
     if not map_nonstandard:
         return seq
-    return seq.translate(_NONSTANDARD_WITH_B if map_b else _NONSTANDARD)
+    return seq.translate(_NONSTANDARD)
 
 
 def assert_untruncated(key: str, sequence: str, embedding) -> None:
@@ -71,71 +106,60 @@ def assert_untruncated(key: str, sequence: str, embedding) -> None:
 
 
 def batched_by_residues(items, *, batch_residue_budget: int = 4000,
-                        single_sequence_threshold: int | None = 1000,
                         max_batch: int = 100) -> Iterator[list]:
     """Group `(key, sequence)` into batches by residue budget, longest first.
 
-    Neither threshold drops or shortens anything: a sequence longer than
-    `single_sequence_threshold` is emitted as its own batch, and one longer than
-    `batch_residue_budget` likewise. Pass `single_sequence_threshold=None` to
-    batch purely by residue budget.
+    Nothing is dropped or shortened: a sequence longer than
+    `batch_residue_budget` is emitted as its own batch and embedded in full.
+    Longest-first ordering keeps `padding="longest"` waste down within a batch.
     """
     ordered = sorted(items, key=lambda kv: len(kv[1]), reverse=True)
     batch, n_res = [], 0
     for key, seq in ordered:
-        alone = (single_sequence_threshold is not None
-                 and len(seq) > single_sequence_threshold)
-        if batch and (alone or len(batch) >= max_batch
+        if batch and (len(batch) >= max_batch
                       or n_res + len(seq) > batch_residue_budget):
             yield batch
             batch, n_res = [], 0
         batch.append((key, seq))
         n_res += len(seq)
-        if alone:
-            yield batch
-            batch, n_res = [], 0
     if batch:
         yield batch
 
 
 def embed_sequences(seq_dict, model, vocab, device, *, per_protein: bool = False,
                     batch_residue_budget: int = 4000,
-                    single_sequence_threshold: int | None = 1000,
                     max_batch: int = 100, map_nonstandard: bool = True,
-                    map_b: bool = False,
-                    on_oom: str = "retry_individually", progress=None,
-                    sink=None):
+                    progress=None, sink=None, on_skip=None):
     """`{key: sequence}` -> `{key: ndarray}`, one row per residue.
 
-    `on_oom` is a real behavioural difference between the previous copies, so it
-    is explicit rather than chosen:
+    OOM handling is not a parameter. A batch that OOMs is retried one sequence
+    at a time; a sequence that still OOMs alone is skipped, warned about on
+    stderr, and recorded. There is no mode in which an OOM silently discards a
+    whole batch of up to `max_batch` sequences, which is what `on_oom="skip"`
+    used to do at three of the four call sites.
 
-        "retry_individually"  re-run each sequence alone   (preprocess_stability)
-        "skip"                drop the whole batch         (the other three)
-        "raise"               fail loudly
-
-    Dropping a batch silently loses every sequence in it, which is why it is not
-    the default.
+    Returns a `dict` subclass carrying a `.skipped` list of keys that could not
+    be embedded (empty in the normal case), so a caller can hard-fail on a
+    non-empty result rather than find the hole later. `on_skip`, if given, is
+    called with each skipped key as it happens.
 
     `sink`, if given, is called with `{key: ndarray}` once per completed batch
-    INSTEAD of accumulating results in memory, and this function then returns
-    `{}`. Some variant-DB FASTAs embed to ~1 TB, which does not fit in RAM --
-    those callers must write and discard each batch as it completes, which is
-    exactly what a per-batch sink is for. `progress`, if given, always receives
-    the running total of embedded keys regardless of whether `sink` is set.
-
-    `map_b`, passed through to `clean_sequence`, defaults to `False` so that no
-    existing caller's already-computed embeddings change; see `clean_sequence`.
+    INSTEAD of accumulating results in memory, and this function then returns an
+    empty result (still carrying `.skipped`). Some variant-DB FASTAs embed to
+    ~1 TB, which does not fit in RAM -- those callers must write and discard each
+    batch as it completes, which is exactly what a per-batch sink is for.
+    `progress`, if given, always receives the running total of embedded keys
+    regardless of whether `sink` is set.
     """
     import torch
 
-    out: dict = {}
+    out = EmbeddingResult()
     n_done = 0
 
     def _run(chunk):
         nonlocal n_done
         keys = [k for k, _ in chunk]
-        spaced = [" ".join(clean_sequence(s, map_nonstandard, map_b)) for _, s in chunk]
+        spaced = [" ".join(clean_sequence(s, map_nonstandard)) for _, s in chunk]
         enc = vocab.batch_encode_plus(spaced, add_special_tokens=True,
                                       padding="longest")
         ids = torch.tensor(enc["input_ids"]).to(device)
@@ -162,20 +186,52 @@ def embed_sequences(seq_dict, model, vocab, device, *, per_protein: bool = False
 
     for chunk in batched_by_residues(
             seq_dict.items(), batch_residue_budget=batch_residue_budget,
-            single_sequence_threshold=single_sequence_threshold,
             max_batch=max_batch):
         try:
             _run(chunk)
         except RuntimeError:
-            if on_oom == "raise":
-                raise
-            if on_oom == "skip":
-                continue
-            for one in chunk:                     # retry_individually
+            # Batch-level OOM: nothing is abandoned here, every sequence in the
+            # batch gets its own attempt before anything can be skipped.
+            if getattr(device, "type", str(device)) == "cuda":
+                torch.cuda.empty_cache()
+            for one in chunk:
                 try:
                     _run([one])
-                except RuntimeError:
-                    pass
+                except RuntimeError as exc:
+                    key, seq = one
+                    out.skipped.append(key)
+                    print(f"  [OOM] {key} ({len(seq)} residues) could not be "
+                          f"embedded even alone -- skipped: {exc}",
+                          file=_sys.stderr, flush=True)
+                    if on_skip is not None:
+                        on_skip(key)
         if progress is not None:
             progress(n_done)
+    if out.skipped:
+        print(f"  [OOM] {len(out.skipped)} sequence(s) skipped; "
+              f"embeddings for these keys are ABSENT", file=_sys.stderr, flush=True)
     return out
+
+
+def load_prott5(device, cache_dir=None):
+    """Load the ProtT5 encoder + tokenizer. The only copy.
+
+    Four identical copies existed (`inference/utils/prott5_loader.get_T5_model`,
+    `variant_db_inference/precompute_prott5._get_t5_model`,
+    `data_processing/precompute_prott5_datasets.load_model`,
+    `training/preprocess_stability_data`). All four agreed -- fp32 on CPU,
+    `.eval()`, `do_lower_case=False` -- and all four hardcoded the model string
+    even though `PROTT5_MODEL` was right here.
+
+    fp16 is used on CUDA only: `half()` on CPU is both unsupported for many ops
+    and slower, which is why the dtype is device-dependent rather than fixed.
+    """
+    import torch
+    from transformers import T5EncoderModel, T5Tokenizer
+
+    kw = {"cache_dir": str(cache_dir)} if cache_dir else {}
+    model = T5EncoderModel.from_pretrained(PROTT5_MODEL, **kw).to(device)
+    model = model.half() if getattr(device, "type", str(device)) != "cpu" else model.float()
+    model = model.eval()
+    vocab = T5Tokenizer.from_pretrained(PROTT5_MODEL, do_lower_case=False, **kw)
+    return model, vocab

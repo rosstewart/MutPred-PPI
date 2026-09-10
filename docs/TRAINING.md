@@ -9,7 +9,11 @@ Covers stability pretraining and PPI fine-tuning. For inference with the pre-tra
 
 From Zenodo (see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md) for links):
 - Model weights: `weights/`
-- Training data: `datasets/train_eval/sahni_fragoza_train.csv`, `datasets/train_eval/sahni_train.csv`
+- Training data: `datasets/training_eval/sahni_fragoza_mapped090826_rows.csv.gz`,
+  `datasets/training_eval/sahni_only_mapped090826_rows.csv.gz` (and the other three
+  canonical datasets; see `utils.gcv_common.DATASET_CONFIGS`). These are produced by
+  `src/data_processing/training_sets/prepare_gcv_tables.py` -- see
+  [`docs/DATA_PREPARATION.md`](DATA_PREPARATION.md).
 - AF3 structures: `datasets/af3_structures.tar`, which extracts to `datasets/af3_structures/`.
   The canonicalized, one-structure-per-pair tree the graph builder reads is
   `datasets/af3_structures_canonical/` (3,854 gzipped mmCIFs + `manifest.csv`).
@@ -64,7 +68,7 @@ files:
 
 | Store | Used by |
 |---|---|
-| `datasets/mapped090826/contact_graphs.h5` | training and evaluation |
+| `datasets/training_eval/contact_graphs.h5` | training and evaluation |
 | `datasets/variant_dbs/contact_graphs.h5` | variant-database inference |
 
 Entries are keyed on the sorted pair of `sha256(chain_sequence)[:16]`, so identity comes from
@@ -78,7 +82,7 @@ Rebuild the training/eval store from the canonical structures:
 ```bash
 conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
     --structures datasets/af3_structures_canonical \
-    --out datasets/mapped090826/contact_graphs.h5
+    --out datasets/training_eval/contact_graphs.h5
 ```
 
 `--compare-to <existing.h5>` reports per-key differences instead of silently replacing them.

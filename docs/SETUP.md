@@ -29,7 +29,7 @@ unpublished and the AF3 tars are large), so it arrives via the Zenodo bundle:
 
 | Directory | Size | Contents |
 |---|---|---|
-| `datasets/mapped090826/` | — | The canonical train/eval layer: `<dataset>_rows.csv.gz`, `<dataset>_splits.csv.gz`, `sequences.csv.gz`, `af3_index.csv.gz`, and `contact_graphs.h5` (39 MB). |
+| `datasets/training_eval/` | — | The canonical train/eval layer: `<dataset>_rows.csv.gz`, `<dataset>_splits.csv.gz`, `sequences.csv.gz`, `af3_index.csv.gz`, and `contact_graphs.h5` (39 MB). |
 | `datasets/variant_dbs/` | — | `{clinvar,cosmic,gnomad,hgmd,autism}_rows.csv.gz` plus `contact_graphs.h5` (248 MB). One self-contained table per variant database. |
 | `datasets/af3_structures_canonical/` | 510 MB | 3,854 gzipped mmCIFs, one per pair, `{ACC_LO}__{ACC_HI}.cif.gz` + `manifest.csv`. |
 | `datasets/af3_structures_variant_dbs_canonical/` | 5.7 GB | 22,239 gzipped mmCIFs, same naming + `manifest.csv`. |

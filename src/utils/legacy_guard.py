@@ -87,7 +87,7 @@ def reject_legacy(*paths: str | Path, check_mtime: bool = True) -> None:
         p = Path(raw)
         reason = _matches_legacy_name(p.name)
         if reason:
-            raise LegacyInputError(f"{p}: {reason} -- regenerate from datasets/mapped090826/")
+            raise LegacyInputError(f"{p}: {reason} -- regenerate from datasets/training_eval/")
 
         resolved = p.resolve()
         try:
@@ -114,7 +114,7 @@ def reject_legacy(*paths: str | Path, check_mtime: bool = True) -> None:
                 raise LegacyInputError(
                     f"{p}: predates the 2026-09-08 canonical rebuild "
                     f"(mtime {resolved.stat().st_mtime}) -- regenerate from "
-                    f"datasets/mapped090826/"
+                    f"datasets/training_eval/"
                 )
 
 

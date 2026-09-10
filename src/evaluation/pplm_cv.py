@@ -32,7 +32,7 @@ from pathlib import Path
 
 # ── shared code (see src/evaluation/esignet_cv.py and
 #    src/evaluation/predictors/) ───────────────────────────────────────────────
-from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
+from paths import DATASETS_DIR, GCV_RESULTS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 # Shared GCV data-loading layer (see src/utils/gcv_common.py).
 from utils.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
 
@@ -135,7 +135,7 @@ def run(args: argparse.Namespace) -> None:
         PPLMSiteDiff._cache_path = args.pplm_cache
         print(f"PPLM cache path overridden: {args.pplm_cache}", flush=True)
     else:
-        canonical = DATASETS_DIR / "mapped090826" / f"{args.dataset}_pplm.pkl"
+        canonical = TRAINING_EVAL_DIR / f"{args.dataset}_pplm.pkl"
         if canonical.exists():
             _pplm_mod.CACHE_PATH     = str(canonical)
             PPLMSeqDiff._cache_path  = str(canonical)

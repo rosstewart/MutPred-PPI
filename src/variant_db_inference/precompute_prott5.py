@@ -30,8 +30,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
-from transformers import T5EncoderModel, T5Tokenizer
-from utils.embeddings import embed_sequences as _embed_sequences_shared  # noqa: E402
+from utils.embeddings import (PROTT5_MODEL, embed_sequences as _embed_sequences_shared,  # noqa: E402
+                              load_prott5)
 from utils.sequences import h5_safe_key, read_fasta  # noqa: E402
 
 
@@ -55,14 +55,9 @@ def _load_done(h5_path: str) -> set[str]:
 
 
 def _get_t5_model(device: torch.device):
-    link = "Rostlab/prot_t5_xl_half_uniref50-enc"
-    print(f"Loading ProtT5: {link}", flush=True)
-    model = T5EncoderModel.from_pretrained(link)
-    if device.type == "cpu":
-        model = model.to(torch.float32)
-    model = model.to(device).eval()
-    vocab = T5Tokenizer.from_pretrained(link, do_lower_case=False)
-    return model, vocab
+    """Alias for the one shared loader; see `utils.embeddings.load_prott5`."""
+    print(f"Loading ProtT5: {PROTT5_MODEL}", flush=True)
+    return load_prott5(device)
 
 
 def embed_sequences(
@@ -72,7 +67,6 @@ def embed_sequences(
     device: torch.device,
     h5_path: str,
     batch_residue_budget: int = 4000,
-    single_sequence_threshold: int = 1000,
     max_batch: int = 100,
 ) -> None:
     """Embed sequences and append results directly to h5_path (resume-safe).
@@ -80,19 +74,19 @@ def embed_sequences(
     A thin wrapper around `utils.embeddings.embed_sequences`, using its `sink`
     parameter to write and discard each batch as it completes rather than
     holding the whole embedding set in memory: some variant-DB FASTAs embed to
-    ~1 TB (see module docstring), which does not fit in RAM. `on_oom="skip"`
-    matches this entry point's historical behaviour -- a batch that OOMs is
-    dropped entirely, not retried.
+    ~1 TB (see module docstring), which does not fit in RAM.
 
-    Two logging deltas from the previous local implementation, neither of
-    which changes what ends up on disk: an individual "[WARN] RuntimeError
-    embedding batch..." message is no longer printed per skipped batch (the
-    shared retry/skip logic does not expose the failing batch back to the
-    caller); and the `[n/total]` progress count is now "successfully embedded
-    so far" rather than "attempted so far" -- an OOM-skipped batch no longer
-    advances it, since the shared function only calls back on success. The
-    `{written}` count stays exact: it is incremented here, once per NEW H5
-    dataset actually created, same as before.
+    OOM behaviour changed on 2026-09-10 and is now strictly safer: this entry
+    point used to pass `on_oom="skip"`, dropping every sequence in an OOMing
+    batch (up to `max_batch`=100) without naming any of them. The shared
+    function now retries each sequence alone first and skips only the
+    individual sequences that still cannot fit, printing each one. Fewer
+    sequences go missing, and the ones that do are named on stderr and
+    available as `.skipped`.
+
+    The `[n/total]` progress count is "successfully embedded so far" rather
+    than "attempted so far". The `{written}` count stays exact: it is
+    incremented here, once per NEW H5 dataset actually created.
 
     Storage dtype is forced to float32 explicitly, matching this entry point's
     previous behaviour: the model may run in float16 on GPU (the checkpoint is
@@ -120,9 +114,7 @@ def embed_sequences(
     _embed_sequences_shared(
         sequences, model, vocab, device,
         batch_residue_budget=batch_residue_budget,
-        single_sequence_threshold=single_sequence_threshold,
         max_batch=max_batch,
-        on_oom="skip",
         sink=sink,
         progress=progress,
     )

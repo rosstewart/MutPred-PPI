@@ -13,17 +13,12 @@ import csv
 import os
 import glob
 import argparse
-import sys
-import numpy as np
-from Bio import PDB
-from Bio.PDB import MMCIFParser
 from joblib import Parallel, delayed
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from contact_graphs import (  # noqa: E402
-    ContactGraphStore, contact_graph_from_structure,
+from contact_graphs import (
+    DEFAULT_THRESHOLD, ContactGraphStore, contact_graph_from_structure,
 )
-from utils import mutations  # noqa: E402
+from utils import mutations
 
 
 # parse command line arguments
@@ -45,16 +40,19 @@ os.makedirs(wd, exist_ok=True)
 os.makedirs(save_dir, exist_ok=True)
 
 # constants
-EDGE_DIST_THRESHOLD = 4.5  # angstroms for any atom pair
-THREE_LETTER_TO_ONE = {
-    "Ala": "A", "Arg": "R", "Asn": "N", "Asp": "D",
-    "Cys": "C", "Gln": "Q", "Glu": "E", "Gly": "G",
-    "His": "H", "Ile": "I", "Leu": "L", "Lys": "K",
-    "Met": "M", "Phe": "F", "Pro": "P", "Ser": "S",
-    "Thr": "T", "Trp": "W", "Tyr": "Y", "Val": "V",
-    "Sec": "U", "Pyl": "O", "Asx": "B", "Glx": "Z",
-    "Xaa": "X", "Ter": "*"
-}
+#
+# The 4.5 A any-heavy-atom contact rule has ONE definition, in contact_graphs.
+# It used to be re-declared here as a literal; the values agreed, but a repo
+# with two copies of its own contact threshold is one edit away from building
+# training graphs and inference graphs under different rules.
+EDGE_DIST_THRESHOLD = DEFAULT_THRESHOLD
+#
+# A local `THREE_LETTER_TO_ONE` table lived here and was referenced by nothing.
+# It was also a FOURTH residue policy that disagreed with the live one
+# (`contact_graphs.residue_to_one`): it mapped Sec->U, Pyl->O, Asx->B, Glx->Z
+# rather than folding them, and had no MSE entry at all -- so selenomethionine,
+# which is common in real structures, would have been dropped. Removed
+# 2026-09-10; `contact_graph_from_structure` owns residue translation.
 
 
 def get_labeled_residues(variant_file):
@@ -86,71 +84,120 @@ def get_labeled_residues(variant_file):
     return all_pos_indices, all_complex_ids, n_variant_partner_interactions
 
 
+# AF3 wraps the JSON `name` field in a job prefix/suffix, e.g. a job named
+# `P12345__Q67890` yields `fold_p12345__q67890_model_0.cif`. These strip that
+# wrapper so the pair token can be compared directly.
+_AF3_PREFIXES = ("fold_",)
+_AF3_SUFFIX_RE = __import__("re").compile(r"_model(_\d+)?$|_seed(_)?\d+$")
+
+
+def _strip_af3_wrapper(stem):
+    for pre in _AF3_PREFIXES:
+        if stem.startswith(pre):
+            stem = stem[len(pre):]
+    prev = None
+    while prev != stem:                      # `_model_0` may follow `_seed_1`
+        prev = stem
+        stem = _AF3_SUFFIX_RE.sub("", stem)
+    return stem
+
+
 def find_mmcif_file(id_a, id_b, mmcif_dir):
-    """
-    Find mmCIF file containing both protein IDs in the filename.
-    Returns (filepath, swapped) where swapped indicates if IDs are reversed.
+    """Find the mmCIF holding both proteins. Returns `(filepath, swapped)`.
+
+    Resolution is by FILENAME, unavoidably: this is the public 3-step pipeline,
+    where the user points at their own AlphaFold3 output directory and there is
+    no canonical `manifest.csv` to resolve against. (Inside the repo, structures
+    are resolved content-addressed by sequence hash via
+    `contact_graphs.StructureResolver`; that is strictly better and is what all
+    internal code uses, but it needs a manifest this path does not have.)
+
+    `__` IS TRIED FIRST, AND IT IS THE SEPARATOR STEP 00 EMITS.
+    -----------------------------------------------------------
+    This function previously tried only `{a}_{b}` and `{a}-{b}` joins, in eight
+    case variants each -- and no `__` case at all. Step 00
+    (`00_make_af3_json_input.py`) names every job `{id_a}__{id_b}`, precisely
+    because a single `-` cannot be split back into two accessions when either is
+    an isoform (`O14787-2-Q13207` is ambiguous). So a user who followed
+    `docs/INFERENCE.md` step 1, folded the result, and ran step 2 got
+    `FileNotFoundError` on every pair: the two halves of the same three-step
+    pipeline disagreed about the separator. Fixed 2026-09-10.
+
+    A `__` match is exact on the whole (unwrapped) stem, so isoform accessions
+    round-trip unambiguously. The legacy single-separator joins are still tried
+    afterwards, as a substring match with word-boundary checks, so directories
+    named by older conventions keep working -- but they are only reached when
+    the unambiguous form does not match.
     """
     found_files = []
-    
-    # search for all .cif and .mmcif files in directory
+
     for ext in ['.cif', '.mmcif']:
         pattern = os.path.join(mmcif_dir, f'*{ext}')
         for filepath in glob.glob(pattern):
             filename = os.path.basename(filepath).replace(ext, '')
-            
-            # check all possible ID combinations
-            id_combinations = [
-                (f"{id_a}_{id_b}", False),
-                (f"{id_b}_{id_a}", True),
-                (f"{id_a.lower()}_{id_b.lower()}", False),
-                (f"{id_b.lower()}_{id_a.lower()}", True),
-                (f"{id_a}_{id_b.lower()}", False),
-                (f"{id_a.lower()}_{id_b}", False),
-                (f"{id_b}_{id_a.lower()}", True),
-                (f"{id_b.lower()}_{id_a}", True),
-                (f"{id_a}-{id_b}", False),
-                (f"{id_b}-{id_a}", True),
-                (f"{id_a.lower()}-{id_b.lower()}", False),
-                (f"{id_b.lower()}-{id_a.lower()}", True),
-                (f"{id_a}-{id_b.lower()}", False),
-                (f"{id_a.lower()}-{id_b}", False),
-                (f"{id_b}-{id_a.lower()}", True),
-                (f"{id_b.lower()}-{id_a}", True)
-            ]
-            
+
+            # -- 1. the canonical `__` form: exact, isoform-safe -----------
+            stem = _strip_af3_wrapper(filename)
+            if "__" in stem:
+                lhs, _, rhs = stem.partition("__")
+                if (lhs.lower(), rhs.lower()) == (id_a.lower(), id_b.lower()):
+                    found_files.append((filepath, False))
+                    continue
+                if (lhs.lower(), rhs.lower()) == (id_b.lower(), id_a.lower()):
+                    found_files.append((filepath, True))
+                    continue
+                # A `__` stem that names a DIFFERENT pair is a definite
+                # non-match; do not let the substring fallback below reinterpret
+                # it (`A__B` contains neither `A_B` nor `A-B`, but an isoform
+                # accession could still produce a spurious boundary hit).
+                continue
+
+            # -- 2. legacy single-separator joins --------------------------
+            id_combinations = []
+            for sep in ('_', '-'):
+                a, b = id_a, id_b
+                id_combinations += [
+                    (f"{a}{sep}{b}", False), (f"{b}{sep}{a}", True),
+                    (f"{a.lower()}{sep}{b.lower()}", False),
+                    (f"{b.lower()}{sep}{a.lower()}", True),
+                    (f"{a}{sep}{b.lower()}", False),
+                    (f"{a.lower()}{sep}{b}", False),
+                    (f"{b}{sep}{a.lower()}", True),
+                    (f"{b.lower()}{sep}{a}", True),
+                ]
+
             for id_pattern, swapped in id_combinations:
                 if id_pattern in filename:
-                    # verify it's actually the IDs and not part of a longer string by checking for word boundaries (underscore or start/end)
+                    # verify these are the IDs and not part of a longer string,
+                    # by requiring a separator or string edge on both sides
                     idx = filename.find(id_pattern)
                     valid = True
-                    
-                    # check character before (if exists)
                     if idx > 0 and filename[idx-1] not in ['_', '-']:
                         valid = False
-                    
-                    # check character after (if exists)  
                     end_idx = idx + len(id_pattern)
                     if end_idx < len(filename) and filename[end_idx] not in ['_', '-']:
                         valid = False
-                    
                     if valid:
                         found_files.append((filepath, swapped))
                         break
-    
+
     # remove duplicates
     unique_files = {}
     for filepath, swapped in found_files:
         real_path = os.path.realpath(filepath)
         if real_path not in unique_files:
             unique_files[real_path] = (filepath, swapped)
-    
+
     # validate findings
     if len(unique_files) == 0:
-        raise FileNotFoundError(f"No mmCIF file found for {id_a} and {id_b}")
+        raise FileNotFoundError(
+            f"No mmCIF file found for {id_a} and {id_b} in {mmcif_dir}. "
+            f"Step 00 names AlphaFold3 jobs '{id_a}__{id_b}', so the expected "
+            f"filename is '{id_a}__{id_b}.cif' (or AF3's "
+            f"'fold_{id_a.lower()}__{id_b.lower()}_model_0.cif').")
     elif len(unique_files) > 1:
         raise ValueError(f"Multiple mmCIF files found for {id_a} and {id_b}: {list(unique_files.keys())}")
-    
+
     return list(unique_files.values())[0]
 
 

@@ -6,9 +6,8 @@ datasets required. Runs in well under a minute on GPU (a few minutes on CPU).
 
 This is a smaller/faster sibling of the [`example/`](../../example/) directory at the
 repo root. The difference: this example builds its own tiny mmCIF structure set from
-protein pairs pulled directly from the real Sahni+Fragoza training data
-(`datasets/train_eval/sahni_fragoza_train.csv`), so everything needed to run it ships
-inside this directory — nothing outside the repo, and no VarChAMP (unpublished) data.
+protein pairs pulled from the real Sahni+Fragoza training data, so everything needed
+to run it ships inside this directory — nothing outside the repo, and no VarChAMP (unpublished) data.
 
 ## What it does
 
@@ -42,9 +41,14 @@ provided — see "Where the inputs came from" below):
 
 ### Where the inputs came from
 
-The 3 protein pairs/variants are real rows from `datasets/train_eval/sahni_fragoza_train.csv`
+The 3 protein pairs/variants were taken from the Sahni+Fragoza training data
 (`Q4ACX1 L171R O43765`, `O75603 G63S Q96LI6`, `P40259 G137S O43765`), chosen because
-matching AlphaFold3 structures already exist in `datasets/af3_structures/`. The
+matching AlphaFold3 structures already exist in `datasets/af3_structures/`. Two of the
+three are still present in the current canonical table
+(`datasets/training_eval/sahni_fragoza_mapped090826_rows.csv.gz`, rows 501 and 1944);
+`Q4ACX1` was dropped by the 2026-09-08 accession remapping. The example is a
+self-contained format/plumbing demo -- its inputs ship inside this directory and it
+does not read any dataset -- so this does not affect whether it runs. The
 wild-type residue at each mutation position was verified against the structure
 sequence before inclusion (all 3 match exactly).
 

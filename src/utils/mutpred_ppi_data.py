@@ -36,9 +36,9 @@ import numpy as np
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
 from utils.structures import open_store  # noqa: E402
-from paths import DATASETS_DIR  # noqa: E402
+from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 
-TABLES = DATASETS_DIR / "mapped090826"
+TABLES = TRAINING_EVAL_DIR
 
 
 def prott5_path(dataset: str) -> Path:

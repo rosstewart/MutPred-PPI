@@ -29,7 +29,7 @@ WORKING_DIR = str(GCV_RESULTS_DIR)
 # Canonical CV artifacts, in-repo (datasets/cv_reference/).  These were
 # hardcoded to an external cv_splits/ whose seed-1 pair_test_classes is the
 # corrupt file of defect 2 -- so the iptm stratification silently missed that
-# fix while every GNN method received it.  See docs/METHOD_PROVENANCE.md.
+# fix while every GNN method received it.
 CV_REF = str(cv_reference_dir())
 
 # `StaleCacheError` moved to `utils.gcv_common` (2026-09-10): it is the one
@@ -58,7 +58,7 @@ from collections import defaultdict
 # src/analysis/export_cv_reference.py::NAMING writes.
 #
 # `sahni_varchamp1p_cava` is gone: it has no canonical table, and per
-# docs/METHOD_PROVENANCE.md the VC1p+CAVA configuration is superseded by the
+# the VC1p+CAVA configuration is superseded by the
 # full VarChAMP set. Fabricating its rows from the old label text file is what
 # this migration exists to stop.
 CANONICAL_DATASETS = {
@@ -557,7 +557,7 @@ def load_baseline_predictions(dataset, prc=False):
     labels_file       = os.path.join(WORKING_DIR, f'{dataset}_mutpred2_standalone_labels.npy')
     test_classes_file = os.path.join(WORKING_DIR, f'{dataset}_SAAMBE-3D_test_classes.npy')
 
-    skempi_methods = ['SAAMBE-3D', 'MutPPI', 'MutPPIPlus']  # DDMutPPI excluded entirely: 87% job-timeout rate, see docs/METHOD_PROVENANCE.md
+    skempi_methods = ['SAAMBE-3D', 'MutPPI', 'MutPPIPlus']  # DDMutPPI excluded entirely: 87% job-timeout rate on its public API
     for method in skempi_methods:
         preds_file  = os.path.join(WORKING_DIR, f'{dataset}_{method}_preds.npy')
         binary_file = os.path.join(WORKING_DIR, f'{dataset}_{method}_binary_labels.npy')

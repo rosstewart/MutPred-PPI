@@ -54,6 +54,28 @@ DATA_CACHES_DIR = REPO_ROOT / "data_caches"
 RESULTS_DIR = _env_path("MUTPRED_PPI_RESULTS_DIR", REPO_ROOT / "results")
 FIGURES_DIR = REPO_ROOT / "figures"
 
+# ── data preparation tiers (see docs/DATA_PREPARATION.md) ────────────────────
+#
+# Raw published inputs to the mapping notebook. Not vendored and not in the
+# Zenodo deposit -- obtain them from the original publications, see
+# docs/DATA_SOURCES.md. SOURCE_DATA_RESTRICTED_DIR holds the four VarChAMP/IGVF
+# files, which are unpublished and cannot be redistributed at all.
+SOURCE_DATA_DIR = DATASETS_DIR / "source_data"
+SOURCE_DATA_RESTRICTED_DIR = DATASETS_DIR / "source_data_restricted"
+
+# Output of notebooks/map_ppi_datasets_090826.py: the mapped-but-not-yet-split
+# CSVs, the non-deduplicated master, the QC/audit trail, and the UniProt REST
+# cache that makes a re-run offline. Env-overridable for anyone keeping this
+# tree elsewhere; the in-repo location is the real one.
+MAPPING_DIR = _env_path("MUTPRED_PPI_MAPPING_DIR", DATASETS_DIR / "source_mapping")
+
+# The prepared train/eval data layer: validated row tables, GCV splits,
+# sequences, the contact-graph store and the per-method embedding caches.
+# Named for its domain, matching its VARIANT_DBS sibling below, rather than
+# for the mapping generation that produced it -- "mapped090826" was two
+# characters from "mapping090826" while meaning something quite different.
+TRAINING_EVAL_DIR = DATASETS_DIR / "training_eval"
+
 # One results/ tree (2026-09-10): results_revisions/ is gone, its subdirectories
 # moved under results/ unchanged except the three renamed below. Every script
 # imports these constants rather than hardcoding "results/<subdir>", so a
@@ -209,6 +231,10 @@ def describe() -> str:
     lines += ["", "in-repo (Zenodo-delivered; datasets/ is gitignored):"]
     lines += [
         row("DATASETS_DIR", DATASETS_DIR),
+        row("SOURCE_DATA_DIR", SOURCE_DATA_DIR),
+        row("SOURCE_DATA_RESTRICTED_DIR", SOURCE_DATA_RESTRICTED_DIR),
+        row("MAPPING_DIR", MAPPING_DIR, "MUTPRED_PPI_MAPPING_DIR"),
+        row("TRAINING_EVAL_DIR", TRAINING_EVAL_DIR),
         row("ANNOTATIONS_DIR", ANNOTATIONS_DIR),
         row("ANNOTATIONS_LICENSED_DIR", ANNOTATIONS_LICENSED_DIR),
         row("ESIGNET_SUPPLEMENTS_DIR", ESIGNET_SUPPLEMENTS_DIR),

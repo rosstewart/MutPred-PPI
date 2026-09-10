@@ -15,7 +15,7 @@ tree -- see the notebook's own docstring cell.
 
 ## The canonical data layer
 
-Everything reads two tables per dataset from `datasets/mapped090826/`, built from the 090826
+Everything reads two tables per dataset from `datasets/training_eval/`, built from the 090826
 mapping by `repro_test/build_canonical_tables.py`:
 
 ```
@@ -59,7 +59,7 @@ Graphs are not files on disk any more. Each tier has one HDF5 `ContactGraphStore
 
 | Store | Used by |
 |---|---|
-| `datasets/mapped090826/contact_graphs.h5` | GCV, blind test, final training |
+| `datasets/training_eval/contact_graphs.h5` | GCV, blind test, final training |
 | `datasets/variant_dbs/contact_graphs.h5` | variant-database inference |
 
 Keys are the sorted pair of `sha256(chain_sequence)[:16]`, so a pair of sequences has one key no
@@ -75,8 +75,8 @@ Rebuild a store from the canonical structures:
 ```bash
 conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
     --structures datasets/af3_structures_canonical \
-    --out datasets/mapped090826/contact_graphs.h5 \
-    [--compare-to datasets/mapped090826/contact_graphs.h5] [--n-jobs 16]
+    --out datasets/training_eval/contact_graphs.h5 \
+    [--compare-to datasets/training_eval/contact_graphs.h5] [--n-jobs 16]
 ```
 
 ### AF3 structures
@@ -153,7 +153,8 @@ conda run -n ppi python src/evaluation/mutppi_cv.py   --dataset $DS --model 0 --
 conda run -n ppi python src/evaluation/mutppi_cv.py   --dataset $DS --model 1 --outdir results/gcv/  # MutPPI+
 ```
 
-DDMutPPI is not benchmarked at all (excluded outright — see `docs/METHOD_PROVENANCE.md`), not
+DDMutPPI is not benchmarked at all (excluded outright: an 87% job-timeout rate on its
+public API made a complete scoring run unattainable), not
 merely dropped from these commands.
 
 Embedding caches must be precomputed first. All caches are keyed on the **1-based** mutation
@@ -185,7 +186,7 @@ Train on `sahni_fragoza_mapped090826`, predict on all of `varchamp_all_mapped090
 two canonical GCV datasets, nothing else. This replaced a retired, separately-built table
 (`datasets/sfvcfp_rows.csv.gz`, via a `vcfp_common.py` helper archived on 2026-09-07) that
 mixed pre-090826 sources; see `src/evaluation/run_varchamp_blind_test.py`'s module docstring.
-DDMutPPI is excluded outright (not evaluated at all — see `docs/METHOD_PROVENANCE.md`).
+DDMutPPI is excluded outright (not evaluated at all: 87% job-timeout rate on its public API).
 
 ```bash
 conda run -n ppi python src/evaluation/run_varchamp_blind_test.py --method mutpredppi

@@ -5,7 +5,7 @@ One representation, one loader, one runner. Every trained method uses the same
 dataset configs, the same row loading, the same fold splits and the same
 per-class AUC; a method supplies only how a fold is trained and scored.
 
-Data comes from the canonical tables in `datasets/mapped090826/`:
+Data comes from the canonical tables in `datasets/training_eval/`:
 
     <dataset>_rows.csv.gz    row_index, interactor, partner, mutation, position,
                              wt_aa, mut_aa, perturbed, dataset, dataset_tier,
@@ -35,10 +35,10 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
+from paths import DATASETS_DIR, GCV_RESULTS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 from utils.identifiers import bare_accession  # noqa: E402
 
-TABLES = DATASETS_DIR / "mapped090826"
+TABLES = TRAINING_EVAL_DIR
 
 # Columns the predictors consume. The canonical rows table is already in this
 # shape apart from the two sequence columns, which are joined by accession.
@@ -540,7 +540,7 @@ _SKEMPI_TRAIN_UNIPROTS: set | None = None
 def load_skempi_train_uniprots() -> set:
     """The 258 SKEMPI training proteins SAAMBE-3D/MutPPI/MutPPI+ were pretrained on.
 
-    External reference (not derived from datasets/mapped090826/): these
+    External reference (not derived from datasets/training_eval/): these
     methods are not retrained per dataset, so their own training-set overlap
     is what defines their C1/C2/C3, in both GCV (roc_plots.py) and the
     VarChAMP blind test. Cached at module level -- every fold/row lookup in

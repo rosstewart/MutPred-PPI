@@ -31,7 +31,7 @@ from evaluation.predictors.nn_base import load_cache                            
 # --- repo-relative path resolution (see src/paths.py) ---
 import sys as _sys
 from pathlib import Path as _Path
-from paths import DATASETS_DIR, GCV_RESULTS_DIR  # noqa: E402
+from paths import DATASETS_DIR, GCV_RESULTS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 
 
 # Surface load_cache's INFO logs ("Loading cache: …", "Loaded N entries").
@@ -141,7 +141,7 @@ def run(args: argparse.Namespace) -> None:
         _esignet_mod._ESM_CACHE_PATH = args.esm_cache
         print(f"ESM cache path overridden: {args.esm_cache}", flush=True)
     else:
-        canonical = DATASETS_DIR / "mapped090826" / f"{args.dataset}_esm2.pkl"
+        canonical = TRAINING_EVAL_DIR / f"{args.dataset}_esm2.pkl"
         if canonical.exists():
             _esignet_mod._ESM_CACHE_PATH = str(canonical)
             print(f"ESM cache: {canonical}", flush=True)

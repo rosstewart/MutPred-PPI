@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the LaTeX training-data table for the MutPred-PPI paper.
 
-Every count comes from the CANONICAL row tables (`datasets/mapped090826/`) via
+Every count comes from the CANONICAL row tables (`datasets/training_eval/`) via
 `utils.gcv_common.load_data`, one table per row of the figure. Those tables are
 the same rows the models train on, so the table cannot drift from the training
 set the way it used to.

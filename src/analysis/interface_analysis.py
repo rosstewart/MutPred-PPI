@@ -41,7 +41,7 @@ from utils.gcv_common import StaleCacheError, load_gcv_detailed_results  # noqa:
 _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
-TRAIN_EVAL_STORE = f"{_PUB}/datasets/mapped090826/contact_graphs.h5"
+TRAIN_EVAL_STORE = f"{_PUB}/datasets/training_eval/contact_graphs.h5"
 GCV_RESULTS = f"{_PUB}/results/gcv/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
 CANONICAL_DATASET = "sahni_fragoza_mapped090826"
 CANONICAL_ROWS_PATH = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
