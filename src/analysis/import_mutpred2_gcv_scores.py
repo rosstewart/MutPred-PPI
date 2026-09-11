@@ -24,14 +24,14 @@ from pathlib import Path
 
 import numpy as np
 
-from method_names import _SHORT_DATASET_NAMES
-from mutpred2_common import parse_mutpred2_csv
+from analysis.method_names import _SHORT_DATASET_NAMES
+from analysis.mutpred2_common import parse_mutpred2_csv
 from paths import GCV_RESULTS_DIR  # noqa: E402
-from utils.gcv_common import DATASET_CONFIGS, load_data  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data  # noqa: E402
 
 
 def run(dataset: str, csv_path: Path, outdir: Path = GCV_RESULTS_DIR) -> None:
-    cfg = DATASET_CONFIGS[dataset]
+    cfg = dataset_config(dataset)
     rows = load_data(cfg)
 
     print(f"Loading MutPred2 output: {csv_path}")
@@ -60,7 +60,7 @@ def run(dataset: str, csv_path: Path, outdir: Path = GCV_RESULTS_DIR) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dataset", required=True, choices=list(DATASET_CONFIGS))
+    p.add_argument("--dataset", required=True, type=dataset_arg, choices=list(DATASET_CONFIGS))
     p.add_argument("--csv", required=True, help="MutPred2 output CSV file")
     p.add_argument("--outdir", default=str(GCV_RESULTS_DIR))
     return p.parse_args()

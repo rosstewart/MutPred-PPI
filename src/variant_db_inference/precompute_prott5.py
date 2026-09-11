@@ -17,7 +17,7 @@ Storage estimates (float32, L×1024 per residue):
     gnomad   WT  ~3 GB   VT  ~212 GB
     cosmic   WT  ~17 GB  VT  ~1,060 GB
     hgmd     WT  ~7 GB   VT  ~24 GB
-    autism   WT  ~14 GB  VT  ~5 GB
+    neurodev WT  ~14 GB  VT  ~5 GB
 """
 
 from __future__ import annotations

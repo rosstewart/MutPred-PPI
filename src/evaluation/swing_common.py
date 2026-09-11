@@ -5,14 +5,11 @@ Single source for everything SWING-specific in this repo. Used by the
 cross-validation driver (`swing_gcv.py`), so the feature pipeline and
 hyperparameters cannot drift from a second copy.
 
-Vendored from (external, non-repo path):
-    /path/to/upstream-scripts/SWING_scripts/blind_test/run_swing_blind_test_vcfp.py
-
-Vendored from the external SWING scripts so the repo is self-contained. The
-window-encoding / k-mer / Doc2Vec-corpus pipeline here was checked against the
-external SFVCFP GCV script's own copies on 200 real benchmark rows: the amino-acid
-score dictionary, the window encodings, the k-mers and the tagged corpus are all
-identical, so the external copies were redundant rather than divergent.
+Vendored from the SWING author scripts (Ng et al. 2022) so the repo is
+self-contained; see docs/DATA_SOURCES.md for the upstream reference. The
+window-encoding / k-mer / Doc2Vec-corpus pipeline was verified against those
+scripts on 200 real benchmark rows -- the amino-acid score dictionary, the
+window encodings, the k-mers and the tagged corpus all match exactly.
 """
 from __future__ import annotations
 
@@ -24,8 +21,6 @@ import pandas as pd
 from tqdm import tqdm
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import REPO_ROOT  # noqa: E402
 from utils import mutations  # noqa: E402
 

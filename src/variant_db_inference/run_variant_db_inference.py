@@ -15,7 +15,7 @@ Prerequisites:
    databases, compressed with compress_to_subgraphs.py)
 2. `datasets/variant_dbs/contact_graphs.h5` and `{db}_rows.csv.gz`
    (build_variant_db_tables.py)
-3. Trained model checkpoints in weights/ (the SFVCFP model — variant-DB inference
+3. Trained model checkpoints in weights/ (the all-data model — variant-DB inference
    is not a blind test, so the model trained on the most data is used)
 
 Output TSV carries EXPLICIT columns: `interactor`, `partner`, `mutation` (1-BASED),
@@ -53,10 +53,11 @@ _MODELS_DIR = _THIS_DIR.parent.parent / "weights"
 _SCALER_PATH = _MODELS_DIR / "mutation_diff_scaler.pkl"
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
-from inference.utils.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
+from inference.pipeline.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
 from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
 from utils import mutations  # noqa: E402
+from utils.legacy_guard import LegacyInputError  # noqa: E402
 
 
 # ── dataset path registry ─────────────────────────────────────────────────────
@@ -69,45 +70,48 @@ DATASET_CONFIGS = {
         "default_subgraph_h5": _BASE / db / "prott5_subgraphs.h5",
         "default_out":         _BASE / db / "mutpred_ppi_predictions.tsv",
     }
-    for db in ("clinvar", "gnomad", "hgmd", "cosmic", "autism", "neurodev")
+    # Derived from variant_rows.DB_SOURCES rather than repeated: a second
+    # hardcoded list is how `asd` ended up buildable but not scoreable.
+    for db in vr.DB_SOURCES
 }
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _load_embeddings_h5(h5_path: str) -> dict[str, np.ndarray]:
-    print(f"Loading embeddings from {h5_path} ...", flush=True)
-    embs: dict[str, np.ndarray] = {}
-    with h5py.File(h5_path, "r") as f:
-        for key in f.keys():
-            embs[key] = f[key][:]
-    print(f"  {len(embs)} sequences loaded", flush=True)
-    return embs
+    """Thin alias; the implementation is `utils.embeddings.load_embeddings_h5`."""
+    from utils.embeddings import load_embeddings_h5
+    return load_embeddings_h5(h5_path, progress=True)
 
 
 def _load_done(out_path: str) -> set[tuple[str, str, str]]:
     """Already-scored `(interactor, partner, mutation)` triplets, for resume.
 
-    Reads both the current explicit-column schema and the legacy
-    `complex_id/variant/score` one, so an interrupted legacy run can still be
-    resumed. The legacy branch splits on the FIRST underscore, which is safe only
-    because UniProt accessions contain none.
+    Every row carries interactor and partner as separate fields. The retired
+    `complex_id/variant/score` schema welded the two accessions into one column,
+    recoverable only by guessing a separator -- which is wrong for any accession
+    that contains an underscore -- so it is rejected rather than parsed.
+
+    The schema is checked per line, not from the header: a file written under the
+    old header and later appended to by the current writer holds both shapes at
+    once, and keying off the header alone silently dropped every 4-column row,
+    making a resume re-score the whole database and append a second copy of it.
     """
     done: set[tuple[str, str, str]] = set()
     if not Path(out_path).exists():
         return done
     with open(out_path) as f:
-        header = next(f, None)
-        cols = header.rstrip("\n").split("\t") if header else []
-        legacy = cols[:1] == ["complex_id"]
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             parts = line.rstrip("\n").split("\t")
-            if legacy and len(parts) >= 2:
-                inter, _, partner = parts[0].partition("_")
-                if partner:
-                    done.add((inter, partner, parts[1]))
-            elif len(parts) >= 3:
-                done.add((parts[0], parts[1], parts[2]))
+            if parts[0] == "interactor":
+                continue
+            if len(parts) < 4:
+                raise LegacyInputError(
+                    f"{out_path}:{lineno} has {len(parts)} columns; this file "
+                    f"predates the interactor/partner/mutation/score schema. "
+                    f"Re-score the database rather than resuming from it."
+                )
+            done.add((parts[0], parts[1], parts[2]))
     return done
 
 
@@ -131,6 +135,16 @@ def _report(stats: Counter, examples: dict, out_path: str) -> None:
             print(f"    {k}: {v:,}", flush=True)
     for ex in examples.values():
         print(f"    e.g. {ex}", flush=True)
+
+    # Completion sentinel. The scored row count alone cannot say whether a run
+    # finished: every database leaves a different share of rows unscoreable (no
+    # subgraph, no embedding), so there is no row-count threshold that means
+    # "done" for all of them. This file is written only after the row iterator
+    # is exhausted, so its presence is the signal, and its contents explain the
+    # shortfall.
+    with open(f"{out_path}.complete", "w") as fh:
+        for k, v in sorted(stats.items()):
+            fh.write(f"{k}\t{v}\n")
 
 
 # ── inference ─────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """ESM-2 per-residue embeddings for a canonical dataset (eSIG-Net input).
 
-Vendored from `/home/rcstewart/ppi_lossgain/esignet_scripts/precompute_esm_embeddings.py`,
+Vendored from the eSIG-Net author scripts (`precompute_esm_embeddings.py`),
 which lived outside the repo and imported `esignet_gcv_iter` (since archived) for
 its FASTA parsing. The embedding code is unchanged; only the input path is --
 sequences come from the canonical tables instead of a FASTA.
@@ -29,7 +29,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+from utils.runtime import resolve_device  # noqa: E402
 from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 
 SAVE_EVERY = 500
@@ -78,20 +79,20 @@ def collect_sequences(df) -> dict:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dataset", required=True, choices=sorted(DATASET_CONFIGS))
+    p.add_argument("--dataset", required=True, type=dataset_arg, choices=list(DATASET_CONFIGS))
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--esm-model", default="esm2_t33_650M_UR50D")
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--output", default=None)
     args = p.parse_args()
 
-    device = torch.device(args.device)
+    device = resolve_device(args.device)
     out = Path(args.output or
                TRAINING_EVAL_DIR / f"{args.dataset}_esm2.pkl")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading canonical dataset: {args.dataset}", flush=True)
-    df = add_mutated_sequence(load_data(DATASET_CONFIGS[args.dataset]))
+    df = add_mutated_sequence(load_data(dataset_config(args.dataset)))
     print(f"  {len(df)} rows", flush=True)
     seqs = collect_sequences(df)
     print(f"  {len(seqs)} unique sequences (WT + mutant), "

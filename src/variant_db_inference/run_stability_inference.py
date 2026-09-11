@@ -81,7 +81,7 @@ DATASET_CONFIGS = {
         "emb_h5":      _BASE / db / "prott5_embeddings.h5",
         "subgraph_h5": _BASE / db / "prott5_subgraphs.h5",
     }
-    for db in ("clinvar", "gnomad", "cosmic", "hgmd", "autism")
+    for db in vr.DB_SOURCES
 }
 
 

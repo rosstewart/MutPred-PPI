@@ -26,13 +26,11 @@
 # `utils.legacy_guard` raises rather than silently accepting anything from the
 # retired pre-090826 pipeline (`.mat`/`.pos`/`.neg`/`.labels`/`.vt_ids` files,
 # `all_vt_ids_and_labels.txt`, `sfvcfp_rows.csv.gz`, `training_data_internal.csv`,
-# ...). See `docs/FIGURE_INVENTORY.md` for the full inventory this notebook
+# ...). See the per-step comments below for the full inventory this notebook
 # was built to satisfy, and `docs/REPRODUCING_ANALYSES.md` for the underlying
 # per-script commands this notebook wraps.
 #
-# **Data is not final.** AF3 structures were still generating when this
-# notebook was written (2026-09-10); run it once whatever exists to
-# smoke-test the chain, and again in full once the AF3 run completes.
+# AF3 structures are complete (4,497 complexes, 100% training/eval coverage).
 #
 # **Not reproducible here, by design:**
 # Fig 4/S2 and Table 1 need unpublished VarChAMP data, present only in
@@ -45,11 +43,21 @@
 import os
 from pathlib import Path
 
-QUICK = True          # 1 GCV seed, subsampled variant DBs, small bootstraps
+# QUICK is the SHIPPED DEFAULT and does NOT reproduce the paper: 1 cross-validation
+# seed instead of 30, subsampled variant databases, small bootstraps. It exists so a
+# first run finishes in hours and proves the environment works, and it writes to
+# results_quick/ so it cannot overwrite a real run. Set False for the published numbers.
+QUICK = True
 FORCE = False          # recompute even when a cached output already exists
 DEVICE = "cuda:0"
 RUN_PRETRAIN = False    # Step 1; off by default, uses the deposited checkpoint
 RUN_MUTPRED2 = False    # Step 4b/6; MutPred2 runs off-machine, off by default
+# Step 2b: rebuild the BioGRID interactome and the per-database variant mappings
+# from raw downloads. Off by default because the Zenodo bundle already ships what
+# they produce (datasets/variant_dbs/*_rows.csv.gz), and the inputs are licensed
+# (COSMIC, HGMD) or many-GB (ClinVar, gnomAD, BioGRID). Turn on only to rederive
+# the interactome from source.
+RUN_VARIANT_DB_MAPPING = False
 DRY_RUN = False         # print commands instead of executing them
 
 REPO = Path(__file__).resolve().parent.parent if "__file__" in dir() else Path.cwd().parent
@@ -84,17 +92,71 @@ from utils.legacy_guard import LegacyInputError, reject_legacy  # noqa: E402
 _ENV = {**os.environ, "MPLBACKEND": "Agg", "OPENBLAS_NUM_THREADS": "1"}
 
 
+def graph_store_is_stale(store_path, manifest_path) -> bool:
+    """True if the contact-graph store does not cover every canonical structure.
+
+    Existence is not freshness. `produces=` only asks whether an output file is
+    there, which is right for a pure function of fixed inputs and wrong for any
+    artifact whose inputs GROW. The contact-graph store is the sharp case: it is
+    derived from `af3_structures_canonical/`, which gains structures every time a
+    batch of AlphaFold3 jobs is folded and merged in.
+
+    The comparison is on KEY IDENTITY, not counts. Both the store and the
+    manifest are keyed by the sorted pair of `sha256(sequence)[:16]` hashes, so
+    the check is exact and cheap. Counting alone is not enough and was briefly
+    wrong here: after one merge the store held 4,498 graphs against a 4,497-row
+    manifest -- numerically "fresh" while actually missing three newly folded
+    complexes and carrying four for structures that had been removed.
+    """
+    import csv as _csv
+    import h5py as _h5py
+    store_path, manifest_path = Path(store_path), Path(manifest_path)
+    if not store_path.exists() or not manifest_path.exists():
+        return False                      # nothing to compare; `produces` decides
+    try:
+        with _h5py.File(store_path, "r") as f:
+            have = set(f["graphs"].keys()) if "graphs" in f else set()
+        want = set()
+        with open(manifest_path) as f:
+            for row in _csv.DictReader(f):
+                a, b = row["seq_a_sha"], row["seq_b_sha"]
+                want.add("_".join(sorted((a, b))))
+    except Exception as exc:              # unreadable store -> rebuild it
+        print(f"[stale]   {store_path.name}: unreadable ({exc}) -- will rebuild")
+        return True
+    missing = want - have
+    if missing:
+        print(f"[stale]   {store_path.name}: {len(missing)} of {len(want)} "
+              f"canonical structures have no graph -- rebuilding")
+        return True
+    return False
+
+
 def run(cmd: list, *, produces: list | None = None, name: str | None = None,
-       cwd: Path | None = None) -> None:
+       cwd: Path | None = None, stale: bool = False,
+       requires: list | None = None) -> None:
     """Run a command, skipping it if every `produces` path already exists.
 
     This is the whole caching layer: a second notebook run with
     `FORCE=False` finds every `produces` path present and does nothing.
+
+    `stale=True` overrides that skip for artifacts whose inputs can grow -- see
+    `graph_store_is_stale`. Existence-only caching is correct for a pure function
+    of fixed inputs and silently wrong for anything else.
+
+    `requires` names inputs the reader may legitimately not have -- a licensed or
+    bulk download. A missing one SKIPS the step with a message naming the file,
+    rather than failing the notebook, because the artifact it would rebuild is
+    already in the Zenodo bundle.
     """
     label = name or Path(str(cmd[2]) if len(cmd) > 2 else cmd[0]).name
     produces = [Path(p) for p in (produces or [])]
-    if produces and not FORCE and all(p.exists() for p in produces):
+    if produces and not FORCE and not stale and all(p.exists() for p in produces):
         print(f"[cached]  {label}  ({len(produces)} output(s) present)")
+        return
+    absent = [Path(r) for r in (requires or []) if not Path(r).exists()]
+    if absent:
+        print(f"[skip]    {label}  (needs {absent[0]})")
         return
     print(f"[run]     {label}")
     print(f"          {' '.join(str(c) for c in cmd)}")
@@ -223,18 +285,45 @@ _MAPPED = TRAINING_EVAL_DIR
 run([PY, "src/data_processing/canonicalize_structures.py",
     "--structures", str(DATASETS_DIR / "af3_structures"), "--out", str(_AF3_CANON)],
    produces=[_AF3_CANON / "manifest.csv"], name="canonicalize_structures.py (train/eval)")
+# Variant-DB complexes come from the in-house foldings AND from ProtVar's
+# precomputed AlphaFold3 interfaces. ClinVar/COSMIC/gnomAD/HGMD draw ~3,293 of
+# their contact graphs from ProtVar alone, so leaving it out silently costs
+# those four databases roughly half their pairs. Chains are resolved by
+# SEQUENCE, so the whole ProtVar tree can be passed unfiltered; PDB input is
+# auto-detected and normalised to gzipped mmCIF. See docs/SETUP.md for the
+# download.
+_PROTVAR = REPO / "external" / "protvar_pdb"
+_DB_STRUCT_SOURCES = [str(DATASETS_DIR / "af3_structures_variant_dbs")]
+if _PROTVAR.exists():
+    _DB_STRUCT_SOURCES.append(str(_PROTVAR))
+else:
+    print(f"[warn]    {_PROTVAR} absent -- ClinVar/COSMIC/gnomAD/HGMD will lose "
+          f"the pairs that only ProtVar covers (see docs/SETUP.md)")
+
 run([PY, "src/data_processing/canonicalize_structures.py",
-    "--structures", str(DATASETS_DIR / "af3_structures_variant_dbs"), "--out", str(_AF3_DB_CANON)],
+    "--structures", *_DB_STRUCT_SOURCES, "--out", str(_AF3_DB_CANON)],
    produces=[_AF3_DB_CANON / "manifest.csv"], name="canonicalize_structures.py (variant DBs)")
 
 run([PY, "src/data_processing/rebuild_graphs_from_structures.py",
     "--structures", str(_AF3_CANON), "--out", str(_MAPPED / "contact_graphs.h5")],
-   produces=[_MAPPED / "contact_graphs.h5"], name="rebuild_graphs_from_structures.py (train/eval)")
+   produces=[_MAPPED / "contact_graphs.h5"],
+   stale=graph_store_is_stale(_MAPPED / "contact_graphs.h5", _AF3_CANON / "manifest.csv"),
+   name="rebuild_graphs_from_structures.py (train/eval)")
 run([PY, "src/data_processing/rebuild_graphs_from_structures.py",
     "--structures", str(_AF3_DB_CANON),
     "--out", str(DATASETS_DIR / "variant_dbs" / "contact_graphs.h5")],
    produces=[DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"],
+   stale=graph_store_is_stale(DATASETS_DIR / "variant_dbs" / "contact_graphs.h5",
+                              _AF3_DB_CANON / "manifest.csv"),
    name="rebuild_graphs_from_structures.py (variant DBs)")
+
+# Record which complexes AlphaFold3 actually produced. Writes an `af3_failed`
+# column into the mapping CSVs; `prepare_gcv_tables.py` then drops those rows
+# before assigning row_index, so nothing downstream ever scores a complex with
+# no contact graph. Must run AFTER canonicalize_structures.py and BEFORE
+# prepare_gcv_tables.py.
+run([PY, "src/data_processing/annotate_af3_coverage.py"],
+   name="annotate_af3_coverage.py")
 
 # The GCV row/split tables. Stage 2 of the data-preparation chain: reads the
 # mapping CSVs in datasets/source_mapping/ (built by
@@ -257,6 +346,85 @@ run([PY, "src/data_processing/training_sets/prepare_gcv_tables.py",
 # is a manual, off-box step -- see docs/DATA_PREPARATION.md.
 run([PY, "src/data_processing/prepare_af3_inputs.py"],
    name="prepare_af3_inputs.py")
+if not RUN_VARIANT_DB_MAPPING:
+    print("[skip]    BioGRID interactome + per-database mapping "
+          "(RUN_VARIANT_DB_MAPPING=False; the shipped row tables already "
+          "encode them)")
+
+# The BioGRID direct-binding interactome is stage 0 of the variant-database
+# chain: every map_*.py draws its partners from these pickles, and every pair in
+# the row tables below is one of its edges. "Physical binding evidence only"
+# means the five experimental systems in
+# get_biogrid_interactors.BINDING_TECHNIQUES -- Co-crystal Structure,
+# Cross-Linking-MS, Far Western, Reconstituted Complex, Protein-Peptide --
+# excluding co-complex-membership assays, because an edgotype is a claim about a
+# specific binding interface. Needs the BioGRID download, so it is skipped (not
+# failed) when that is absent; the shipped row tables already encode its result.
+if RUN_VARIANT_DB_MAPPING:
+    _BIOGRID = DATA_ROOT / "biogrid"
+    run([PY, "src/data_processing/variant_databases/get_biogrid_interactors.py",
+        "--biogrid-tsv", str(_BIOGRID / "biogrid_ppi.tsv"),
+        "--uniprot-fasta", str(_BIOGRID / "all_uniprot_ids.fasta"),
+        "--output-dir", str(_BIOGRID)],
+       produces=[_BIOGRID / "biogrid_dirbind_uniprot_to_interactors.pkl"],
+       requires=[_BIOGRID / "biogrid_ppi.tsv"],
+       name="get_biogrid_interactors.py (physical-binding interactome)")
+
+    # Stage 1: per-database mapping. Each turns one raw download into the
+    # UniProt-keyed variant/partner pickles `build_variant_db_tables.py` consumes,
+    # drawing partners from the BioGRID interactome built above. Every one is
+    # guarded by `requires`, because the raw inputs are licensed (COSMIC, HGMD) or
+    # bulk downloads (ClinVar, gnomAD) that a reader may not hold -- a missing one
+    # skips with the filename rather than failing the notebook, and the shipped
+    # `datasets/variant_dbs/*_rows.csv.gz` already encode the result.
+    _VDB = "src/data_processing/variant_databases"
+    _ANN = DATASETS_DIR / "annotations"
+    _ANNL = DATASETS_DIR / "annotations_licensed"
+
+    run([PY, f"{_VDB}/map_clinvar.py", "--stage", "interactors",
+        "--clinvar-dir", str(DATA_ROOT / "clinvar"), "--biogrid-dir", str(_BIOGRID),
+        "--output-dir", str(_ANN / "clinvar")],
+       produces=[_ANN / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"],
+       requires=[DATA_ROOT / "clinvar" / "pathogenic_wts_and_mts_04_25.fasta"],
+       name="map_clinvar.py (interactors)")
+
+    run([PY, f"{_VDB}/map_gnomad.py", "--biogrid-dir", str(_BIOGRID),
+        "--gnomad-dir", str(DATA_ROOT / "gnomad"),
+        "--output-dir", str(DATA_ROOT / "gnomad")],
+       produces=[_ANN / "gnomad_allele_frequencies.tsv"],
+       requires=[DATA_ROOT / "gnomad" / "gnomad_uniprot_wts.txt"],
+       name="map_gnomad.py")
+
+    run([PY, f"{_VDB}/get_cosmic_annotations.py", "--stage", "all",
+        "--cmc-file", str(DATA_ROOT / "cosmic_mutations" /
+                          "CancerMutationCensus_AllData_v101_GRCh37.tsv.gz"),
+        "--output-dir", str(_ANNL)],
+       produces=[_ANNL / "vt_to_tumor_site.pkl"],
+       requires=[DATA_ROOT / "cosmic_mutations" /
+                 "CancerMutationCensus_AllData_v101_GRCh37.tsv.gz"],
+       name="get_cosmic_annotations.py (licensed)")
+
+    run([PY, f"{_VDB}/map_hgmd.py", "--biogrid-dir", str(_BIOGRID),
+        "--output-dir", str(_ANNL)],
+       produces=[_ANNL / "hgmd_variant_subset.pkl"],
+       requires=[DATA_ROOT / "hgmd" / "hgmd_dm_wts.fasta"],
+       name="map_hgmd.py (licensed)")
+
+    run([PY, f"{_VDB}/map_neurodev.py", "--mode", "neurodev",
+        "--biogrid-dir", str(_BIOGRID),
+        "--output-dir", str(DATA_ROOT / "neurodev")],
+       produces=[_ANN / "neurodev" / "variant_label_dict.pkl"],
+       requires=[DATA_ROOT / "neurodev" / "neurodev_case.fasta"],
+       name="map_neurodev.py (NDD case/control)")
+
+    run([PY, f"{_VDB}/map_asd_ndd.py",
+        "--variant-dir", str(DATA_ROOT / "home" / "asd"),
+        "--biogrid-dir", str(_BIOGRID),
+        "--output-dir", str(DATA_ROOT / "home" / "asd")],
+       produces=[DATA_ROOT / "home" / "asd" / "all_variants.pkl"],
+       requires=[DATA_ROOT / "home" / "asd" / "Fu_variants_SebatLab.tsv"],
+       name="map_asd_ndd.py (Fu et al. de novo ASD)")
+
 run([PY, "src/variant_db_inference/build_variant_db_tables.py", "--db", "all"],
    produces=[DATASETS_DIR / "variant_dbs" / "clinvar_rows.csv.gz"],
    name="build_variant_db_tables.py")
@@ -366,22 +534,28 @@ for ds in _GCV_DATASETS:
 # ### Step 4b -- MutPred2 (optional, off-machine)
 #
 # MutPred2 has no trainable model here; it is run externally. Off by default
-# (`RUN_MUTPRED2`). When enabled, this exports the query FASTA/substitution
-# files, then expects `import_mutpred2_gcv_scores.py` to have been run
-# against the resulting output CSV before Step 5's figures include it.
+# (`RUN_MUTPRED2`). When enabled, this exports ONE query FASTA -- the union of
+# all five canonical datasets, including the blind-test target -- rather than
+# a separate FASTA per dataset. MutPred2 scores a (protein, mutation) query
+# independently of whatever else shares its FASTA batch, and
+# `import_mutpred2_gcv_scores.py` / `import_mutpred2_varchamp_scores.py` both
+# key strictly on (interactor, mutation), so one run's output CSV feeds every
+# dataset's import with no duplicate queries. Then expects
+# `import_mutpred2_gcv_scores.py` to have been run against the resulting
+# output CSV before Step 5's figures include it.
 
 # %%
 _MP2_INPUT_DIR = DATASETS_DIR / "mutpred2_inputs"
+_MP2_UNION_FASTA = _MP2_INPUT_DIR / "all_mutpred2_input.fasta"
 
 if RUN_MUTPRED2:
+    run([PY, "src/analysis/export_mutpred2_inputs.py", "--dataset", "all"],
+       produces=[_MP2_UNION_FASTA], name="export_mutpred2_inputs.py [all]")
+    print(f"  Run MutPred2 off-machine on {_MP2_UNION_FASTA}, then:")
     for ds in _GCV_DATASETS:
         if ds == "varchamp_all_mapped090826":
-            continue  # blind-test target only, handled in Step 6
-        fasta = _MP2_INPUT_DIR / f"{ds}_mutpred2_input.fasta"
-        run([PY, "src/analysis/export_mutpred2_inputs.py", "--dataset", ds],
-           produces=[fasta], name=f"export_mutpred2_inputs.py [{ds}]")
-        print(f"  Run MutPred2 off-machine on {fasta}, then:\n"
-              f"    conda run -n ppi python src/analysis/import_mutpred2_gcv_scores.py "
+            continue  # blind-test target only, imported in Step 6
+        print(f"    conda run -n ppi python src/analysis/import_mutpred2_gcv_scores.py "
               f"--dataset {ds} --csv <output.csv>")
 else:
     print("[skip] MutPred2 GCV baseline (RUN_MUTPRED2=False); "
@@ -453,16 +627,15 @@ else:
             print(f"[skip] {method}{tag}: {exc}")
 
     if RUN_MUTPRED2:
-        _mp2_va_fasta = _MP2_INPUT_DIR / "varchamp_all_mapped090826_mutpred2_input.fasta"
-        run([PY, "src/analysis/export_mutpred2_inputs.py", "--dataset", "varchamp_all_mapped090826"],
-           produces=[_mp2_va_fasta], name="export_mutpred2_inputs.py [varchamp_all_mapped090826]")
-        print(f"  Run MutPred2 off-machine on {_mp2_va_fasta}, then:\n"
+        print(f"  MutPred2 union FASTA already exported in Step 4b "
+              f"({_MP2_UNION_FASTA}) -- it includes the blind-test target. "
+              f"Run it off-machine, then:\n"
               f"    conda run -n ppi python src/analysis/import_mutpred2_varchamp_scores.py --csv <output.csv>")
 
     try:
-        run([PY, "src/analysis/varchamp_blind_test.py"], name="varchamp_blind_test.py")
+        run([PY, "src/analysis/blind_test_figures.py"], name="blind_test_figures.py")
     except RuntimeError as exc:
-        print(f"[skip] varchamp_blind_test.py: {exc}")
+        print(f"[skip] blind_test_figures.py: {exc}")
 
     show(_BLIND_DIR / "roc_plots" / "roc_varchamp_blind_test.png", "Fig 4")
     show(_BLIND_DIR / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png", "S2")
@@ -502,7 +675,7 @@ else:
 
     _VDB_DIR = _RESULTS_DIR / "variant_dbs_all_data"
     _VDB_STAB_DIR = _RESULTS_DIR / "variant_dbs_stability"
-    for db in ("clinvar", "gnomad", "cosmic", "hgmd", "autism"):
+    for db in ("clinvar", "gnomad", "cosmic", "hgmd", "neurodev", "asd"):
         rows_path = DATASETS_DIR / "variant_dbs" / f"{db}_rows.csv.gz"
         if not rows_path.exists():
             print(f"[skip] {db}: {rows_path} not built (licensed data absent?)")
@@ -590,12 +763,25 @@ for tex_name, caption in (("training_data_table.tex", "Table 1"),
         print(p.read_text())
 
 # %% [markdown]
+# ## Step 9b -- Reconstruction tables
+#
+# Per-figure prediction/label tables, so every ROC and PR curve in the paper can
+# be recomputed with no training, no GPU and no access to the splits. This is a
+# deposited Zenodo artifact (`datasets/reconstruction_tables/`, ~460 MB), which
+# is why it runs here rather than by hand.
+
+# %%
+run([PY, "src/analysis/export_reconstruction_tables.py", "--figure", "all"],
+   produces=[DATASETS_DIR / "reconstruction_tables" / "README.md"],
+   name="export_reconstruction_tables.py")
+
+# %% [markdown]
 # ## Step 10 -- Manifest
 #
 # Every manuscript figure/table: expected path, whether it exists, and its
 # age. In full (non-QUICK) mode this is where you would refresh
 # `figures/*.png` symlinks if a producer's output path changed -- see
-# `docs/FIGURE_INVENTORY.md` for the current map.
+# the per-figure comments in each step below for the current map.
 
 # %%
 import datetime
@@ -626,6 +812,6 @@ for label, path in _MANIFEST:
     age_str = f"{age.days}d" if age else "-"
     print(f"{label:<14} {'yes' if exists else 'NO':<7} {age_str:<12} {path}")
 
-print("\nDrawn by hand, not regenerated by anything in this repo (docs/FIGURE_INVENTORY.md O3):")
+print("\nDrawn by hand, not regenerated by anything in this repo:")
 print("  Fig 1 (MutPred-PPI_pipeline.png), Fig 2 (MutPred-PPI_architecture.png), "
       "the CDC42 example panel (CDC42_WASP_Y64.png)")

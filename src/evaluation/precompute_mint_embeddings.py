@@ -48,24 +48,45 @@ import torch.nn as nn
 
 # ── dataset configs (vendored in-repo) ───────────────────────────────────────
 # Shared GCV data-loading layer (see src/utils/gcv_common.py).
-from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
 
 # ── MINT package ─────────────────────────────────────────────────────────────
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import DATASETS_DIR, EXTERNAL_DIR, REVISIONS_DIR, TRAINING_EVAL_DIR, cache_file  # noqa: E402
+from paths import method_dir  # noqa: E402
 
-_MINT_DIR = REVISIONS_DIR / "mint"
-sys.path.insert(0, str(_MINT_DIR))
-import mint                                              # noqa: E402
-from mint.model.esm2 import ESM2                        # noqa: E402
+# Upstream MINT is imported LAZILY. It used to be imported at module scope,
+# after a sys.path.insert, which made this module unimportable -- and therefore
+# untestable, and un-`--help`-able -- on any machine without the checkout.
+def _mint():
+    """The upstream `mint` package, imported on first use.
+
+    MINT is not pip-installable here; it is reached by putting its checkout on
+    `sys.path`. Doing that at import time made this module unimportable on any
+    machine without the checkout, so both the package and the ESM2 class are
+    resolved lazily.
+    """
+    d = method_dir("mint")
+    if str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    import mint
+    return mint
 
 
+def _mint_esm2():
+    """Upstream `mint.model.esm2.ESM2`, importing MINT on first use."""
+    _mint()
+    from mint.model.esm2 import ESM2
+    return ESM2
 
-_CKPT_PATH   = str(_MINT_DIR / "mint.ckpt")
-_CONFIG_PATH = str(_MINT_DIR / "esm2_t33_650M_UR50D.json")
+
+def _ckpt_path():
+    return str(method_dir("mint") / "mint.ckpt")
+
+
+def _config_path():
+    return str(method_dir("mint") / "esm2_t33_650M_UR50D.json")
 
 # ── mutation helper ───────────────────────────────────────────────────────────
 
@@ -78,7 +99,7 @@ class MINTEmbedder(nn.Module):
 
     def __init__(self, cfg: argparse.Namespace, checkpoint_path: str, device: torch.device):
         super().__init__()
-        self.model = ESM2(
+        self.model = _mint_esm2()(
             num_layers=cfg.encoder_layers,
             embed_dim=cfg.encoder_embed_dim,
             attention_heads=cfg.encoder_attention_heads,
@@ -263,7 +284,7 @@ def build_cache(
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> None:
-    cfg = DATASET_CONFIGS[args.dataset]
+    cfg = dataset_config(args.dataset)
     device = torch.device(args.device if args.device else
                           ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"Device: {device}", flush=True)
@@ -293,15 +314,15 @@ def run(args: argparse.Namespace) -> None:
         print(f"  {len(existing_cache)} entries already cached", flush=True)
 
     # ── load MINT model ───────────────────────────────────────────────────────
-    print(f"Loading MINT config from {_CONFIG_PATH}", flush=True)
-    with open(_CONFIG_PATH) as f:
+    print(f"Loading MINT config from {_config_path()}", flush=True)
+    with open(_config_path()) as f:
         cfg_dict = json.load(f)
     model_cfg = argparse.Namespace(**cfg_dict)
 
-    print(f"Loading MINT checkpoint from {_CKPT_PATH}", flush=True)
-    embedder = MINTEmbedder(model_cfg, _CKPT_PATH, device).to(device).eval()
+    print(f"Loading MINT checkpoint from {_ckpt_path()}", flush=True)
+    embedder = MINTEmbedder(model_cfg, _ckpt_path(), device).to(device).eval()
 
-    alphabet = mint.data.Alphabet.from_architecture("ESM-1b")
+    alphabet = _mint().data.Alphabet.from_architecture("ESM-1b")
 
     # ── embed and cache ───────────────────────────────────────────────────────
     cache = build_cache(
@@ -338,7 +359,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dataset",
         required=True,
-        choices=list(DATASET_CONFIGS),
+        type=dataset_arg, choices=list(DATASET_CONFIGS),
         help="Dataset to generate embeddings for",
     )
     p.add_argument(

@@ -6,16 +6,10 @@ whose output is a CSV of (protein, 1-based mutation, score) scored offline.
 This parses that CSV and joins it against the canonical
 `varchamp_all_mapped090826` rows directly.
 
-**Replaces the entire vc1pcava-supplement / merge / restratify chain.** The
-previous version of this script (archived at
-archive/dead_scripts_20260910/import_mutpred2_vcfp_scores.py) patched ~2,936
-"new" entries onto a separately-built `datasets/sfvcfp_rows.csv.gz` table via
-a 0-based/1-based vt_id join against `data/mutpred2_vc1pcava_supplement_input.fasta`.
-That table and the `vc1pcava` supplement concept are retired -- see
-`utils.legacy_guard` and `run_varchamp_blind_test.py`'s module docstring.
-There is one canonical test set now (`varchamp_all_mapped090826`, no
-supplementing), so there is nothing to merge and nothing to restratify: this
-script computes the join and the classing once, directly.
+There is exactly one canonical test set (`varchamp_all_mapped090826`) and no
+supplementing, so there is nothing to merge and nothing to restratify: this
+script computes the join and the classing once, directly. Result files that
+predate that table are rejected by `utils.legacy_guard`.
 
 MutPred2 is partner-agnostic (one score per (protein, mutation), scored
 without reference to a partner), so a single CSV row scores every
@@ -44,7 +38,7 @@ _EVAL_DIR = _ANALYSIS_DIR.parent / "evaluation"
 sys.path.insert(0, str(_EVAL_DIR))
 
 from run_varchamp_blind_test import TEST_CFG, load_train_test, save_results  # noqa: E402
-from mutpred2_common import parse_mutpred2_csv as load_mutpred2_csv  # noqa: E402
+from analysis.mutpred2_common import parse_mutpred2_csv as load_mutpred2_csv  # noqa: E402
 from utils.gcv_common import compute_blind_test_classes  # noqa: E402
 
 _MP2_METHOD = "MutPred2 (varchamp_blind_test)"

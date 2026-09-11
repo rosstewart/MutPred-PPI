@@ -32,17 +32,17 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.stats import gaussian_kde
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
-from roc_plots import StaleCacheError  # noqa: E402
+from analysis.roc_plots import StaleCacheError  # noqa: E402
 from utils import mutations  # noqa: E402
 
 
@@ -219,7 +219,7 @@ def plot_scatter(groups: dict[str, pd.DataFrame], out: Path, sample_n: int = 500
     ax.set_title("Stability vs Interaction Disruption per Variant")
     ax.legend(fontsize=7, markerscale=4, loc="upper left", ncol=2)
     plt.tight_layout()
-    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"Saved scatter → {out}")
 
@@ -304,7 +304,7 @@ def plot_kde_contours(groups: dict[str, pd.DataFrame], out: Path, cosmic_min_rec
         ax.set_ylabel("Max disruption score", fontsize=9)
 
     plt.tight_layout()
-    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"Saved KDE → {out}")
 

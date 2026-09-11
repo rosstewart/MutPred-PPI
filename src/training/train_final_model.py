@@ -39,7 +39,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
 # ── data layer: the canonical tables and the contact-graph store ─────────────
-from utils.gcv_common import DATASET_CONFIGS, load_data, load_splits  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data, load_splits  # noqa: E402
 from utils.mutpred_ppi_data import build_tensors  # noqa: E402
 from training.train_fold import (  # noqa: E402
     apply_freeze_strategy,
@@ -317,7 +317,7 @@ def run(args: argparse.Namespace) -> None:
                           ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"device: {device}  ablation: {args.ablation}  seed: {args.seed}", flush=True)
 
-    cfg      = DATASET_CONFIGS[args.dataset]
+    cfg      = dataset_config(args.dataset)
     save_dir = Path(args.save_models_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -368,7 +368,14 @@ def run(args: argparse.Namespace) -> None:
             args.ablation, args.seed, precomputed_diffs, X_t, edge_t,
             save_path=save_path,
         )
-        print(f"\nDone. Checkpoint: {save_path}", flush=True)
+        # Also copy to the canonical MutPred-PPI.pt so that get_models() and
+        # variant-DB inference find it without an extra rename step.
+        import shutil
+        from inference.pipeline.model_loader import CANONICAL_CHECKPOINT
+        canonical = save_dir / CANONICAL_CHECKPOINT
+        shutil.copy2(save_path, canonical)
+        print(f"\nDone. Checkpoint: {save_path}")
+        print(f"  (also copied to {canonical} for variant-DB inference)", flush=True)
     else:
         gcv_seed = args.seed
         # The same seed-keyed splits every method is scored on.
@@ -397,7 +404,7 @@ def run(args: argparse.Namespace) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train final MutPred-PPI model and save checkpoints")
     p.add_argument("--dataset", default="sahni_fragoza_mapped090826",
-                   choices=sorted(DATASET_CONFIGS))
+                   type=dataset_arg, choices=list(DATASET_CONFIGS))
     p.add_argument("--device", default="")
     p.add_argument("--save-models-dir", required=True,
                    help="Directory to save .pt checkpoints")

@@ -8,12 +8,12 @@ edgotype class arrays:
      Reads {data_dir}/{dataset}/{subset}_posts.npy per configured group.
 
   2. Uncontrolled edgotype enrichment bootstrap (--edgotype-bootstrap)
-     Reads {data_dir}/{dataset}/{subset}_edgotype_classes.npy.
+     Reads {data_dir}/{dataset}/{subset}.csv.gz and derives edgotypes.
      Runs bootstrap sampling of full edgotype arrays, then plots
      Quasi-Null and Edgetic enrichment relative to gnomAD baseline.
 
   3. Partner-count-controlled edgotype bootstrap (--controlled-bootstrap)
-     Reads {data_dir}/{dataset}/{subset}_posterior_ls.pkl.
+     Reads {data_dir}/{dataset}/{subset}.csv.gz for per-variant score lists.
      Samples exactly k partners per variant for each bootstrap iteration.
      Runs for k = 3, 5, 7 (or just k = 3 with --k3-only).
 
@@ -41,7 +41,9 @@ import warnings
 
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+from analysis import edgotypes, plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.offsetbox import AnchoredText
@@ -53,15 +55,9 @@ warnings.filterwarnings("ignore")
 # Publication style
 # ---------------------------------------------------------------------------
 
-plt.rcParams.update({
-    "font.size": 11,
-    "axes.labelsize": 12,
-    "figure.dpi": 100,
-    "savefig.dpi": 300,
-    "font.family": "DejaVu Sans",
-    "axes.linewidth": 1.0,
-    "axes.edgecolor": "black",
-})
+# rcParams now come from analysis.plot_style.apply(), so every figure in the
+# paper shares one font size, axis weight and output resolution. This block
+# was duplicated verbatim in two scripts and absent from the other thirteen.
 
 # ---------------------------------------------------------------------------
 # Dataset metadata
@@ -80,7 +76,7 @@ dataset_colors = {
     "gnomad_upper_af_0.1": ("#4CAF50", "#2E7D32"),
     "ndd_case": ("#9C27B0", "#6A1B9A"),
     "ndd_control": ("#607D8B", "#37474F"),
-    "fu_autism": ("#FF9800", "#E65100"),
+    "asd": ("#FF9800", "#E65100"),
     "pathogenic": ("#D32F2F", "#B71C1C"),
     "benign": ("#1976D2", "#0D47A1"),
     "vus": ("#9E9E9E", "#616161"),
@@ -121,7 +117,7 @@ dataset_labels = {
     "neurodev": "Neurodevelopmental Disorder",
     "ndd_case": "Case",
     "ndd_control": "Control",
-    "fu_autism": "ASD Case",
+    "asd": "ASD Case",
     "clinvar": "ClinVar",
     "pathogenic": "Pathogenic",
     "benign": "Benign",
@@ -156,7 +152,7 @@ dataset_enrichment_labels = {
     "hgmd": ["HGMD", "AR", "AD"],
     "gnomad_af": ["AF ≤ 1e-6", "1e-6 < AF ≤ 1e-5", "1e-5 < AF ≤ 1e-4",
                   "1e-4 < AF ≤ 1e-3", "1e-3 < AF ≤ 1e-2", "1e-2 < AF"],
-    "fu_autism": "ASD Case",
+    "asd": "ASD Case",
     "neurodev": ["NDD Case", "NDD Control"],
     "clinvar": ["Rare Benign", "Benign", "Pathogenic", "VUS", "Pathogenic AR", "Pathogenic AD"],
     "cosmic": ["Single", "≥2", "≥4", "≥8", "≥16", "≥32"],
@@ -174,7 +170,7 @@ CONFIGURATIONS = [
                 "gnomad_upper_af_0.0001", "gnomad_upper_af_0.001",
                 "gnomad_upper_af_0.01", "gnomad_upper_af_0.1"],
      "upper right", "gnomad_af", None, "_af"),
-    ("fu_autism", ["fu_autism"], "upper right", "fu_autism", None, ""),
+    ("asd", ["asd"], "upper right", "asd", None, ""),
     ("neurodev", ["ndd_case", "ndd_control"], "upper right", "neurodev", None, ""),
     ("clinvar", ["rare_benign", "benign", "pathogenic", "vus", "ar_pathogenic", "ad_pathogenic"],
      "upper right", "clinvar", None, ""),
@@ -193,7 +189,7 @@ HISTOGRAM_CONFIGS = [
     ("gnomad", ["gnomad"], "upper right", "gnomad", None),
     ("gnomad", ["gnomad_disease_gene", "gnomad_not_disease_gene"],
      "upper right", "gnomad_disease_gene", None),
-    ("fu_autism", ["fu_autism"], "upper left", "fu_autism", None),
+    ("asd", ["asd"], "upper left", "asd", None),
     ("neurodev", ["ndd_case", "ndd_control"], "upper left", "neurodev", None),
     ("clinvar", ["rare_benign", "benign", "pathogenic", "vus"], "upper right", "clinvar", 0.5),
     ("cosmic", ["cosmic_single", "cosmic_32+"], "upper right", "cosmic", 0.5),
@@ -269,7 +265,7 @@ def plot_multi_class_histogram(base_dataset_name, datasets, data_base_dir,
     save_dir = (output_dir or os.path.join(data_base_dir, base_dataset_name, "charts"))
     os.makedirs(save_dir, exist_ok=True)
     out = os.path.join(save_dir, f"{save_name}_loss_scores.png")
-    plt.savefig(out, dpi=300, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out}")
 
@@ -280,8 +276,9 @@ def plot_multi_class_histogram(base_dataset_name, datasets, data_base_dir,
 
 def compute_edgotype_bootstrap(base_dataset_name, datasets, data_base_dir,
                                 n_partners_suffix="", n_bootstrap=100_000,
-                                random_seed=42):
-    edgotype_classes = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
+                                random_seed=42,
+                                posterior_threshold=edgotypes.DEFAULT_THRESHOLD):
+    edgotype_classes = list(edgotypes.EDGOTYPES)
     np.random.seed(random_seed)
 
     mean_n_partners_path = (
@@ -295,14 +292,13 @@ def compute_edgotype_bootstrap(base_dataset_name, datasets, data_base_dir,
     all_densities, all_bootstrap_densities, all_sample_ns = [], [], []
 
     for dataset in datasets:
-        data_path = f"{data_base_dir}/{base_dataset_name}/{dataset}_edgotype_classes.npy"
-        if not os.path.exists(data_path):
-            data_path = data_path.replace("classes.npy", "class.npy")
-        if not os.path.exists(data_path):
-            print(f"  Warning: missing {data_path}")
+        group = edgotypes.load_group(data_base_dir, base_dataset_name, dataset)
+        if group is None:
+            print(f"  Warning: missing "
+                  f"{edgotypes.group_path(data_base_dir, base_dataset_name, dataset)}")
             continue
 
-        data = np.load(data_path, allow_pickle=True)
+        data = group.classify(posterior_threshold)
         densities, counts = [], []
         total = len(data)
         for ec in edgotype_classes:
@@ -390,7 +386,7 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
         ]
 
     default_order = ["clinvar", "cosmic", "cosmic_onco", "cosmic_tsg",
-                     "hgmd", "gnomad_af", "neurodev", "fu_autism"]
+                     "hgmd", "gnomad_af", "neurodev", "asd"]
     dataset_order = datasets if datasets is not None else default_order
 
     n_tests = sum(len(v) for v in enrichments_bootstrap.values()) * 2
@@ -412,7 +408,7 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
         "cosmic": "COSMIC",
         "cosmic_onco": "COSMIC (Onco)", "cosmic_tsg": "COSMIC (TSG)",
         "hgmd": "HGMD", "gnomad_af": "gnomAD",
-        "neurodev": "NDD", "fu_autism": "ASD",
+        "neurodev": "NDD", "asd": "ASD",
     }
 
     # Build shared x-axis metadata
@@ -514,7 +510,7 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
         plt.tight_layout()
         plt.subplots_adjust(hspace=0)
         out = os.path.join(output_dir, f"{base_name}.png")
-        plt.savefig(out, dpi=300, bbox_inches="tight")
+        plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
         plt.close()
         print(f"  Saved: {out}")
     else:
@@ -525,7 +521,7 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
             plt.tight_layout()
             comp_slug = component_names[pi].lower().replace("-", "_").replace(" ", "_")
             out = os.path.join(output_dir, f"{base_name}_{comp_slug}.png")
-            plt.savefig(out, dpi=300, bbox_inches="tight")
+            plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
             plt.close()
             print(f"  Saved: {out}")
 
@@ -570,15 +566,13 @@ def _batch_bootstrap_controlled(valid_variants, k, posterior_threshold,
 def controlled_bootstrap_for_dataset(dataset, base, data_base_dir, n_partners_suffix,
                                       k=3, posterior_threshold=0.5,
                                       n_bootstrap=10_000, n_jobs=-1):
-    edgotype_classes = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
-    data_path = f"{data_base_dir}/{base}/{dataset}_posterior_ls.pkl"
-    if not os.path.exists(data_path):
-        print(f"  Warning: missing {data_path}")
+    edgotype_classes = list(edgotypes.EDGOTYPES)
+    group = edgotypes.load_group(data_base_dir, base, dataset)
+    if group is None:
+        print(f"  Warning: missing {edgotypes.group_path(data_base_dir, base, dataset)}")
         return None, None
 
-    with open(data_path, "rb") as f:
-        posterior_data = pickle.load(f)
-
+    posterior_data = group.scores_by_variant()
     valid = [v for v in posterior_data if len(v) >= k]
     if not valid:
         print(f"  Warning: no variants with >={k} partners in {dataset}")
@@ -647,7 +641,7 @@ def run_controlled_bootstrap_analysis(data_base_dir, k=3, n_bootstrap=10_000, n_
 # ---------------------------------------------------------------------------
 
 def _get_density(edgotypes):
-    classes = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
+    classes = list(edgotypes.EDGOTYPES)
     total = len(edgotypes)
     return [np.sum(np.array(edgotypes) == ec) / total if total else 0 for ec in classes]
 
@@ -698,13 +692,13 @@ def plot_tumor_site_edgotypes(tumor_site_to_edgotypes, cosmic_label, save_dir,
               framealpha=0.9, ncol=4)
     plt.tight_layout()
     out = os.path.join(save_dir, f"cosmic_{cosmic_label}_tumor_site_edgotypes.png")
-    plt.savefig(out, dpi=300, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out}")
 
 
 def _trend_statistic(tumor_site_to_edgotypes, min_data_pts):
-    classes = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
+    classes = list(edgotypes.EDGOTYPES)
     site_props = [
         [np.sum(np.array(v) == ec) / len(v) for ec in classes]
         for v in tumor_site_to_edgotypes.values() if len(v) >= min_data_pts
@@ -781,12 +775,12 @@ def run_tumor_site_analysis(data_base_dir, output_dir, min_data_pts=20, n_permut
     ax.set_axisbelow(True)
     plt.tight_layout()
     out = os.path.join(save_dir, "permutation_histogram.png")
-    plt.savefig(out, dpi=300, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out}")
 
     # CV comparison (recurrent vs single)
-    classes = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
+    classes = list(edgotypes.EDGOTYPES)
     rec_props = {ec: [] for ec in classes}
     sin_props = {ec: [] for ec in classes}
     for site in data["4+"]:
@@ -832,7 +826,7 @@ def run_tumor_site_analysis(data_base_dir, output_dir, min_data_pts=20, n_permut
     ax.set_axisbelow(True)
     plt.tight_layout()
     out = os.path.join(save_dir, "cv_comparison.png")
-    plt.savefig(out, dpi=300, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out}")
 
@@ -926,18 +920,16 @@ def main(args):
 
 
 def _quick_sample_counts(data_base_dir):
-    edgotype_classes = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
+    edgotype_classes = list(edgotypes.EDGOTYPES)
     all_ns, all_dens = {}, {}
     for cfg in CONFIGURATIONS:
         base, datasets, _, save_name, _, _ = cfg
         ns_list, dens_list = [], []
         for dataset in datasets:
-            p = f"{data_base_dir}/{base}/{dataset}_edgotype_classes.npy"
-            if not os.path.exists(p):
-                p = p.replace("classes.npy", "class.npy")
-            if not os.path.exists(p):
+            group = edgotypes.load_group(data_base_dir, base, dataset)
+            if group is None:
                 continue
-            data = np.load(p, allow_pickle=True)
+            data = group.classify()
             total = len(data)
             counts = [int(np.sum(data == ec)) for ec in edgotype_classes]
             dens = [c / total if total else 0 for c in counts]

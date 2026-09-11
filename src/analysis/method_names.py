@@ -1,41 +1,27 @@
 """Canonical method-key -> display-name mapping, and the filename parser.
 
-`roc_plots.py` and `export_reconstruction_tables.py` each carried their own copy.
-They had drifted: the dicts were 46 vs 40 keys (roc_plots a strict superset, no
-conflicting values) and the two `extract_method_and_dataset` bodies were 59 vs 74
-lines despite the second one's docstring claiming it was copied verbatim. Verified
-before merging: the functions agree on all 63 real `*_detailed_results.pkl`
-filenames, and the 6 extra keys match zero files on disk, so unifying on the
-superset changes no output today.
+This module is the single definition shared by `roc_plots.py` and
+`export_reconstruction_tables.py`. Both use `METHOD_DISPLAY_NAMES` as a
+membership filter as well as a display mapping, so it must not be mutated in
+place -- an in-place edit by one consumer leaks into the other. Use
+`with_baseline_variants()`, which returns a new dict.
 
-Both consumers use the mapping as a membership filter, and `roc_plots` used to
-extend it by mutating the module-level dict in place -- which would leak across
-consumers once shared. Use `with_baseline_variants()` instead; it returns a new
-dict.
+The three GCV datasets any comparison figure reads (Fig 3, S1, S7) are
+`sahni_only_mapped090826`, `sahni_fragoza_mapped090826` and
+`sahni_fragoza_varchamp_all_mapped090826`; see `utils.gcv_common.DATASET_CONFIGS`.
+`_SHORT_DATASET_NAMES` maps each full config name to the short display key
+(`sahni`, `sahni_fragoza`, `sahni_fragoza_varchamp_all`) used throughout
+`roc_plots.py` for SAAMBE test-class files, MutPred2-standalone label files and
+`METHOD_DISPLAY_NAMES` keys. `roc_plots.CANONICAL_DATASETS` must stay a
+re-expression of this mapping rather than a second copy of it.
 
-**Canonical datasets only (2026-09-10).** The three GCV datasets any
-comparison figure reads (Fig 3, S1, S7) are `sahni_only_mapped090826`,
-`sahni_fragoza_mapped090826`, `sahni_fragoza_varchamp_all_mapped090826` --
-see `utils.gcv_common.DATASET_CONFIGS` and `roc_plots.CANONICAL_DATASETS`.
-`_SHORT_DATASET_NAMES` is the one place that maps a full config name to the
-short display key (`sahni`, `sahni_fragoza`, `sahni_fragoza_varchamp_all`)
-used throughout `roc_plots.py` (SAAMBE test-class files, MutPred2-standalone
-label files, `METHOD_DISPLAY_NAMES` keys) -- `roc_plots.CANONICAL_DATASETS`
-must stay a re-expression of this same mapping, not a second copy of it.
-
-Every prior dataset-name family this module used to recognize
-(`sahni_fragoza_varchamp1p_cava`, `sahni_varchamp1p_cava`,
-`sahni_fragoza_varchamp2026`, `sahni_fragoza_varchamp_full[_pooled]`,
-`sahni_fragoza_varchamp_pooled`) named datasets that no longer exist, or exist
-under a different row ordering. A GCV result file whose name lacks a
-`_mapped090826` suffix predates the 090826 rebaseline outright -- e.g. the
-`MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl` files currently
-on disk in `results/gcv/` are pre-090826 (a fresh run writes
-`MutPredPPI_sahni_fragoza_mapped090826_megascale_all_...`, per
-`mutpred_ppi_gcv.py`'s `result_stem=f"MutPredPPI_{cfg.name}_{args.ablation}"`
-where `cfg.name` is the full `DATASET_CONFIGS` key). `extract_method_and_dataset`
-returns `dataset='legacy'` for both cases so the caller can flag it instead of
-silently plotting it alongside fresh results (see `utils.legacy_guard`).
+A GCV result filename without a `_mapped090826` suffix predates the 090826
+rebaseline and refers to a dataset that either no longer exists or exists under
+a different row ordering. A fresh run always carries the suffix, because
+`mutpred_ppi_gcv.py` builds `result_stem` from the full `DATASET_CONFIGS` key.
+`extract_method_and_dataset` returns `dataset='legacy'` for such names so the
+caller can flag them instead of silently plotting them alongside fresh results
+(see `utils.legacy_guard`).
 """
 import os
 

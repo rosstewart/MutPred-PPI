@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Classify variant database predictions into edgotype classes.
 
-Reads raw MutPred-PPI prediction TSVs (complex_id, variant, score) and variant
-subset metadata to produce _edgotype_classes.npy and _posterior_ls.pkl files
-needed by variant_db_charts.py.
+Reads MutPred-PPI prediction TSVs and variant-subset metadata, and writes one
+tidy table per variant group -- `{output_dir}/{db}/{group}.csv.gz`, one row per
+scored variant-partner pair. Edgotypes are derived from it on read via
+`analysis.edgotypes`, so no stored artifact carries a baked-in threshold.
 
 Edgotype classification (per unique variant, across all tested partners):
   Quasi-null      : all partner scores > threshold (all disrupted)
@@ -16,7 +17,8 @@ Output directory structure:
   {output_dir}/hgmd/       hgmd, ar_hgmd, ad_hgmd
   {output_dir}/cosmic/     cosmic_single, cosmic_2+, ..., cosmic_32+,
                            cosmic_onco_*, cosmic_tsg_*
-  {output_dir}/fu_autism/  fu_autism
+  {output_dir}/neurodev/  ndd_case, ndd_control
+  {output_dir}/asd/       asd
 
 ar_pathogenic/ad_pathogenic and ar_hgmd/ad_hgmd stratify Pathogenic/HGMD variants by
 whether their gene has an autosomal-recessive-only or autosomal-dominant-only mode of
@@ -30,11 +32,13 @@ import pickle
 from collections import defaultdict
 
 import numpy as np
+import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, VARIANT_DBS_DIR  # noqa: E402
+from paths import (ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT,  # noqa: E402
+                   DATASETS_DIR, VARIANT_DBS_DIR)
+VARIANT_ROWS_DIR = DATASETS_DIR / "variant_dbs"
+from analysis import edgotypes  # noqa: E402
 
 
 # ── paths ──────────────────────────────────────────────────────────────────────
@@ -42,12 +46,45 @@ from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, VARIANT_
 _BASE = str(DATA_ROOT)
 _HOME = f"{_BASE}/home"
 
-# Predictions from the SFVCFP model (Sahni+Fragoza+VarChAMP), which is what the
+# Predictions from the all-data model (Sahni+Fragoza+VarChAMP), which is what the
 # manuscript's variant-repository figures report. Overridable with --pred-dir,
 # but every database in a run must come from one model: mixing them silently
 # produced a Fig 5 in which ClinVar/HGMD were scored by the SF model while
-# gnomAD/COSMIC/autism were scored by SFVCFP.
-DEFAULT_PRED_DIR = VARIANT_DBS_DIR
+# gnomAD/COSMIC/neurodev were scored by an earlier partial model.
+# run_variant_db_inference.py writes {DATA_ROOT}/{db}/mutpred_ppi_predictions.tsv,
+# so that is what this reads. There is no collection step between the two.
+DEFAULT_PRED_DIR = DATA_ROOT
+
+
+def prediction_tsv(pred_dir, db):
+    """Path to one database's prediction TSV.
+
+    Two layouts are in use and both are legitimate: inference writes
+    `{db}/mutpred_ppi_predictions.tsv` by default, and the reproduction notebook
+    redirects every database into one directory as
+    `{db}_mutpred_ppi_predictions.tsv` so a QUICK run stays out of `results/`.
+    Prefer the per-database form, fall back to the collected one.
+    """
+    per_db = os.path.join(str(pred_dir), db, "mutpred_ppi_predictions.tsv")
+    if os.path.exists(per_db):
+        return per_db
+    return os.path.join(str(pred_dir), f"{db}_mutpred_ppi_predictions.tsv")
+
+
+def load_biogrid_partner_counts(db):
+    """(uniprot, variant) -> number of partners BioGRID lists for it.
+
+    Read from the canonical `{db}_rows.csv.gz`, which is the full enumeration of
+    every variant-partner pair considered for the database -- including pairs
+    that could not be scored. The per-group subset files cannot stand in for it:
+    they carry group membership, and only some of them happen to enumerate every
+    BioGRID partner, so taking the count from them would apply the manuscript's
+    coverage rule inconsistently across databases.
+    """
+    rows = pd.read_csv(VARIANT_ROWS_DIR / f"{db}_rows.csv.gz",
+                       usecols=["interactor", "partner", "mutation"])
+    counts = rows.groupby(["interactor", "mutation"])["partner"].nunique()
+    return {(u, v): int(n) for (u, v), n in counts.items()}
 
 SUBSET_FILES = {
     "clinvar": {
@@ -58,12 +95,9 @@ SUBSET_FILES = {
     "hgmd": {
         "hgmd":       str(ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl"),
     },
-    "fu_autism": {
-        "fu_autism":  str(ANNOTATIONS_DIR / "autism" / "variant_subset.pkl"),
-    },
 }
 
-NEURODEV_LABEL_FILE = str(ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl")  # {uniprot} {variant} -> 0 (control) or 1 (case)
+NEURODEV_LABEL_FILE = str(ANNOTATIONS_DIR / "neurodev" / "variant_label_dict.pkl")  # {uniprot} {variant} -> 0 (control) or 1 (case)
 
 GNOMAD_AF_FILE = str(ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv")
 GNOMAD_AF_THRESHOLDS = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1]  # upper bounds of exclusive bins
@@ -119,18 +153,6 @@ def group_by_variant(pairs):
     return grouped
 
 
-def classify_edgotype(scores, threshold=0.5):
-    """Return 'Quasi-null', 'Quasi-wild-type', or 'Edgetic' given a list of scores."""
-    scores = list(scores)
-    n_disrupted = sum(s > threshold for s in scores)
-    if n_disrupted == len(scores):
-        return "Quasi-null"
-    elif n_disrupted == 0:
-        return "Quasi-wild-type"
-    else:
-        return "Edgetic"
-
-
 def load_ar_ad_uniprots():
     """Load mutually-exclusive AR-only/AD-only UniProt sets (see build_ar_ad_gene_sets.py)."""
     if not os.path.exists(AR_AD_UNIPROT_FILE):
@@ -140,58 +162,73 @@ def load_ar_ad_uniprots():
     return d.get("AR", set()), d.get("AD", set())
 
 
-def build_arrays(grouped, subset, threshold=0.5, min_partners=1):
-    """Build edgotype_classes array and posterior_ls list for a given variant subset.
+def build_arrays(grouped, subset, threshold=0.5, min_partners=1,
+                 biogrid_counts=None):
+    """Tidy table of scored variant-partner pairs for one variant group.
 
-    subset : set of (uniprot, variant, partner) tuples that belong to this group.
-    Returns (edgotype_classes_array, posterior_ls).
+    subset : set of (uniprot, variant, partner) tuples belonging to this group.
+             Only the (uniprot, variant) part is used -- membership of a clinical
+             or cohort group is a property of the VARIANT, not of a pair.
+    Returns a DataFrame with `analysis.edgotypes.COLUMNS`.
+
+    The partner universe is the BioGRID direct-binding interactome, enforced once
+    upstream: every pair in `{db}_rows.csv.gz` -- and so every scored pair -- is a
+    direct-binding edge (verified: zero non-dirbind pairs in any database). Using
+    the subset's own partner lists as a second filter here was wrong, because
+    those files enumerate partners only incidentally. For ClinVar they happened to
+    be complete and filtered nothing; for the ASD cohort they were partial and
+    silently discarded 6,327 scored pairs -- every one of them a direct-binding
+    edge -- leaving 1,111 of 7,438.
+
+    `grouped` comes from the predictions TSV, so partners whose pair has no
+    contact graph are already absent and each variant is described by the
+    partners that could actually be scored.
+
+    `min_partners` implements the coverage rule stated in the manuscript: a
+    variant is analysed only when at least `min_partners` of its partners were
+    tested, *and only when BioGRID lists that many for it in the first place*.
+    A variant BioGRID knows one partner for is processed normally; one BioGRID
+    lists twenty partners for, but which could only be scored on two, is dropped
+    as too poorly covered to edgotype.
+
+    `threshold` is not applied here. Edgotypes are derived on read, so the same
+    table serves the default analysis and the threshold sweep without either
+    going stale against the other.
     """
-    # Index subset by (uniprot, variant) for fast lookup
-    subset_by_vt = defaultdict(set)
-    for (u, v, p) in subset:
-        subset_by_vt[(u, v)].add(p)
+    group_variants = {(u, v) for (u, v, _partner) in subset}
 
-    edgotype_classes = []
-    posterior_ls = []
-
+    records = []
     for (uniprot, variant), partner_scores in grouped.items():
-        # Filter to only partners in the subset
-        allowed_partners = subset_by_vt.get((uniprot, variant), set())
-        filtered_scores = {p: s for p, s in partner_scores.items() if p in allowed_partners}
-        if not filtered_scores:
+        if (uniprot, variant) not in group_variants:
             continue
+        n_biogrid = (biogrid_counts or {}).get((uniprot, variant), len(partner_scores))
+        if n_biogrid >= min_partners and len(partner_scores) < min_partners:
+            continue
+        for partner, score in partner_scores.items():
+            records.append((uniprot, variant, partner, score, n_biogrid))
 
-        scores_list = list(filtered_scores.values())
-        edgotype_classes.append(classify_edgotype(scores_list, threshold))
-        if len(scores_list) >= min_partners:
-            posterior_ls.append(scores_list)
-
-    return np.array(edgotype_classes, dtype=str), posterior_ls
+    return pd.DataFrame(records, columns=edgotypes.COLUMNS)
 
 
-def save_outputs(out_dir, name, edgotype_classes, posterior_ls):
-    os.makedirs(out_dir, exist_ok=True)
-    ec_path = os.path.join(out_dir, f"{name}_edgotype_classes.npy")
-    pl_path = os.path.join(out_dir, f"{name}_posterior_ls.pkl")
-    np.save(ec_path, edgotype_classes)
-    with open(pl_path, "wb") as f:
-        pickle.dump(posterior_ls, f)
-    counts = {v: int(np.sum(edgotype_classes == v))
-              for v in ["Quasi-null", "Edgetic", "Quasi-wild-type"]}
-    print(f"  {name}: n={len(edgotype_classes)} | {counts} | posterior_ls n={len(posterior_ls)}")
+def save_outputs(out_dir, name, table):
+    path = edgotypes.save_group(out_dir, name, table)
+    group = edgotypes.EdgotypeGroup(name=name, table=table)
+    print(f"  {name}: n={len(group)} variants, {len(table)} pairs | "
+          f"{group.counts()} -> {path.name}")
 
 
 # ── per-database processing ────────────────────────────────────────────────────
 
 def process_clinvar(tsv_path, out_dir, threshold, min_partners):
+    biogrid_counts = load_biogrid_partner_counts("clinvar")
     print("Processing ClinVar...")
     pairs = load_predictions(tsv_path)
     grouped = group_by_variant(pairs)
     for name, pkl_path in SUBSET_FILES["clinvar"].items():
         with open(pkl_path, "rb") as f:
             subset = pickle.load(f)
-        ec, pl = build_arrays(grouped, subset, threshold, min_partners)
-        save_outputs(out_dir, name, ec, pl)
+        table = build_arrays(grouped, subset, threshold, min_partners, biogrid_counts)
+        save_outputs(out_dir, name, table)
 
     # Rare benign: ClinVar benign variants with gnomAD AF <= RARE_BENIGN_AF_THRESHOLD
     benign_af_dict = {}
@@ -209,8 +246,8 @@ def process_clinvar(tsv_path, out_dir, threshold, min_partners):
         if benign_af_dict.get(key, 1.0) <= RARE_BENIGN_AF_THRESHOLD:
             rare_benign_subset.add((u, v, p))
     if rare_benign_subset:
-        ec, pl = build_arrays(grouped, rare_benign_subset, threshold, min_partners)
-        save_outputs(out_dir, "rare_benign", ec, pl)
+        table = build_arrays(grouped, rare_benign_subset, threshold, min_partners, biogrid_counts)
+        save_outputs(out_dir, "rare_benign", table)
     else:
         print("  rare_benign: no variants found (check BENIGN_AF_FILE path)")
 
@@ -224,20 +261,21 @@ def process_clinvar(tsv_path, out_dir, threshold, min_partners):
         pathogenic_subset = pickle.load(f)
     ar_pathogenic = {(u, v, p) for (u, v, p) in pathogenic_subset if u in ar_uniprots}
     ad_pathogenic = {(u, v, p) for (u, v, p) in pathogenic_subset if u in ad_uniprots}
-    ec, pl = build_arrays(grouped, ar_pathogenic, threshold, min_partners)
-    save_outputs(out_dir, "ar_pathogenic", ec, pl)
-    ec, pl = build_arrays(grouped, ad_pathogenic, threshold, min_partners)
-    save_outputs(out_dir, "ad_pathogenic", ec, pl)
+    table = build_arrays(grouped, ar_pathogenic, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "ar_pathogenic", table)
+    table = build_arrays(grouped, ad_pathogenic, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "ad_pathogenic", table)
 
 
 def process_hgmd(tsv_path, out_dir, threshold, min_partners):
+    biogrid_counts = load_biogrid_partner_counts("hgmd")
     print("Processing HGMD...")
     pairs = load_predictions(tsv_path)
     grouped = group_by_variant(pairs)
     with open(SUBSET_FILES["hgmd"]["hgmd"], "rb") as f:
         subset = pickle.load(f)
-    ec, pl = build_arrays(grouped, subset, threshold, min_partners)
-    save_outputs(out_dir, "hgmd", ec, pl)
+    table = build_arrays(grouped, subset, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "hgmd", table)
 
     # AR-only / AD-only disease-gene stratification of HGMD variants
     ar_uniprots, ad_uniprots = load_ar_ad_uniprots()
@@ -247,22 +285,37 @@ def process_hgmd(tsv_path, out_dir, threshold, min_partners):
         return
     ar_hgmd = {(u, v, p) for (u, v, p) in subset if u in ar_uniprots}
     ad_hgmd = {(u, v, p) for (u, v, p) in subset if u in ad_uniprots}
-    ec, pl = build_arrays(grouped, ar_hgmd, threshold, min_partners)
-    save_outputs(out_dir, "ar_hgmd", ec, pl)
-    ec, pl = build_arrays(grouped, ad_hgmd, threshold, min_partners)
-    save_outputs(out_dir, "ad_hgmd", ec, pl)
+    table = build_arrays(grouped, ar_hgmd, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "ar_hgmd", table)
+    table = build_arrays(grouped, ad_hgmd, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "ad_hgmd", table)
 
 
-def process_autism(tsv_path, out_dir, threshold, min_partners):
-    print("Processing autism (fu_autism + neurodev)...")
+def process_asd(tsv_path, out_dir, threshold, min_partners):
+    """Fu et al. de novo ASD cases.
+
+    Its own database (`asd_rows.csv.gz`), so every scored variant is an ASD case
+    and there is no sub-group to select. This used to be carved out of the
+    neurodev predictions using `neurodev/variant_subset.pkl`, which is not an ASD
+    variant list at all -- it is the AlphaFold folding-budget cap
+    (`interactor_count < 10`, stopping at 600 complexes), and its 290 variants
+    are a strict subset of the 5,580 NeuroDev ones. The two cohorts are distinct:
+    ASD is de novo autism cases from Fu et al., NeuroDev is case/control across
+    four disorders.
+    """
+    biogrid_counts = load_biogrid_partner_counts("asd")
+    print("Processing ASD (Fu et al. de novo cases)...")
+    grouped = group_by_variant(load_predictions(tsv_path))
+    everything = {(u, v, p) for (u, v), ps in grouped.items() for p in ps}
+    table = build_arrays(grouped, everything, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "asd", table)
+
+
+def process_neurodev(tsv_path, out_dir, threshold, min_partners):
+    biogrid_counts = load_biogrid_partner_counts("neurodev")
+    print("Processing neurodev (NDD case/control)...")
     pairs = load_predictions(tsv_path)
     grouped = group_by_variant(pairs)
-
-    # Fu et al. ASD cases
-    with open(SUBSET_FILES["fu_autism"]["fu_autism"], "rb") as f:
-        fu_subset = pickle.load(f)
-    ec, pl = build_arrays(grouped, fu_subset, threshold, min_partners)
-    save_outputs(out_dir, "fu_autism", ec, pl)
 
     # Neurodev NDD case/control (from variant_label_dict: 0=control, 1=case)
     if os.path.exists(NEURODEV_LABEL_FILE):
@@ -277,18 +330,19 @@ def process_autism(tsv_path, out_dir, threshold, min_partners):
                 ndd_case_subset.add((u, v, p))
             elif label == 0:
                 ndd_control_subset.add((u, v, p))
-        neurodev_out = os.path.join(os.path.dirname(out_dir), "neurodev")
+        neurodev_out = out_dir
         if ndd_case_subset:
-            ec, pl = build_arrays(grouped, ndd_case_subset, threshold, min_partners)
-            save_outputs(neurodev_out, "ndd_case", ec, pl)
+            table = build_arrays(grouped, ndd_case_subset, threshold, min_partners, biogrid_counts)
+            save_outputs(neurodev_out, "ndd_case", table)
         if ndd_control_subset:
-            ec, pl = build_arrays(grouped, ndd_control_subset, threshold, min_partners)
-            save_outputs(neurodev_out, "ndd_control", ec, pl)
+            table = build_arrays(grouped, ndd_control_subset, threshold, min_partners, biogrid_counts)
+            save_outputs(neurodev_out, "ndd_control", table)
     else:
         print(f"  neurodev: label file not found at {NEURODEV_LABEL_FILE}")
 
 
 def process_gnomad(tsv_path, out_dir, threshold, min_partners):
+    biogrid_counts = load_biogrid_partner_counts("gnomad")
     print("Processing gnomAD...")
     pairs = load_predictions(tsv_path)
     grouped = group_by_variant(pairs)
@@ -305,8 +359,8 @@ def process_gnomad(tsv_path, out_dir, threshold, min_partners):
     all_gnomad_pairs = set(pairs.keys())
 
     # Overall gnomAD
-    ec, pl = build_arrays(grouped, all_gnomad_pairs, threshold, min_partners)
-    save_outputs(out_dir, "gnomad", ec, pl)
+    table = build_arrays(grouped, all_gnomad_pairs, threshold, min_partners, biogrid_counts)
+    save_outputs(out_dir, "gnomad", table)
 
     # AF-stratified bins: exclusive ranges (lo < AF <= hi)
     # gnomad_upper_af_X contains only variants with prev_thresh < AF <= X
@@ -324,12 +378,13 @@ def process_gnomad(tsv_path, out_dir, threshold, min_partners):
             print(f"  {name}: no variants found, skipping")
             prev_thresh = af_thresh
             continue
-        ec, pl = build_arrays(grouped, af_subset, threshold, min_partners)
-        save_outputs(out_dir, name, ec, pl)
+        table = build_arrays(grouped, af_subset, threshold, min_partners, biogrid_counts)
+        save_outputs(out_dir, name, table)
         prev_thresh = af_thresh
 
 
 def process_cosmic(tsv_path, out_dir, threshold, min_partners):
+    biogrid_counts = load_biogrid_partner_counts("cosmic")
     print("Processing COSMIC...")
     pairs = load_predictions(tsv_path)
     grouped = group_by_variant(pairs)
@@ -376,8 +431,8 @@ def process_cosmic(tsv_path, out_dir, threshold, min_partners):
         if not subset:
             print(f"  {name}: no variants, skipping")
             continue
-        ec, pl = build_arrays(grouped, subset, threshold, min_partners)
-        save_outputs(out_dir, name, ec, pl)
+        table = build_arrays(grouped, subset, threshold, min_partners, biogrid_counts)
+        save_outputs(out_dir, name, table)
 
     # Oncogene subsets
     for name, min_rec, max_rec in bin_defs:
@@ -386,8 +441,8 @@ def process_cosmic(tsv_path, out_dir, threshold, min_partners):
         if not subset:
             print(f"  {onco_name}: no variants, skipping")
             continue
-        ec, pl = build_arrays(grouped, subset, threshold, min_partners)
-        save_outputs(out_dir, onco_name, ec, pl)
+        table = build_arrays(grouped, subset, threshold, min_partners, biogrid_counts)
+        save_outputs(out_dir, onco_name, table)
 
     # TSG subsets
     for name, min_rec, max_rec in bin_defs:
@@ -396,8 +451,8 @@ def process_cosmic(tsv_path, out_dir, threshold, min_partners):
         if not subset:
             print(f"  {tsg_name}: no variants, skipping")
             continue
-        ec, pl = build_arrays(grouped, subset, threshold, min_partners)
-        save_outputs(out_dir, tsg_name, ec, pl)
+        table = build_arrays(grouped, subset, threshold, min_partners, biogrid_counts)
+        save_outputs(out_dir, tsg_name, table)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -411,34 +466,28 @@ def main():
     p.add_argument("--min-partners", type=int, default=1,
                    help="Minimum partners for posterior_ls (default: 1)")
     p.add_argument("--databases", nargs="+",
-                   choices=["clinvar", "gnomad", "hgmd", "cosmic", "fu_autism"],
-                   default=["clinvar", "gnomad", "hgmd", "cosmic", "fu_autism"],
+                   choices=["clinvar", "gnomad", "hgmd", "cosmic", "neurodev", "asd"],
+                   default=["clinvar", "gnomad", "hgmd", "cosmic", "neurodev", "asd"],
                    help="Databases to process (default: all)")
     p.add_argument("--pred-dir", default=str(DEFAULT_PRED_DIR),
-                   help=f"Directory holding the per-database prediction TSVs "
-                        f"(default: {DEFAULT_PRED_DIR}). All databases in one run "
-                        f"must come from the same model.")
+                   help=f"Root holding {{db}}/mutpred_ppi_predictions.tsv per "
+                        f"database (default: {DEFAULT_PRED_DIR}). All databases "
+                        f"in one run must come from the same model.")
     args = p.parse_args()
 
-    _DB_TSV_NAMES = {
-        "clinvar":   "clinvar_mutpred_ppi_predictions.tsv",
-        "gnomad":    "gnomad_mutpred_ppi_predictions.tsv",
-        "hgmd":      "hgmd_mutpred_ppi_predictions.tsv",
-        "cosmic":    "cosmic_mutpred_ppi_predictions.tsv",
-        "fu_autism": "autism_mutpred_ppi_predictions.tsv",
-    }
     db_funcs = {
         "clinvar":   (process_clinvar,  "clinvar"),
         "gnomad":    (process_gnomad,   "gnomad"),
         "hgmd":      (process_hgmd,     "hgmd"),
         "cosmic":    (process_cosmic,   "cosmic"),
-        "fu_autism": (process_autism,   "fu_autism"),
+        "neurodev":  (process_neurodev,  "neurodev"),
+        "asd":       (process_asd,       "asd"),
     }
     print(f"Prediction TSVs: {args.pred_dir}", flush=True)
 
     for db in args.databases:
         func, out_subdir = db_funcs[db]
-        tsv_path = os.path.join(args.pred_dir, _DB_TSV_NAMES[db])
+        tsv_path = prediction_tsv(args.pred_dir, db)
         out_dir = os.path.join(args.output_dir, out_subdir)
         if not os.path.exists(tsv_path):
             print(f"WARNING: TSV not found: {tsv_path}, skipping {db}")

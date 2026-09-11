@@ -22,14 +22,17 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
+from analysis import edgotypes  # noqa: E402
+from analysis.classify_variant_dbs import (  # noqa: E402
+    group_by_variant, load_predictions as _load_predictions)
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
 
 
@@ -39,7 +42,7 @@ _HOME = _BASE / "home"
 _OUT  = _PUB / "results" / "protein_class"
 
 # Import calc_enrichment and plot rcParams from variant_db_charts
-from variant_db_charts import calc_enrichment
+from analysis.variant_db_charts import calc_enrichment
 
 
 
@@ -51,13 +54,11 @@ CLINVAR_TSV    = _PUB / "results" / "variant_dbs_all_data" / "clinvar_mutpred_pp
 GNOMAD_TSV     = _PUB / "results" / "variant_dbs_all_data" / "gnomad_mutpred_ppi_predictions.tsv"
 PATHOGENIC_PKL = ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"
 
-plt.rcParams.update({
-    "font.size": 11, "axes.labelsize": 12, "figure.dpi": 100,
-    "savefig.dpi": 300, "font.family": "DejaVu Sans",
-    "axes.linewidth": 1.0, "axes.edgecolor": "black",
-})
+# rcParams now come from analysis.plot_style.apply(), so every figure in the
+# paper shares one font size, axis weight and output resolution. This block
+# was duplicated verbatim in two scripts and absent from the other thirteen.
 
-EDGOTYPE_CLASSES = ["Quasi-wild-type", "Quasi-null", "Edgetic"]
+EDGOTYPE_CLASSES = list(edgotypes.EDGOTYPES)
 SCORE_THRESHOLD  = 0.5
 N_BOOTSTRAP      = 100_000
 MIN_VARIANTS     = 30
@@ -101,24 +102,14 @@ def load_annotations() -> dict[str, str]:
 
 
 def load_predictions(tsv: Path) -> dict[tuple[str, str], dict[str, float]]:
-    grouped: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
-    with open(tsv) as f:
-        f.readline()
-        for line in f:
-            p = line.strip().split("\t")
-            if len(p) < 3:
-                continue
-            cid, variant, score = p[0], p[1], float(p[2])
-            under = cid.index("_")
-            grouped[(cid[:under], variant)][cid[under + 1:]] = score
-    return grouped
+    """(uniprot, variant) -> {partner: score}, via the shared reader.
 
-
-def classify_edgotype(scores: list[float]) -> str:
-    n = sum(s > SCORE_THRESHOLD for s in scores)
-    if n == len(scores):  return "Quasi-null"
-    elif n == 0:           return "Quasi-wild-type"
-    else:                  return "Edgetic"
+    This used to parse the TSV itself, accepting only the retired three-column
+    schema and recovering the two accessions by splitting a welded `complex_id`
+    on its first underscore. Current prediction files carry interactor and
+    partner as separate columns, so that parser raised on every one of them.
+    """
+    return group_by_variant(_load_predictions(str(tsv)))
 
 
 def edgotypes_and_uniprots(
@@ -135,7 +126,7 @@ def edgotypes_and_uniprots(
             scores = list(pscores.values())
         if not scores:
             continue
-        ecs.append(classify_edgotype(scores))
+        ecs.append(edgotypes.classify(scores))
         unis.append(u)
     return ecs, unis
 
@@ -298,7 +289,7 @@ def main() -> None:
     plt.tight_layout()
     plt.subplots_adjust(hspace=0)
     out = _OUT / "pathogenic_by_class.png"
-    plt.savefig(out, dpi=300, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"\nSaved → {out}")
 

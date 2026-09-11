@@ -16,7 +16,8 @@ score NaN and are dropped by the shared per-class AUC.
 Mutation positions come from the canonical tables (1-based) and are passed to
 SAAMBE-3D directly, without the +1 adjustment the old labels-file code needed.
 
-MUST be run from the SAAMBE-3D directory so that saambe-3d.py is on the path.
+Runs SAAMBE-3D as a subprocess from its own checkout (external_methods/saambe3d),
+so upstream's own `from utils.protseqfeature import *` resolves normally.
 
 Usage:
     cd .../SAAMBE-3D
@@ -28,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -38,23 +40,47 @@ import numpy as np
 _HERE = Path(__file__).resolve().parent
 
 from utils import mutations  # noqa: E402
-from utils.gcv_common import DATASET_CONFIGS, load_data, load_splits  # noqa: E402
+from paths import GCV_RESULTS_DIR, method_dir  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data, load_splits  # noqa: E402
 from utils.structures import Structures  # noqa: E402
 
-_SAAMBE3D_PY = _HERE / "saambe-3d.py"
+# SAAMBE-3D is run from its own upstream checkout, not from a copy in src/.
+# Until 2026-09-10 `saambe-3d.py`, `protseqfeature.py` and 25 MB of XGBoost
+# boosters were vendored into src/evaluation/. The only difference from upstream
+# was one rewritten import line in each file, so vendoring bought nothing and
+# put third-party code (and its licence) inside ours.
+# Resolved lazily: importing this module must not require the checkout, so that
+# `--help` works and the test suite can import it on a machine without SAAMBE-3D.
+def _saambe3d_dir():
+    return method_dir("saambe3d")
+
+
+def _saambe3d_python() -> str:
+    """Python that has prody installed (required by saambe-3d.py).
+
+    saambe-3d.py imports prody, which is not in the ppi env. Set
+    SAAMBE3D_PYTHON to point at a Python that has it, or install prody
+    in the ppi env. The default looks for a py311_saambe3d env beside
+    the current conda envs directory.
+    """
+    if p := os.environ.get("SAAMBE3D_PYTHON"):
+        return p
+    py311 = Path(sys.executable).parent.parent.parent / "py311_saambe3d" / "bin" / "python"
+    return str(py311) if py311.exists() else sys.executable
 
 
 def _call_saambe(pdb_path: Path, chain: str, pos: str,
                  wt: str, mt: str, model_flag: str,
                  tmp_out: Path) -> tuple[float, int]:
     """Run SAAMBE-3D subprocess, return (score, binary_label)."""
+    saambe_dir = _saambe3d_dir()
     subprocess.run(
-        [sys.executable, str(_SAAMBE3D_PY),
+        [_saambe3d_python(), str(saambe_dir / "saambe-3d.py"),
          "-i", str(pdb_path), "-c", chain,
          "-r", pos, "-w", wt, "-m", mt,
          "-d", model_flag, "-o", str(tmp_out)],
         check=True, capture_output=True,
-        cwd=str(_HERE),
+        cwd=str(saambe_dir),
     )
     with open(tmp_out) as fh:
         line = fh.readline().strip()
@@ -70,7 +96,7 @@ def _call_saambe(pdb_path: Path, chain: str, pos: str,
 
 
 def run(args: argparse.Namespace) -> None:
-    cfg = DATASET_CONFIGS[args.dataset]
+    cfg = dataset_config(args.dataset)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -147,13 +173,18 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="SAAMBE-3D inference — 090826 canonical datasets"
     )
-    p.add_argument("--dataset", required=True, choices=list(DATASET_CONFIGS))
+    p.add_argument("--dataset", required=True, type=dataset_arg, choices=list(DATASET_CONFIGS))
     p.add_argument("--model-type", default="regression",
                    choices=["regression", "classification"],
                    help="regression → ddG (model -d 1); classification → Disruptive (model -d 0)")
     p.add_argument("--seed", type=int, default=0,
                    help="GCV split seed (default: 0; all rows appear in test exactly once)")
-    p.add_argument("--outdir", default=".", help="Output directory")
+    p.add_argument("--outdir", default=str(GCV_RESULTS_DIR),
+                   help="Output directory (default: results/gcv/, matching every "
+                        "other CV script). Was '.' until 2026-09-10, which put "
+                        "this method's arrays in $CWD while its siblings wrote to "
+                        "results/gcv/ -- so a plain invocation produced results the "
+                        "figure scripts could not find.")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
     return p.parse_args()
 

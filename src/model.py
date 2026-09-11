@@ -2,7 +2,7 @@
 
 Previously `GAT_mut_processor` was defined verbatim in three places
 (`training/train_fold.py`, `training/pretrain_stability.py`, and
-`inference/utils/model_loader.py` under the name `MutPred_PPI`).  All three were
+`inference/pipeline/model_loader.py` under the name `MutPred_PPI`).  All three were
 layer-for-layer identical, so a checkpoint written by one loaded into any other --
 but editing `hidden_dim`, `num_heads`, or the `binding_predictor` head in one copy
 would have silently broken `load_state_dict` for the others, or worse, loaded into

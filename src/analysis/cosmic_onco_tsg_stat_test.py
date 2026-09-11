@@ -25,13 +25,12 @@ import pickle
 import numpy as np
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
+from analysis import edgotypes  # noqa: E402
 from paths import REPO_ROOT  # noqa: E402
 
 
 _PUB = REPO_ROOT
-from variant_db_charts import calc_enrichment
+from analysis.variant_db_charts import calc_enrichment
 
 
 
@@ -50,18 +49,15 @@ N_BONF       = 12  # 6 bins × 2 categories
 
 
 def load_n_variants() -> dict[str, list[int]]:
-    """Load n_variants per bin from posterior_ls pkl files."""
+    """Variant count per recurrence bin, per gene category."""
     ns: dict[str, list[int]] = {}
     for cat_key, cat_display in [("onco", "cosmic_onco"), ("tsg", "cosmic_tsg")]:
-        ns[cat_display] = []
-        for b in BIN_KEYS:
-            fname = CLASSIFIED_DIR / f"cosmic_{cat_key}_{b}_posterior_ls.pkl"
-            if fname.exists():
-                with open(fname, "rb") as f:
-                    d = pickle.load(f)
-                ns[cat_display].append(len(d))
-            else:
-                ns[cat_display].append(0)
+        ns[cat_display] = [
+            len(group) if (group := edgotypes.load_group(
+                CLASSIFIED_DIR.parent, CLASSIFIED_DIR.name,
+                f"cosmic_{cat_key}_{b}")) is not None else 0
+            for b in BIN_KEYS
+        ]
     return ns
 
 

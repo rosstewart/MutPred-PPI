@@ -75,6 +75,7 @@ pd.set_option("display.width", 200)
 #
 # Requires `pip install -e .` (see README) so that `paths` is importable.
 sys.path.insert(0, str(Path.cwd().parent / "src"))   # notebook-friendly fallback
+from utils import mutations  # noqa: E402
 from paths import (SOURCE_DATA_DIR, SOURCE_DATA_RESTRICTED_DIR,  # noqa: E402
                    MAPPING_DIR)
 
@@ -193,8 +194,16 @@ def clean_missense(mut):
 
 
 def parse_mutation(mut):
-    """'E80K' -> ('E', 80, 'K'), 1-based position."""
-    return mut[0], int(mut[1:-1]), mut[-1]
+    """'E80K' -> ('E', 80, 'K'), 1-based position.
+
+    Delegates to `utils.mutations.parse`, the repo's single mutation parser,
+    which validates the string with a regex instead of assuming
+    `mut[0] / int(mut[1:-1]) / mut[-1]` -- an inline form that cannot reject
+    junk and silently produced a garbage triple for anything malformed.
+    Verified 2026-09-10 to be identical on all 53,239 mutations across the five
+    canonical datasets, so this changes nothing about the mapping's output.
+    """
+    return mutations.parse(mut)
 
 
 def validate_mutation(seq, mut):
@@ -278,7 +287,7 @@ def log_stage(tag, stage, n):
 # ## 2. Cached UniProt client
 #
 # Replaces the old manual UniProt-web-tool round trip. Every response is cached under
-# `MAPPING_090826/cache/`, so re-runs are offline and fast.
+# `datasets/source_mapping/cache/`, so re-runs are offline and fast.
 #
 # * `idmap` — the ID-mapping API. Resolves obsolete/secondary accessions that a plain
 #   `accession:` search misses, and handles `GeneID` / `RefSeq_Protein` / `Gene_Name`.

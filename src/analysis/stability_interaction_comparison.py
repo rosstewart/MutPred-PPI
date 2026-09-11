@@ -21,17 +21,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import REPO_ROOT  # noqa: E402
-from roc_plots import StaleCacheError  # noqa: E402
+from analysis.roc_plots import StaleCacheError  # noqa: E402
 
 
 _PUB = REPO_ROOT
@@ -68,9 +68,9 @@ DATASETS = {
         "color":       "#9467bd",
         "filter":      lambda df: df,
     },
-    "autism": {
-        "predictions": "autism_mutpred_ppi_predictions.tsv",
-        "stability":   "autism_stability_predictions.tsv",
+    "neurodev": {
+        "predictions": "neurodev_mutpred_ppi_predictions.tsv",
+        "stability":   "neurodev_stability_predictions.tsv",
         "label":       "Autism",
         "color":       "#8c564b",
         "filter":      lambda df: df,
@@ -167,7 +167,7 @@ def plot_scatter_grid(datasets_data: dict[str, pd.DataFrame]) -> None:
     plt.tight_layout()
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = _OUT_DIR / "interaction_vs_stability_scatter.png"
-    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"Saved scatter plot → {out}")
 
@@ -241,7 +241,7 @@ def plot_score_distributions(datasets_data: dict[str, pd.DataFrame]) -> None:
     ax.set_ylim(0, 105)
     plt.tight_layout()
     out_bar = _OUT_DIR / "interaction_vs_stability_quadrants.png"
-    plt.savefig(out_bar, dpi=150, bbox_inches="tight")
+    plt.savefig(out_bar, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"Saved quadrant bar chart → {out_bar}")
 

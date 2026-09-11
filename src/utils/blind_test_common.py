@@ -1,11 +1,11 @@
-"""Shared blind-test (VarChAMP/VCFP) array loading.
+"""Shared VarChAMP blind-test array loading.
 
 The blind-test side has no GCV fold structure and no single canonical row
 count to check against -- it is a fixed, one-shot held-out evaluation, not a
 repeated cross-validation. What it DOES have, and what was unguarded before
 this module, is three sibling `.npy` files per (method, class) --
 `{method}_c{n}_{preds,labels,vt_ids}.npy` -- that must agree in length with
-each other. `varchamp_blind_test.py` and `restratify_skempi_methods.py` each
+each other. `blind_test_figures.py` and `restratify_skempi_methods.py` each
 loaded these independently with no check at all: if one file were regenerated
 and a sibling were not, `preds[i]` and `labels[i]` would silently stop
 describing the same variant.

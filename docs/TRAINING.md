@@ -16,25 +16,30 @@ From Zenodo (see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md) for links):
   [`docs/DATA_PREPARATION.md`](DATA_PREPARATION.md).
 - AF3 structures: `datasets/af3_structures.tar`, which extracts to `datasets/af3_structures/`.
   The canonicalized, one-structure-per-pair tree the graph builder reads is
-  `datasets/af3_structures_canonical/` (3,854 gzipped mmCIFs + `manifest.csv`).
+  `datasets/af3_structures_canonical/` (4,497 gzipped mmCIFs + `manifest.csv`).
 
 ## Model weights
 
-All models live in `weights/`. Only four files are git-tracked:
+All models live in `weights/`. Two files ship with the repository:
 
 | File | Training data | Used for |
 |---|---|---|
-| `MutPred-PPI.pt` | Sahni + Fragoza + VarChAMP | Public inference, variant-repository inference (Fig 5, S4, S-stability) |
-| `MutPred-PPI_sahni_fragoza.pt` | Sahni + Fragoza only | Grouped cross-validation (Fig 3), VarChAMP blind test (Fig 4) |
 | `MutPred-PPI_stability_pretrain.pt` | MegaScale (Tsuboyama et al. 2023) | Pretraining checkpoint all final models fine-tune from |
 | `mutation_diff_scaler.pkl` | MegaScale | Required alongside every model above |
 
-`MutPred-PPI_sahni_fragoza.pt` (not `MutPred-PPI.pt`) is required for Fig 3/4 because both are
-blind tests of generalization to unseen data — using the model trained on all data (including
-VarChAMP) would defeat that purpose.
+**The prediction models are produced by the commands below, not shipped.**
+`MutPred-PPI.pt` (all data) and the Sahni+Fragoza model are both trained from the
+stability-pretrained checkpoint; see [`weights/README.md`](../weights/README.md)
+for how to obtain predictions without training anything.
 
-`weights/folds/` (per-fold checkpoints) and `weights/MutPred-PPI_sahni.pt` (Sahni-only, used for
-the Fig S2 comparison) are present but not git-tracked.
+A Sahni+Fragoza-only model, not the all-data one, is what Fig 3 and Fig 4 require:
+both are blind tests of generalisation, and scoring them with a model that had
+seen VarChAMP would defeat the purpose. The VarChAMP blind test trains that model
+on demand rather than reading a checkpoint, so it is always in step with the
+current tables.
+
+`weights/folds/` (per-fold checkpoints) is written by the GCV scripts and is not
+tracked.
 
 ## Stability Pretraining
 
@@ -91,8 +96,8 @@ choice the old `.mat` migration had to make.
 
 `src/inference/01_make_contact_graphs_and_fasta.py` builds a store for *your own* structures in
 the standalone inference pipeline; it is not the path used for the training data. It also has a
-known defect that empties `wt_and_vt.fasta` —
-see [`docs/INFERENCE.md`](INFERENCE.md#known-issue-empty-wt_and_vtfasta).
+known defect that empties `wt_and_vt.fasta` — see the [Full Example Workflow](INFERENCE.md#full-example-workflow)
+note in `docs/INFERENCE.md`.
 
 `src/training/train_fold.py` holds the single training loop (`train_fold`) shared by
 `src/evaluation/mutpred_ppi_gcv.py` and `src/training/train_final_model.py`, so the CV numbers
@@ -106,14 +111,19 @@ during the GCV run — no separate step required.
 ## Model Training
 
 ```bash
-# Sahni+Fragoza (Fig 3, Fig 4 blind test)
+# Sahni+Fragoza (Fig 3, Fig 4 blind test) -- per-fold checkpoints
 conda run -n ppi python src/training/train_final_model.py \
-    --dataset sahni_fragoza --ablation megascale_all --device cuda:0
+    --dataset sahni_fragoza --ablation megascale_all \
+    --save-models-dir weights/folds/ --device cuda:0
 
-# Sahni+Fragoza+VarChAMP (public/variant-DB inference)
+# Sahni+Fragoza+VarChAMP, all data, no CV -- this is MutPred-PPI.pt
 conda run -n ppi python src/training/train_final_model.py \
-    --dataset sahni_fragoza_varchamp_full_pooled --ablation megascale_all --device cuda:0
+    --dataset sahni_fragoza_varchamp_all --ablation megascale_all \
+    --save-models-dir weights/ --device cuda:0 --no-cv
 ```
+
+`--save-models-dir` is required. `--dataset` accepts the short names above or the
+full `*_mapped090826` forms.
 
 VarChAMP training data is unpublished IGVF consortium data — cross-reference
 [data.igvf.org](https://data.igvf.org). It is required only for the second command above; the

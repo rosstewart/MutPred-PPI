@@ -1,21 +1,14 @@
 #!/usr/bin/env python
 """SWING grouped cross-validation, for any dataset in DATASET_CONFIGS.
 
-Migrated in from an external, unversioned script
-(`SWING_scripts/SWING_MutInt_Notebook_sahni_fragoza_varchamp_full_pooled_gcv_iter.py`)
-which was the only way to run SWING on SFVCFP.  Two things are different here:
-
-* **No duplicated SWING code.**  The external script carried its own copies of
-  the amino-acid score table, the Doc2Vec/XGBoost hyperparameters, and the
-  window-encoding / k-mer / corpus / WT-frame builders.  Those were checked
-  against `swing_common` on real benchmark rows and found identical -- the score
-  dictionary, encodings, k-mers, tagged corpus and WT frames all match exactly --
-  so this module imports them instead.
-* **No hardcoded dataset.**  `--dataset` selects the config, so SFVCFP and
-  Sahni+Fragoza run through the same path.
+The amino-acid score table, the Doc2Vec/XGBoost hyperparameters and the
+window-encoding / k-mer / corpus / WT-frame builders are imported from
+`swing_common` rather than redefined here, so the feature pipeline cannot drift
+between the two. `--dataset` selects the config, so every dataset in
+DATASET_CONFIGS runs through the same path.
 
 Data loading reuses the shared GCV layer in `gcv_common` (`DATASET_CONFIGS`,
-`load_data`), which is what the external script did.
+`load_data`).
 
 Two modes, both reported in the paper and *not* interchangeable:
 
@@ -47,7 +40,7 @@ from xgboost import XGBClassifier
 _HERE = Path(__file__).resolve().parent
 
 from paths import GCV_RESULTS_DIR  # noqa: E402
-from utils.gcv_common import DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
 from evaluation.swing_common import (  # noqa: E402  single source for all SWING internals
     _D2V_DIM, _XGB_N_EST, _XGB_DEPTH, _XGB_LR,
     _get_window_encodings, _get_kmers, _get_corpus,
@@ -122,7 +115,7 @@ def _fold_features(train_df: pd.DataFrame, test_df: pd.DataFrame):
 
 def run(dataset: str, test_pretrain: bool, outdir: Path,
         resume: bool = True) -> None:
-    cfg = DATASET_CONFIGS[dataset]
+    cfg = dataset_config(dataset)
     print(f"dataset={dataset}  mode="
           f"{'test-pretrain (leaky)' if test_pretrain else 'blind test'}", flush=True)
 
@@ -190,7 +183,7 @@ def run(dataset: str, test_pretrain: bool, outdir: Path,
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dataset", required=True, choices=sorted(DATASET_CONFIGS))
+    ap.add_argument("--dataset", required=True, type=dataset_arg, choices=list(DATASET_CONFIGS))
     ap.add_argument("--test-pretrain", action="store_true",
                     help="Train Doc2Vec once on the FULL dataset including test folds. "
                          "Leaks test information; reported only as the 'Test Pretrain' variant.")

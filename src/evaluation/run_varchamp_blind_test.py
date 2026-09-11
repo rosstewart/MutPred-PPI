@@ -58,7 +58,7 @@ _PUB = _EVAL_DIR.parent.parent                       # repo root
 
 from paths import DATASETS_DIR, REPO_ROOT, TRAINING_EVAL_DIR, VARCHAMP_BLIND_TEST_DIR, WEIGHTS_DIR  # noqa: E402
 from utils import mutations  # noqa: E402
-from utils.gcv_common import (  # noqa: E402
+from utils.gcv_common import (dataset_config,   # noqa: E402
     DATASET_CONFIGS, PREDICTOR_COLS, compute_blind_test_classes, load_data,
     skempi_test_class)
 from utils.legacy_guard import reject_legacy  # noqa: E402
@@ -79,7 +79,7 @@ _SKEMPI_METHODS = {"saambe3d", "mutppi", "mutppiplus"}
 
 def load_train_test(train_dataset: str = DEFAULT_TRAIN_DATASET) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The two canonical tables this blind test has always meant."""
-    train_df = load_data(DATASET_CONFIGS[train_dataset])
+    train_df = load_data(dataset_config(train_dataset))
     test_df  = load_data(TEST_CFG)
     return train_df, test_df
 
@@ -169,7 +169,7 @@ def _score_mutpredppi(train_df: pd.DataFrame, test_df: pd.DataFrame,
     """Train on all of Sahni+Fragoza (no fold split), predict on all of VarChAMP."""
     import torch
 
-    from inference.utils.model_loader import load_model, model_predict
+    from inference.pipeline.model_loader import load_model, model_predict_subgraph
     from training.train_fold import _MEGASCALE_SCALER_PATH
     from utils.mutpred_ppi_data import build_tensors
 
@@ -207,7 +207,7 @@ def _score_mutpredppi(train_df: pd.DataFrame, test_df: pd.DataFrame,
         mut_diff = t["mut_diff"][i]
         if scaler is not None:
             mut_diff = scaler.transform(mut_diff.reshape(1, -1)).ravel()
-        pred = model_predict(t["node_emb"][i], t["edge_index"][i], [model],
+        pred = model_predict_subgraph(t["node_emb"][i], t["edge_index"][i], [model],
                              t["mutation_idx"][i], mut_diff, dev)
         if pred is not None:
             scores[i] = float(np.asarray(pred).mean())
@@ -306,7 +306,7 @@ def _score_swing(train_df: pd.DataFrame, test_df: pd.DataFrame,
 def _score_saambe3d(test_df: pd.DataFrame) -> np.ndarray:
     structures = Structures(pdb_cache=OUT_DIR / "_pdb_cache")
     scores = np.full(len(test_df), np.nan, dtype=np.float32)
-    from evaluation.saambe3d_cv import _call_saambe, _SAAMBE3D_PY
+    from evaluation.saambe3d_cv import _call_saambe
     for i, row in enumerate(test_df.itertuples()):
         wt, pos_int, mt = mutations.parse(row.mutation)
         pdb_path, chain = structures.find_pdb(

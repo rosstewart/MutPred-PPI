@@ -4,8 +4,7 @@ A minimal, self-contained, real end-to-end run of the public MutPred-PPI inferen
 pipeline (`src/inference/`) — no external downloads, no GPU cluster, no full
 datasets required. Runs in well under a minute on GPU (a few minutes on CPU).
 
-This is a smaller/faster sibling of the [`example/`](../../example/) directory at the
-repo root. The difference: this example builds its own tiny mmCIF structure set from
+This example builds its own tiny mmCIF structure set from
 protein pairs pulled from the real Sahni+Fragoza training data, so everything needed
 to run it ships inside this directory — nothing outside the repo, and no VarChAMP (unpublished) data.
 
@@ -69,15 +68,15 @@ This regenerates (into this directory, untracked so the repo stays clean):
 
 ## Expected output
 
-A 3-row (+ header) TSV, `complex_id`, `variant`, `score`, with `score` (aliased
-`mutpredppi_score` elsewhere in the repo) a probability in `[0, 1]` — higher means
-higher predicted probability that the variant disrupts the interaction:
+A 3-row (+ header) TSV with columns `interactor`, `partner`, `mutation`, `score`.
+`score` is a probability in `[0, 1]` — higher means a higher predicted probability
+that the variant disrupts the interaction. `mutation` is 1-based.
 
 ```
-complex_id      variant score
-O75603_Q96LI6   G63S    0.6895588040351868
-P40259_O43765   G137S   0.972222626209259
-Q4ACX1_O43765   L171R   0.9620878100395203
+interactor	partner	mutation	score
+P40259	O43765	G137S	0.972222626209259
+O75603	Q96LI6	G63S	0.6895588040351868
+Q4ACX1	O43765	L171R	0.9620879888534546
 ```
 
 (Row order may vary run-to-run — the pipeline processes complexes via `glob`, whose

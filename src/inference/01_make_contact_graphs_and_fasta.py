@@ -240,88 +240,59 @@ def make_graph(complex_id, mmcif_dir, save_dir):
     }
 
 
-def write_variant_labels(variant_indices, save_dir, method='interaction_loss'):
-    """Generate variant sequence files."""
-    variant_labels_lines = []
-    variant_labels_sep_lines = []
-    variant_rows = []          # (interactor, partner, mutation_0b), explicit columns
+def write_variant_labels(variant_indices, complex_seqs, save_dir,
+                         method='interaction_loss'):
+    """Write `variants.csv`: one row per (interactor, partner, mutation).
+
+    `complex_seqs` maps `{interactor}_{partner}` -> `(seq_a, seq_b)`. It used to
+    read those sequences back off disk from a `.labels_separated` file (chains
+    distinguished by LETTER CASE) plus a `.num_residues_a` file holding a single
+    integer -- a private serialisation of data this process already had in
+    memory, in a format `utils.legacy_guard` rejects. Passing the sequences in
+    removes the round trip and the two retired files with it (2026-09-10).
+
+    Four other outputs were dropped at the same time, all written and read by
+    nothing: `{a}_{b}.{method}_pos`, `{a}_{b}.labels`, `all_variants.labels`
+    and `all_variants.labels_separated`. `variants.csv` is the canonical form
+    and is what `generate_fasta_output` and `inference_utils` actually read.
+
+    `mutation` is 0-BASED here, matching the ProtT5 keys the next step looks up;
+    conversion to the canonical 1-based form happens once, in
+    `inference_utils.write_output`.
+    """
+    variant_rows = []
     num_bad_variants = 0
-    
+
     for complex_id in variant_indices:
         id_a, id_b = complex_id.split(':')
-        labels_file = os.path.join(save_dir, f'{id_a}_{id_b}.labels_separated')
-        
-        if not os.path.exists(labels_file):
+        key = f'{id_a}_{id_b}'
+        if key not in complex_seqs:
             continue
-        
-        # read wild-type sequence
-        with open(labels_file, 'r') as f:
-            pdb_seq = f.read().strip()
-        
-        # read number of residues in chain A
-        with open(os.path.join(save_dir, f'{id_a}_{id_b}.num_residues_a'), 'r') as f:
-            num_residues_a = int(f.read().strip())
-        
-        chain_to_pos = {}
-        
+        seq_a, seq_b = complex_seqs[key]
+        pdb_seq = seq_a + seq_b
+        num_residues_a = len(seq_a)
+
         for chain, mt_idx, wt_res, mt_res in variant_indices[complex_id]:
-            # validate mutation
             if mt_idx >= num_residues_a or pdb_seq[mt_idx] != wt_res:
-                print(chain, mt_idx, wt_res, mt_res, num_residues_a, '\n', pdb_seq[mt_idx], wt_res, '\n', pdb_seq)
+                print(f'  bad variant {key} {wt_res}{mt_idx}{mt_res}: '
+                      f'chain={chain} num_residues_a={num_residues_a} '
+                      f'found={pdb_seq[mt_idx] if mt_idx < len(pdb_seq) else "<oob>"}')
                 num_bad_variants += 1
                 continue
-            
-            # create variant sequence
-            vt_seq = list(pdb_seq)
-            vt_seq[mt_idx] = mt_res
-            vt_seq = ''.join(vt_seq)
-            
-            # store variant sequences
-            variant_name = f'{id_a}_{id_b}_{method}_variant_{wt_res}{mt_idx}{mt_res}'
-            variant_labels_lines.append(f'>{variant_name}\n{vt_seq.upper()}\n')
-            variant_labels_sep_lines.append(f'>{variant_name}\n{vt_seq}\n')
+            assert chain == 'A', f'only chain A mutations are supported, got {chain}'
             variant_rows.append((id_a, id_b, f'{wt_res}{mt_idx}{mt_res}'))
-            
-            if chain not in chain_to_pos:
-                chain_to_pos[chain] = ''
-            chain_to_pos[chain] += f'{mt_idx}\t{wt_res}{mt_idx}{mt_res}\n'
-        
-        # write position files
-        for chain in chain_to_pos:
-            assert chain == 'A'  # only chain A mutations
-            pos_file = os.path.join(save_dir, f'{id_a}_{id_b}.{method}_pos')
-            with open(pos_file, 'w') as f:
-                f.write(chain_to_pos[chain])
-    
-    print(f'{num_bad_variants} bad variants')
-    
-    # write all variant sequences
-    variant_labels_file = os.path.join(save_dir, 'all_variants.labels')
-    variant_labels_sep_file = os.path.join(save_dir, 'all_variants.labels_separated')
-    
-    with open(variant_labels_file, 'w') as f:
-        f.writelines(variant_labels_lines)
-    
-    with open(variant_labels_sep_file, 'w') as f:
-        f.writelines(variant_labels_sep_lines)
 
-    # The canonical form of the same information. The `.labels` FASTAs above key
-    # on `{interactor}_{partner}_{method}_variant_{mut}`, a four-part composite
-    # that has to be split back apart to be used; this table states the three
-    # fields directly. `mutation` is 0-BASED here, matching the ProtT5 keys the
-    # next step looks up; conversion to the canonical 1-based form happens once,
-    # in `inference_utils.write_output`.
+    print(f'{num_bad_variants} bad variants')
+
     variants_index = os.path.join(save_dir, 'variants.csv')
     with open(variants_index, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['interactor', 'partner', 'mutation'])
         w.writerows(variant_rows)
-    print(f'Wrote {variants_index}')
-
-    return variant_labels_sep_file
+    print(f'Wrote {variants_index} ({len(variant_rows)} variants)')
 
 
-def generate_fasta_output(save_dir, wd, variant_labels_sep_file=None):
+def generate_fasta_output(save_dir, wd):
     """Write `wt_and_vt.fasta`: every wild-type, partner and variant sequence.
 
     Driven by `complexes.csv` and `variants.csv`, the two tables written above.
@@ -331,9 +302,6 @@ def generate_fasta_output(save_dir, wd, variant_labels_sep_file=None):
     those steps is a guess: `split('_')` mis-assigns both proteins for any
     RefSeq-style id (`NP_002046_GFAP`), and case-encoding cannot represent a
     sequence that legitimately contains both cases. The tables state all of it.
-
-    `variant_labels_sep_file` is accepted and ignored, so existing callers do
-    not have to change.
     """
     complexes_path = os.path.join(save_dir, 'complexes.csv')
     variants_path = os.path.join(save_dir, 'variants.csv')
@@ -365,7 +333,10 @@ def generate_fasta_output(save_dir, wd, variant_labels_sep_file=None):
             seq = seqs.get(interactor)
             if seq is None:
                 continue
-            idx = int(mutation[1:-1])          # already 0-based; see variants.csv
+            # variants.csv holds 0-BASED positions, so `position` (raw integer,
+            # no base assumed) is the right accessor -- `index` would subtract
+            # one from a number that is already an index.
+            idx = mutations.position(mutation)
             if idx >= len(seq) or seq[idx] != mutation[0]:
                 continue
             f_out.write(f">{interactor} {mutation}\n"
@@ -411,23 +382,17 @@ if __name__ == "__main__":
             w.writerow({k: r[k] for k in w.fieldnames})
     print(f"Wrote {index_path}")
 
-    # sequence files, still keyed by complex_id: they feed the variant/FASTA
-    # steps below, which are about variants rather than about graphs.
-    for r in records:
-        key = f"{r['interactor']}_{r['partner']}"
-        seq_a, seq_b = r['interactor_sequence'], r['partner_sequence']
+    # Sequences stay in memory and are handed to the variant step directly.
+    # They used to be round-tripped through three per-complex files
+    # (`.labels`, `.labels_separated`, `.num_residues_a`) in `save_dir`.
+    complex_seqs = {
+        f"{r['interactor']}_{r['partner']}":
+            (r['interactor_sequence'], r['partner_sequence'])
+        for r in records
+    }
 
-        with open(os.path.join(save_dir, f'{key}.labels'), 'w') as f:
-            f.write(seq_a + seq_b)
-
-        with open(os.path.join(save_dir, f'{key}.labels_separated'), 'w') as f:
-            f.write(seq_a + seq_b.lower())
-
-        with open(os.path.join(save_dir, f'{key}.num_residues_a'), 'w') as f:
-            f.write(str(len(seq_a)))
-    
-    # generate variant labels
-    variant_labels_sep_file = write_variant_labels(variant_indices, save_dir)
+    # generate variants.csv
+    write_variant_labels(variant_indices, complex_seqs, save_dir)
     
     # generate final FASTA output
-    generate_fasta_output(save_dir, wd, variant_labels_sep_file)
+    generate_fasta_output(save_dir, wd)

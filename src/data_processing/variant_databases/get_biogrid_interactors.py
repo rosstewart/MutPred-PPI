@@ -2,9 +2,16 @@
 """Extract direct-binding PPI partners from BioGRID and map ClinVar variants to them.
 
 Stage 1 (BioGRID): reads the BioGRID full interaction TSV, keeps only
-physically binding experimental systems (Co-crystal Structure, Far Western,
-Reconstituted Complex, Cross-Linking-MS), and writes a uniprot_to_interactors
-pickle and a FASTA of interactor sequences.
+experimental systems that evidence a DIRECT physical contact, and writes a
+uniprot_to_interactors pickle and a FASTA of interactor sequences. The five
+systems are enumerated in `BINDING_TECHNIQUES` below and are the definition of
+"physical binding evidence only" used throughout the variant-database analyses.
+Systems that establish co-complex membership without direct contact (Affinity
+Capture-MS and similar) are deliberately excluded, since an edgotype is a claim
+about a specific binding interface.
+
+This script is stage 0 of the variant-database chain: every `map_*.py` consumes
+the pickles it writes, via their `--biogrid-dir`.
 
 Stage 2 (ClinVar): reads ClinVar WT+VT FASTA files (one per significance
 class), intersects with the BioGRID network, and writes per-class variant

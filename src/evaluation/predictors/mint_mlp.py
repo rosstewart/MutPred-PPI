@@ -33,11 +33,8 @@ from .nn_base import (
 
 logger = logging.getLogger(__name__)
 
-from pathlib import Path as _Path
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import cache_file  # noqa: E402
 
 CACHE_PATH = str(cache_file("mint_cache.pkl"))

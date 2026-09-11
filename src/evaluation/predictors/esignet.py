@@ -28,17 +28,18 @@ from . import BasePredictor, register
 from .nn_base import load_cache, parse_mutation
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from paths import EXTERNAL_DIR, REVISIONS_DIR  # noqa: E402
+from paths import EXTERNAL_DIR, REVISIONS_DIR, method_dir  # noqa: E402
 from utils import mutations  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
 
-# Upstream eSIG-Net source, imported by file path.
-# Resolved via external/esignet -> the pristine clone; run scripts/link_external.sh.
-_SDNN_MODEL_PATH = EXTERNAL_DIR / "esignet" / "backbones" / "sdnn" / "sdnn_model.py"
+# Upstream eSIG-Net source, imported by file path from the shared
+# external_methods/ checkout (see paths.method_dir and
+# docs/REPRODUCING_ANALYSES.md). Resolved lazily so importing this module does
+# not require the checkout to be present.
+def _sdnn_model_path():
+    return method_dir("esignet") / "backbones" / "sdnn" / "sdnn_model.py"
 _ESM_CACHE_PATH = str(REVISIONS_DIR / "esm2_residue_embeddings.pkl")
 # Sequence → 573-dim feature vector (None on error).  Shared across all folds.
 _FEAT_CACHE: dict[str, Optional[np.ndarray]] = {}
@@ -51,7 +52,7 @@ _FEAT_CACHE: dict[str, Optional[np.ndarray]] = {}
 
 def _load_sdnn_class():
     """Import SdnnModel without polluting sys.modules."""
-    spec = importlib.util.spec_from_file_location("_esignet_sdnn_model", _SDNN_MODEL_PATH)
+    spec = importlib.util.spec_from_file_location("_esignet_sdnn_model", _sdnn_model_path())
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.SdnnModel
@@ -59,7 +60,7 @@ def _load_sdnn_class():
 
 # ── Conjoint Triad (Shen 2007 7-group mapping, 343 features) ─────────────────
 # Frequency-normalized (count / total) to match upstream eSIG-Net's shipped
-# features; see _conjoint_triad and repro_test/validate_esignet_features.py.
+# features; see _conjoint_triad and src/evaluation/predictors/validate_esignet_features.py.
 
 _CT_GROUPS = {
     "g1": "AGV", "g2": "ILFP", "g3": "YMTS",
@@ -86,7 +87,7 @@ def _conjoint_triad(seq: str) -> np.ndarray:
     `(count - min) / max`, which gives rowsum 44.5 and max 1.0 -- i.e. the CT
     block (343 of the 573 features) entered the SDNN ~45x larger than upstream's
     while AAC and AC matched, distorting the block balance the model sees.
-    Verified by `repro_test/validate_esignet_features.py`.
+    Verified by `src/evaluation/predictors/validate_esignet_features.py`.
     """
     counts = {f: 0 for f in _CT_FEATURES}
     L = len(seq)
@@ -114,7 +115,7 @@ def _conjoint_triad(seq: str) -> np.ndarray:
 # error: reproducing upstream's shipped features requires them exactly as-is.
 # Per-property variance profile vs upstream's h5 correlates +0.99 with this
 # table and -0.25 with the 'corrected' one.  Do not 'fix' this.
-# See repro_test/validate_esignet_features.py.
+# See src/evaluation/predictors/validate_esignet_features.py.
 
 _AC_PROPERTIES = ["H1", "H2", "NCI", "P1", "P2", "SASA", "V"]
 _AC_AA_PROPS: dict[str, dict[str, float]] = {

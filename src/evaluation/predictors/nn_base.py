@@ -28,7 +28,6 @@ import numpy as np
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
 from utils.mutations import index as _mutation_index  # noqa: E402
 from utils.mutations import parse as _parse_1based  # noqa: E402
 

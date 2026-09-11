@@ -10,9 +10,8 @@ import pickle
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
+from utils.legacy_guard import LegacyInputError  # noqa: E402
 
 
 _PUB = REPO_ROOT
@@ -21,6 +20,18 @@ _HOME = _BASE / "home"
 _OUT  = _PUB / "figures" / "variant_db_stats_table.tex"
 
 PRED_DIR = _PUB / "results" / "variant_dbs_all_data"
+
+
+def prediction_tsv(db):
+    """One database's prediction TSV, in either supported layout.
+
+    Inference writes `{DATA_ROOT}/{db}/mutpred_ppi_predictions.tsv`; the
+    reproduction notebook collects them as `{db}_mutpred_ppi_predictions.tsv`.
+    """
+    collected = PRED_DIR / f"{db}_mutpred_ppi_predictions.tsv"
+    if collected.exists():
+        return collected
+    return DATA_ROOT / db / "mutpred_ppi_predictions.tsv"
 
 # Classification source files
 CLINVAR_SUBSETS = {
@@ -34,17 +45,24 @@ RARE_BENIGN_THRESHOLD = 0.01
 GNOMAD_AF_FILE   = ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv"
 VT_TO_TUMOR_SITE = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
 ONCO_TSG_FILE    = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
-AUTISM_SUBSET    = ANNOTATIONS_DIR / "autism" / "variant_subset.pkl"
-NEURODEV_LABELS  = ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl"
+NEURODEV_LABELS  = ANNOTATIONS_DIR / "neurodev" / "variant_label_dict.pkl"
 HGMD_SUBSET      = ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl"
 AR_AD_FILE       = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
 
 
 def parse_preds(tsv_path) -> pd.DataFrame:
-    """Load predictions TSV; parse complex_id into interactor/partner."""
+    """Load a predictions TSV as interactor / partner / variant / score.
+
+    Current files carry the two accessions in separate columns. This used to
+    split a welded `complex_id` on its first underscore, which raises on every
+    current file and is wrong for any accession containing the delimiter.
+    """
     df = pd.read_csv(tsv_path, sep="\t")
-    df[["interactor", "partner"]] = df["complex_id"].str.split("_", n=1, expand=True)
-    return df
+    if "complex_id" in df.columns:
+        raise LegacyInputError(
+            f"{tsv_path} uses the retired complex_id/variant/score schema; "
+            f"re-score the database rather than parsing it.")
+    return df.rename(columns={"mutation": "variant"})
 
 
 def stats(df: pd.DataFrame, subset=None) -> dict:
@@ -57,7 +75,11 @@ def stats(df: pd.DataFrame, subset=None) -> dict:
         df = df[mask]
     if len(df) == 0:
         return dict(proteins=0, pairs=0, variants=0, triplets=0, mean_partners=0.0)
-    n_proteins = df["interactor"].nunique()
+    # Every protein the group touches, on either side of a pair -- matching
+    # `generate_training_table.py`. Counting only interactors made the same
+    # column mean different things in Table 1 and Table S1, and understated a
+    # group whose variants sit in few proteins with many distinct partners.
+    n_proteins = len(set(df["interactor"]) | set(df["partner"]))
     n_pairs    = df.groupby(["interactor", "partner"]).ngroups
     n_variants = df.groupby(["interactor", "variant"]).ngroups
     n_triplets = len(df)
@@ -90,7 +112,7 @@ def main() -> None:
 
     # ── ClinVar ──────────────────────────────────────────────────────────────
     print("Processing ClinVar...", flush=True)
-    cv_df = parse_preds(PRED_DIR / "clinvar_mutpred_ppi_predictions.tsv")
+    cv_df = parse_preds(prediction_tsv("clinvar"))
     subsets = {k: pickle.load(open(v, "rb")) for k, v in CLINVAR_SUBSETS.items()}
     rare_benign_set = set()
     if BENIGN_AF_FILE.exists():
@@ -127,7 +149,7 @@ def main() -> None:
 
     # ── COSMIC ───────────────────────────────────────────────────────────────
     print("Processing COSMIC...", flush=True)
-    cos_df = parse_preds(PRED_DIR / "cosmic_mutpred_ppi_predictions.tsv")
+    cos_df = parse_preds(prediction_tsv("cosmic"))
     vt_to_sites = pickle.load(open(VT_TO_TUMOR_SITE, "rb"))
     onco_tsg    = pickle.load(open(ONCO_TSG_FILE, "rb"))
     onco_vts    = onco_tsg["oncogene"]
@@ -167,7 +189,7 @@ def main() -> None:
 
     # ── HGMD ─────────────────────────────────────────────────────────────────
     print("Processing HGMD...", flush=True)
-    hgmd_tsv = PRED_DIR / "hgmd_mutpred_ppi_predictions.tsv"
+    hgmd_tsv = prediction_tsv("hgmd")
     if hgmd_tsv.exists():
         hgmd_df = parse_preds(hgmd_tsv)
         lines += [r"\multicolumn{6}{l}{\textit{HGMD}} \\"]
@@ -182,7 +204,7 @@ def main() -> None:
 
     # ── gnomAD ────────────────────────────────────────────────────────────────
     print("Processing gnomAD...", flush=True)
-    gn_df = parse_preds(PRED_DIR / "gnomad_mutpred_ppi_predictions.tsv")
+    gn_df = parse_preds(prediction_tsv("gnomad"))
     af_dict = {}
     with open(GNOMAD_AF_FILE) as f:
         for ln in f:
@@ -216,7 +238,7 @@ def main() -> None:
 
     # ── NDD & ASD ─────────────────────────────────────────────────────────────
     print("Processing NDD / ASD...", flush=True)
-    ndd_df = parse_preds(PRED_DIR / "autism_mutpred_ppi_predictions.tsv")
+    ndd_df = parse_preds(prediction_tsv("neurodev"))
     label_dict = pickle.load(open(NEURODEV_LABELS, "rb"))
     ndd_case_set, ndd_ctrl_set = set(), set()
     for (u, v, p) in ndd_df.apply(
@@ -230,9 +252,18 @@ def main() -> None:
     lines.append(row("Control", stats(ndd_df, ndd_ctrl_set)))
     lines.append(r"\hline")
 
-    asd_subset = pickle.load(open(AUTISM_SUBSET, "rb"))
+    # ASD is its own database (Fu et al. de novo cases), not a slice of NeuroDev.
+    # This row used to be `stats(ndd_df, neurodev/variant_subset.pkl)` -- the
+    # NeuroDev predictions filtered through an AlphaFold folding-budget cap
+    # (<=10 partners per interactor, stopping at 600 complexes), whose 290
+    # variants are a strict subset of NeuroDev's. That is what produced the
+    # published 270-variant / 1,111-triplet row.
+    asd_tsv = prediction_tsv("asd")
     lines += [r"\multicolumn{6}{l}{\textit{Autism Spectrum Disorder}} \\"]
-    lines.append(row("Case", stats(ndd_df, asd_subset)))
+    if asd_tsv.exists():
+        lines.append(row("Case", stats(parse_preds(asd_tsv))))
+    else:
+        print(f"  ASD: {asd_tsv} not found, row omitted", flush=True)
     lines.append(r"\hline")
 
     lines.append(r"\end{tabular}")

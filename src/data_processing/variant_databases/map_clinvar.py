@@ -57,10 +57,10 @@ Usage:
     python map_clinvar.py --stage variants \\
         --variant-summary variant_summary.txt \\
         --hgnc hgnc_complete_set.txt \\
-        --uniprot-fasta-dir . --output-dir /data/ross/clinvar
+        --uniprot-fasta-dir . --output-dir $MUTPRED_DATA_ROOT/clinvar
 
     python map_clinvar.py --stage interactors \\
-        --clinvar-dir /data/ross/clinvar --biogrid-dir biogrid \\
+        --clinvar-dir $MUTPRED_DATA_ROOT/clinvar --biogrid-dir $MUTPRED_DATA_ROOT/biogrid \\
         --output-dir $MUTPRED_DATA_ROOT/clinvar
 """
 from __future__ import annotations

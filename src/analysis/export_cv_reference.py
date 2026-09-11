@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 
 from paths import DATASETS_DIR  # noqa: E402
-from utils.gcv_common import (  # noqa: E402
+from utils.gcv_common import (dataset_config,   # noqa: E402
     DATASET_CONFIGS, complex_clusters, compute_pair_test_classes, load_data,
     make_fold_splits,
 )
@@ -79,7 +79,7 @@ def export(dataset: str, n_seeds: int = 30, identity: float = 0.5) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"\n=== {dataset} ===", flush=True)
-    df = load_data(DATASET_CONFIGS[dataset]).reset_index(drop=True)
+    df = load_data(dataset_config(dataset)).reset_index(drop=True)
     print(f"  {len(df)} rows", flush=True)
 
     # Groups are cd-hit clusters of the FULL COMPLEX sequence, never one chain.

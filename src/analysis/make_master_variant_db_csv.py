@@ -2,7 +2,7 @@
 """Build a master gzip-compressed CSV of all variant-partner predictions.
 
 Uses the all-data model's (sahni_fragoza_varchamp_all_mapped090826) predictions across
-ClinVar, gnomAD, and autism/NDD datasets. HGMD is excluded (commercial
+ClinVar, gnomAD, and NDD datasets. HGMD is excluded (commercial
 license). COSMIC is excluded by default due to redistribution restrictions;
 enable with --include-cosmic if you have verified your use is compliant.
 
@@ -24,8 +24,6 @@ from pathlib import Path
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT  # noqa: E402
 
 
@@ -39,7 +37,7 @@ ALL_DATA_TSV = {
     "clinvar": _REVDIR / "variant_dbs_all_data" / "clinvar_mutpred_ppi_predictions.tsv",
     "gnomad":  _REVDIR / "variant_dbs_all_data" / "gnomad_mutpred_ppi_predictions.tsv",
     "cosmic":  _REVDIR / "variant_dbs_all_data" / "cosmic_mutpred_ppi_predictions.tsv",
-    "autism":  _REVDIR / "variant_dbs_all_data" / "autism_mutpred_ppi_predictions.tsv",
+    "neurodev":  _REVDIR / "variant_dbs_all_data" / "neurodev_mutpred_ppi_predictions.tsv",
 }
 
 CLINVAR_PKL = {
@@ -50,8 +48,8 @@ CLINVAR_PKL = {
 GNOMAD_AF_TSV      = ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv"
 BENIGN_AF_TSV      = ANNOTATIONS_DIR / "benign_allele_frequencies.tsv"
 RARE_BLB_AF_THRESH = 0.01
-ASD_SUBSET_PKL     = ANNOTATIONS_DIR / "autism" / "variant_subset.pkl"
-NDD_LABEL_PKL   = ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl"
+ASD_SUBSET_PKL     = ANNOTATIONS_DIR / "neurodev" / "variant_subset.pkl"
+NDD_LABEL_PKL   = ANNOTATIONS_DIR / "neurodev" / "variant_label_dict.pkl"
 
 # COSMIC (only used with --include-cosmic)
 COSMIC_ONCO_TSG_PKL = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"

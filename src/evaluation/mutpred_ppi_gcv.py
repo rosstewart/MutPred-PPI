@@ -31,7 +31,8 @@ _HERE = Path(__file__).resolve().parent
 
 import joblib  # noqa: E402
 
-from utils.gcv_common import DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data, run_gcv  # noqa: E402
+from utils.runtime import resolve_device  # noqa: E402
 from utils.mutpred_ppi_data import build_tensors  # noqa: E402
 from training.train_fold import (  # noqa: E402
     _MEGASCALE_SCALER_PATH, _V1_0_SCALER_PATH, train_fold)
@@ -52,15 +53,16 @@ def run(args: argparse.Namespace) -> None:
     # is the split, which comes from the seed-keyed splits table and is identical
     # across every method. Kernel-level nondeterminism buys speed and only
     # perturbs the last digits of a fold's predictions.
-    cfg = DATASET_CONFIGS[args.dataset]
-    device = torch.device(args.device)
+    cfg = dataset_config(args.dataset)
+    device = resolve_device(args.device)
 
     rows = load_data(cfg)
     # require_complete: build_tensors raises unless every row has a structure and
     # all three embeddings, so this method is scored on exactly the rows the
     # sequence-only methods are. No NaN, no shrunken denominator.
     t = build_tensors(rows, args.dataset,
-                      use_wt_emb=args.ablation in ("wt-emb", "megascale_all_wt-emb"))
+                      use_wt_emb=args.ablation in ("wt-emb", "megascale_all_wt-emb"),
+                      two_hop=args.two_hop)
 
     # train_fold walks the whole tensor list, not just the fold's indices, so it
     # must be handed dense lists. Every row is usable, so position is identity.
@@ -104,7 +106,7 @@ def run(args: argparse.Namespace) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dataset", required=True, choices=sorted(DATASET_CONFIGS))
+    p.add_argument("--dataset", required=True, type=dataset_arg, choices=list(DATASET_CONFIGS))
     # Restricted to what the data layer supports, so an unimplemented ablation
     # fails at parse time rather than silently reproducing `megascale_all`.
     p.add_argument("--ablation", default="megascale_all",
@@ -119,6 +121,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--n-gcv", type=int, default=30)
     p.add_argument("--outdir", default=str(GCV_RESULTS_DIR))
+    p.add_argument(
+        "--two-hop", action=argparse.BooleanOptionalAction, default=True,
+        help="Restrict each sample to the two-hop neighbourhood of its mutation "
+             "site (default: True). Exact for this model -- it reads one node "
+             "after two GAT layers and pools nothing -- and ~30x smaller than "
+             "the full complex. --no-two-hop restores whole-complex behaviour.")
     p.add_argument(
         "--resume", action=argparse.BooleanOptionalAction, default=True,
         help="Resume from an existing checkpoint, continuing after the last "

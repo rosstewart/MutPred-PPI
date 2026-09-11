@@ -22,8 +22,6 @@ import pandas as pd
 import requests
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import DATASETS_DIR, REPO_ROOT  # noqa: E402
 from utils.identifiers import bare_accession  # noqa: E402
 

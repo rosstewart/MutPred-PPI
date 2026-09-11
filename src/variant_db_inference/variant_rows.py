@@ -42,12 +42,13 @@ from pathlib import Path
 
 _PUB = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PUB / "src"))
+from paths import DATA_ROOT  # noqa: E402
 from contact_graphs import ContactGraphStore, sha  # noqa: E402
 from utils.mutations import MUTATION_RE as _MUT_RE  # noqa: E402
 from utils.mutations import to_one_based, to_zero_based  # noqa: E402
 from utils.sequences import accession_only, read_fasta  # noqa: E402
 
-_ROOT = Path("/data/ross/ppi_lossgain/interaction_loss")
+_ROOT = DATA_ROOT
 _TABLE_DIR = _PUB / "datasets" / "variant_dbs"
 _ALIASES = _TABLE_DIR / "aliases.csv"
 
@@ -60,19 +61,28 @@ DB_SOURCES = {
                 "id_to_seq": _ROOT / "gnomad" / "id_to_seq.pkl"},
     "hgmd":    {"fasta": _ROOT / "hgmd" / "hgmd_interaction_loss_wt_and_vt.fasta",
                 "id_to_seq": _ROOT / "hgmd" / "id_to_seq.pkl"},
-    "autism":  {"fasta": _ROOT / "autism" / "autism_interaction_loss_wt_and_vt.fasta",
-                "id_to_seq": _ROOT / "autism" / "id_to_seq.pkl"},
+    "neurodev": {"fasta": _ROOT / "neurodev" / "neurodev_interaction_loss_wt_and_vt.fasta",
+                 "id_to_seq": _ROOT / "neurodev" / "id_to_seq.pkl"},
+    "asd":      {"fasta": _ROOT / "asd" / "asd_interaction_loss_wt_and_vt.fasta",
+                 "id_to_seq": _ROOT / "asd" / "id_to_seq.pkl"},
 }
 
-# Historical names, still used by callers, docs and other modules. `autism` was
-# originally `neurodev`, and `tulika_autism` was originally `fu_autism` -- the
-# datasets were renamed but the old names survive in
-# `classify_variant_dbs.SUBSET_FILES` ("fu_autism"), in the on-disk directory
-# `tulika_autism/`, and in run scripts. Resolve rather than reject: a caller
-# passing a real dataset under its other name is not an error.
+# Historical names, still used by callers, docs and other modules.
+#
+# `neurodev` is the NeuroDev case/control cohort and is the canonical name; it
+# was briefly spelled `autism`, which is wrong twice over -- the cohort is
+# neurodevelopmental disorder broadly, and the name collided with the separate
+# Fu et al. de novo autism set. That second dataset is `asd`, previously spelled
+# `tulika_autism` / `fu_autism` after the person who assembled it. The two are
+# different cohorts: `neurodev` carries case/control labels across four
+# disorders, `asd` is de novo ASD cases only and is unlabelled.
+#
+# Resolve rather than reject: a caller passing a real dataset under an older
+# spelling is not an error.
 DB_ALIASES = {
-    "neurodev": "autism",
-    "fu_autism": "tulika_autism",
+    "autism": "neurodev",
+    "tulika_autism": "asd",
+    "fu_autism": "asd",
 }
 
 

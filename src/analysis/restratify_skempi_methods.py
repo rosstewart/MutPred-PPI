@@ -5,8 +5,10 @@ These methods are trained on SKEMPI, not Sahni+Fragoza. Their C1/C2/C3 classes
 should reflect how well they generalise from THEIR own training set, i.e.
 C1 = both proteins in SKEMPI training, C2 = one in, C3 = neither in.
 
-The canonical SKEMPI reference is SAAMBE_train_uniprots.npy (258 proteins),
-already used for the GCV-figure stratification in roc_plots.py.
+The canonical SKEMPI reference is `datasets/annotations/skempi_train_uniprots.csv`
+(342 proteins), derived from source by
+`src/data_processing/training_sets/prepare_skempi_reference.py` and shared with
+the GCV-figure stratification via `utils.gcv_common.load_skempi_train_uniprots`.
 
 **Redundant for freshly-generated arrays (2026-09-10).**
 `run_varchamp_blind_test.py` now assigns SKEMPI-based C1/C2/C3 at generation
@@ -25,15 +27,13 @@ import os
 import numpy as np
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import GCV_RESULTS_DIR, REPO_ROOT, VARCHAMP_BLIND_TEST_DIR  # noqa: E402
 from utils.blind_test_common import load_class_arrays  # noqa: E402
+from utils.gcv_common import load_skempi_train_uniprots  # noqa: E402
 
 
 _PUB = str(REPO_ROOT)
 _EVAL_DIR = str(VARCHAMP_BLIND_TEST_DIR)
-_SAAMBE_UNIPROTS = str(GCV_RESULTS_DIR / "SAAMBE_train_uniprots.npy")
 
 METHODS = [
     "SAAMBE-3D (Sahni+Fragoza train) (varchamp_blind_test)",
@@ -120,9 +120,7 @@ def main():
                    help="Print counts without writing files")
     args = p.parse_args()
 
-    skempi_proteins = set(
-        np.load(_SAAMBE_UNIPROTS, allow_pickle=True).tolist()
-    )
+    skempi_proteins = load_skempi_train_uniprots()
     print(f"SKEMPI training proteins: {len(skempi_proteins)}")
 
     for method in METHODS:

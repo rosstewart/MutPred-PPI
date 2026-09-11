@@ -63,6 +63,9 @@ DATASETS = {
 }
 
 _RE_MUT = re.compile(r"^([A-Z])(\d+)([A-Z])$")
+
+# Written by src/data_processing/annotate_af3_coverage.py.
+AF3_FAILED_COL = "af3_failed"
 ROW_COLS = ["interactor", "partner", "mutation", "position", "wt_aa", "mut_aa",
             "perturbed", "dataset", "dataset_tier",
             "fragoza_source", "source_row_id", "cluster"]
@@ -92,6 +95,26 @@ def cluster_sequences(sequences, identity: float = 0.5) -> list:
 
 def build_rows(name: str, csv: Path) -> pd.DataFrame:
     df = pd.read_csv(csv)
+
+    # Rows with no AlphaFold3 structure are dropped BEFORE row_index is
+    # assigned, so row_index stays 0..n-1 and remains the positional join key
+    # for the splits table and every downstream cache. They are kept, flagged,
+    # in the mapping CSV for provenance; nothing past this point sees them.
+    #
+    # A complex with no structure has no contact graph, so every structure-based
+    # method scores it NaN. Carrying such rows only spreads that NaN through the
+    # per-class AUCs.
+    if AF3_FAILED_COL not in df.columns:
+        raise ValueError(
+            f"{csv} has no '{AF3_FAILED_COL}' column. Run\n"
+            f"  python src/data_processing/annotate_af3_coverage.py\n"
+            f"after canonicalising the structures -- see docs/DATA_PREPARATION.md.")
+    n_failed = int(df[AF3_FAILED_COL].astype(bool).sum())
+    if n_failed:
+        df = df[~df[AF3_FAILED_COL].astype(bool)].copy()
+        print(f"  dropped {n_failed} row(s) with no AF3 structure "
+              f"({AF3_FAILED_COL}=True); {len(df)} remain", flush=True)
+    df = df.drop(columns=[AF3_FAILED_COL]).reset_index(drop=True)
     m = df["mutation"].str.extract(_RE_MUT)
     if m.isna().any().any():
         raise ValueError(f"{name}: unparseable mutations")

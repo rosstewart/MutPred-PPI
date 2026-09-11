@@ -35,7 +35,7 @@ Two tiers, both gitignored.
 
 | tier | directory | contents |
 |---|---|---|
-| published | `datasets/source_data/` | `sahni_wt_and_mt_y2h_scores.csv`, `fragoza_cosmic.csv`, `fragoza_exac.csv`, `fragoza_hgmd.csv` |
+| published | `datasets/source_data/` | `sahni_wt_and_mt_y2h_scores.csv`, `fragoza_cosmic.csv`, `fragoza_exac.csv`, `fragoza_hgmd.csv`, `skempi_v2.csv`, `pdb_chain_uniprot.csv` |
 | restricted | `datasets/source_data_restricted/` | four VarChAMP/IGVF files |
 
 The published files come from the supplementary material of the two source
@@ -86,6 +86,25 @@ Two cases, treated differently:
   `ENTREZ_AMBIGUOUS_PINS` with the reason for each, and a *new* divergent GeneID
   that is not pinned raises rather than being resolved by a length heuristic.
 
+## Stage 2a — record AlphaFold3 coverage
+
+```bash
+conda run -n ppi python src/data_processing/annotate_af3_coverage.py
+```
+
+Writes an `af3_failed` column into every mapping CSV: `True` where the row's
+`(interactor, partner)` pair is absent from
+`datasets/af3_structures_canonical/manifest.csv`. Pairs are compared unordered.
+
+A complex with no structure has no contact graph, so every structure-based
+method scores it `NaN`. Stage 2 **drops** these rows before assigning
+`row_index`, which keeps that column a contiguous 0..n-1 positional key for the
+splits table and every downstream cache. The flagged rows stay in the mapping
+CSVs, and only there, as the record of what was excluded and why.
+
+Run this after stage 3 (structures) and re-run it whenever a new batch of folds
+lands; currently it flags 0.06-0.34% of rows per dataset.
+
 ## Stage 2 — GCV row and split tables
 
 ```bash
@@ -93,7 +112,8 @@ conda run -n ppi python src/data_processing/training_sets/prepare_gcv_tables.py 
     --dataset all --n-seeds 30
 ```
 
-Consumes the mapped CSVs and writes `datasets/training_eval/`:
+Consumes the mapped CSVs -- **excluding every `af3_failed = True` row**, see
+stage 2a -- and writes `datasets/training_eval/`:
 `sequences.csv.gz`, and per dataset `{name}_rows.csv.gz` + `{name}_splits.csv.gz`.
 
 `row_index` is the CSV's natural order and is never renumbered — it is the join
@@ -106,9 +126,36 @@ protein of a test pair was seen in that fold's training set.
 Use `--out` to write to a scratch directory and diff against the live tables
 without overwriting them.
 
-Expected row counts: `sahni_only` 1,595 · `fragoza_only` 4,729 ·
-`sahni_fragoza` 6,219 · `varchamp_all` 17,376 ·
-`sahni_fragoza_varchamp_all` 23,320.
+Expected row counts: `sahni_only` 1,591 · `fragoza_only` 4,726 ·
+`sahni_fragoza` 6,212 · `varchamp_all` 17,317 ·
+`sahni_fragoza_varchamp_all` 23,254.
+
+## Stage 2b — SKEMPI reference (comparison-method stratification)
+
+```bash
+conda run -n ppi python src/data_processing/training_sets/prepare_skempi_reference.py
+```
+
+SAAMBE-3D, MutPPI and MutPPI+ ship pretrained on SKEMPI 2.0 rather than being
+retrained per dataset, so their C1/C2/C3 split is defined by overlap with
+*SKEMPI's* proteins. This derives that set and writes
+`datasets/annotations/skempi_train_uniprots.csv` (342 accessions).
+
+Inputs are both in `datasets/source_data/`: `skempi_v2.csv` (SKEMPI 2.0,
+semicolon-delimited) and `pdb_chain_uniprot.csv` (SIFTS, per-chain).
+
+**Get the right SIFTS file.** SKEMPI identifies complexes as
+`PDB_<chains>_<chains>` (`1CSE_E_I`), so the mapping must be **per chain** —
+columns `PDB,CHAIN,SP_PRIMARY,...`. The similarly named SIFTS `uniprot_pdb`
+file maps a UniProt accession to a list of PDB ids with no chain column and
+cannot resolve these.
+
+**Every character in a chain group is a chain.** 122 of SKEMPI's 348 complexes
+have multi-character groups — `3SE8_HL_G`, `1BD2_ABC_DE` — overwhelmingly
+antibodies, where `H` and `L` are the heavy and light chains of one partner.
+A chain may also map to more than one accession (chimeric constructs), so
+resolution is a set union. 130 (pdb, chain) pairs have no SIFTS mapping —
+mostly engineered antibody constructs with no UniProt entry — and are excluded.
 
 ## Stage 3 — structures
 

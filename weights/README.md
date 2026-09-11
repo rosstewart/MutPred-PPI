@@ -1,18 +1,29 @@
-# MutPred-PPI Model Weights
+# MutPred-PPI model weights
 
-Pre-trained weights for MutPred-PPI (Zenodo: https://doi.org/10.5281/zenodo.18701748).
+## What is here now
 
-| File | Training data | Use |
-|------|--------------|-----|
-| `MutPred-PPI.pt` | Sahni + Fragoza + VarChAMP | Primary model — recommended for all users |
-| `MutPred-PPI_sahni_fragoza.pt` | Sahni + Fragoza only | Grouped cross-validation (Fig 3), VarChAMP blind test (Fig 4) |
-| `MutPred-PPI_stability_pretrain.pt` | MegaScale (Tsuboyama et al.) | Stability-pretrained checkpoint all final models fine-tune from |
-| `mutation_diff_scaler.pkl` | MegaScale (Tsuboyama et al.) | Required alongside every model above |
+| File | Trained on | Use |
+|---|---|---|
+| `MutPred-PPI.pt` | sahni_fragoza_varchamp_all (full training set, all data) | The published prediction model — use this to score your own variants |
+| `MutPred-PPI_stability_pretrain.pt` | MegaScale (Tsuboyama et al. 2023) | The stability-pretrained checkpoint every final model fine-tunes from |
+| `mutation_diff_scaler.pkl` | MegaScale | Required alongside every model; scales the mutation-difference features |
 
-Not distributed via Zenodo, present locally only: `folds/` (per-fold checkpoints),
-`MutPred-PPI_sahni.pt` (Sahni-only, Fig S2 comparison), `v1_0/MutPred-PPI_v1_0_stability_pretrain.pt`
-+ `v1_0/mutation_diff_scaler_v1_0.pkl` (pre-MegaScale stability pretrain, used only for the
-`full`/`full_all` ablation, see `docs/REPRODUCING_ANALYSES.md`).
+`v1_0/` holds the earlier pre-MegaScale stability pretrain
+(`MutPred-PPI_v1_0_stability_pretrain.pt` + `mutation_diff_scaler_v1_0.pkl`), used
+only by the `full` / `full_all` ablations. It is local-only and not distributed.
 
-The scaler must be in the same directory as the model, or passed explicitly via `--scaler`. See
-the main [README](../README.md) and [`docs/TRAINING.md`](../docs/TRAINING.md) for usage.
+`MutPred-PPI.pt` is also produced by training the final model from scratch (see
+[`docs/TRAINING.md`](../docs/TRAINING.md)); the figure-reproduction notebook does this.
+
+Per-fold cross-validation checkpoints (`folds/`) are written by the GCV scripts
+and are local-only.
+
+## Zenodo
+
+Training data and AlphaFold 3 structures are deposited separately — see
+[Data Availability](../README.md#data-availability) in the main README for the
+two DOIs. (This file previously cited the *structures* DOI as the source of
+model weights; it is not.)
+
+The scaler must sit in the same directory as the model, or be passed explicitly
+with `--scaler`.

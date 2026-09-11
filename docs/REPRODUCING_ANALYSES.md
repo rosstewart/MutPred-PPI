@@ -9,21 +9,25 @@ Zenodo bundle -- see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md).
 **One command runs everything below in order:** `notebooks/reproduce_all_figures.py`
 (jupytext percent format -- `jupytext --to notebook` for a `.ipynb`, or run it directly as a
 script) caches every step, generates missing embeddings on first use, displays each figure
-inline, and writes to the exact paths this document describes. Set `QUICK = True` in its
-header for a fast (hours, not days) smoke test that never touches the canonical `results/`
-tree -- see the notebook's own docstring cell.
+inline, and writes to the exact paths this document describes.
+
+**It ships with `QUICK = True`** (line 48): a fast smoke test that uses 1 cross-validation
+seed instead of 30 and subsampled variant databases, writing to `results_quick/` so it never
+touches the canonical `results/` tree. Those are **not** the published numbers -- set
+`QUICK = False` to reproduce them, which takes days rather than hours.
 
 ## The canonical data layer
 
-Everything reads two tables per dataset from `datasets/training_eval/`, built from the 090826
-mapping by `repro_test/build_canonical_tables.py`:
+Everything reads two tables per dataset from `datasets/training_eval/`, built by
+`src/data_processing/training_sets/prepare_gcv_tables.py`
+(see [`DATA_PREPARATION.md`](DATA_PREPARATION.md) for the chain that produces the
+mapping itself):
 
 ```
 <dataset>_rows.csv.gz    row_index, interactor, partner, mutation, position, wt_aa, mut_aa,
                          perturbed, dataset, dataset_tier, fragoza_source, source_row_id, cluster
 <dataset>_splits.csv.gz  seed, row_index, test_fold, test_class
 sequences.csv.gz         accession, sequence
-af3_index.csv.gz         seq_a_sha, seq_b_sha, len_a, len_b, path, chain_a_is_first
 ```
 
 Guarantees, asserted at build time: every `mutation` is 1-based and validated against its
@@ -35,21 +39,22 @@ the tables all agree, so nothing converts between conventions. Node indices (`mu
 
 There is no `--data-root`: the tables locate themselves.
 
-The five live datasets:
+The five live datasets (short names are the canonical `--dataset` values; the full
+`*_mapped090826` form is also accepted):
 
 | `--dataset` | rows |
 |---|---|
-| `sahni_fragoza_varchamp_all_mapped090826` | 23,320 |
-| `varchamp_all_mapped090826` | 17,376 |
-| `sahni_fragoza_mapped090826` | 6,219 |
-| `fragoza_only_mapped090826` | 4,729 |
-| `sahni_only_mapped090826` | 1,595 |
+| `sahni_fragoza_varchamp_all` | 23,254 |
+| `varchamp_all` | 17,317 |
+| `sahni_fragoza` | 6,212 |
+| `fragoza_only` | 4,726 |
+| `sahni_only` | 1,591 |
 
 Rebuild them with:
 
 ```bash
-conda run -n ppi python repro_test/build_canonical_tables.py          # rows + splits + sequences
-conda run -n ppi python repro_test/build_af3_index.py                 # structure index, by sequence
+conda run -n ppi python src/data_processing/training_sets/prepare_gcv_tables.py \
+    --dataset all --n-seeds 30                                # rows + splits + sequences
 ```
 
 ### Contact graphs
@@ -66,9 +71,8 @@ Keys are the sorted pair of `sha256(chain_sequence)[:16]`, so a pair of sequence
 matter which accessions or chain order produced it. `load_dense(interactor=..., partner=...)` and
 `load_edge_index(interactor=..., partner=...)` are keyword-only, take **sequences**, and hand back
 the graph already oriented so that the interactor occupies nodes `[0, len(interactor))`. Self-loops
-are added on read and cannot be disabled. That orientation-on-read is what retired the old `NRR`
-chain-split integer, and with it the 121 clinvar / 121 cosmic / 116 gnomad / 29 hgmd complexes
-whose filenames claimed the wrong chain order.
+are added on read and cannot be disabled. Because orientation is resolved on read, a filename
+never determines which protein is the interactor.
 
 Rebuild a store from the canonical structures:
 
@@ -81,7 +85,7 @@ conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
 
 ### AF3 structures
 
-`datasets/af3_structures_canonical/` (3,854 pairs) and
+`datasets/af3_structures_canonical/` (4,497 pairs) and
 `datasets/af3_structures_variant_dbs_canonical/` (22,239 pairs) hold one gzipped mmCIF per pair:
 
 ```
@@ -98,21 +102,46 @@ several models of a pair, the one with the highest mean pLDDT wins, with `.cif` 
 ties. Built by `src/data_processing/canonicalize_structures.py`; names are derived from chain *contents*,
 never from the old `fold_a_b_model_0` filenames.
 
+### Structure sources for the variant databases
+
+Variant-database complexes come from two places, and both are needed:
+
+1. **Folded in-house** -- the per-database `af3_models*/` trees (neurodev, gnomad,
+   clinvar, asd, hgmd, cosmic).
+2. **ProtVar precomputed AlphaFold3 interfaces** -- 126,118 high-confidence
+   complexes, downloaded separately:
+
+   ```bash
+   curl -O https://ftp.ebi.ac.uk/pub/databases/ProtVar/predictions/interfaces/2024.05.28_interface_models_high_confidence.tar
+   tar xf 2024.05.28_interface_models_high_confidence.tar
+   ln -s $PWD/pdb external/protvar_pdb
+   ```
+
+ClinVar, COSMIC, gnomAD and HGMD draw most of their partner structures from
+ProtVar: about 3,293 of their contact graphs have no in-house structure at all.
+neurodev and asd need none of it. Omitting ProtVar therefore silently costs those
+four databases roughly 40-50% of their pairs.
+
+`canonicalize_structures.py` resolves every chain by SEQUENCE against the
+canonical tables, so a structure whose chains are unknown is skipped -- the whole
+ProtVar directory can be passed as a source without pre-filtering, and PDB input
+is auto-detected and normalised to gzipped mmCIF alongside the mmCIF sources.
+
 ### Variant-database tables
 
 One self-contained table per database, replacing the scattered annotation pickles at the point of
 use:
 
 ```
-datasets/variant_dbs/{clinvar,cosmic,gnomad,hgmd,autism}_rows.csv.gz
+datasets/variant_dbs/{clinvar,cosmic,gnomad,hgmd,neurodev}_rows.csv.gz
 ```
 
 Shared columns: `interactor`, `partner`, `mutation` (**1-based**), `pair_key` (the contact-graph
 content address — sequences are not inlined), `clingen_moi`, `in_embedding_store`. Per-DB
 annotations follow: `clinical_significance`/`allele_frequency` (clinvar), `allele_frequency`
-(gnomad), `recurrence`/`tumor_sites`/`onco_tsg` (cosmic), `neurodev_label` (autism); hgmd carries
+(gnomad), `recurrence`/`tumor_sites`/`onco_tsg` (cosmic), `neurodev_label` (neurodev); hgmd carries
 the shared columns only. Row counts: clinvar 949,065, cosmic 1,447,917, gnomad 10,529,577,
-hgmd 56,266, autism 19,148.
+hgmd 56,266, neurodev 19,148.
 
 ```bash
 conda run -n ppi python src/variant_db_inference/build_variant_db_tables.py --db all
@@ -121,6 +150,72 @@ conda run -n ppi python src/variant_db_inference/build_variant_db_tables.py --db
 The pickles remain the source; these are a derived view. Zero-based conversion (FASTA headers,
 ProtT5 keys, subgraph H5 variant keys) happens only through
 `src/variant_db_inference/variant_rows.py::to_zero_based`, never inline.
+
+## Comparison methods: clone each upstream repository
+
+Every method we benchmark against is run from **its own upstream checkout**, not
+from a copy inside this repository. Clone them into `external_methods/`
+(gitignored), one directory per method:
+
+```bash
+mkdir -p external_methods
+git clone http://compbio.clemson.edu/SAAMBE-3D/      external_methods/saambe3d
+git clone https://github.com/VarunUllanat/mint       external_methods/mint
+git clone https://github.com/ChengfeiYan/PPLM        external_methods/PPLM
+git clone https://github.com/Liu-Jing/eSIG-Net       external_methods/esignet
+git clone https://github.com/Wang-Lin-boop/MutPPI    external_methods/MutPPI
+
+# Commits used for the published results:
+#   saambe3d  182a2746c8adb7434f1ac28c111e6b3f031c59e7
+#   mint      12946127faeba20698e83bfc040913ebc993a3c7
+#   PPLM      c2a4d5d1f9a433dddc65b5b11908ba3ea1970a51
+#   esignet   cd36a4a058125910d3ff0ef9b5cc717960fdbc78
+#   MutPPI    7a5c6f764818a7346c1d52977af607e81f2eaf10
+```
+
+Set `MUTPRED_PPI_METHODS_DIR` to put them elsewhere. Any script that needs a
+method it cannot find fails immediately with the exact `git clone` command
+rather than an `ImportError` from inside a `sys.path` insert.
+
+| Method | Directory | Additional files it needs |
+|---|---|---|
+| SAAMBE-3D | `saambe3d/` | Ships its own SKEMPI-trained `*_v01.model` boosters. Requires `prody` (not in the `ppi` env). `saambe3d_cv.py` auto-detects the `py311_saambe3d` conda env beside your Miniconda installation; override with `SAAMBE3D_PYTHON=/path/to/python`. |
+| MINT | `mint/` | `mint.ckpt` and `esm2_t33_650M_UR50D.json` from the MINT release page. |
+| PPLM | `PPLM/` | `weights/pplm_t33_650M.pt` from the PPLM release page. |
+| eSIG-Net | `esignet/` | Uses `backbones/sdnn/sdnn_model.py` from the checkout. Publishes no feature-extraction code, so ours is reconstructed and validated -- see `src/evaluation/predictors/validate_esignet_features.py`. |
+| MutPPI / MutPPI+ | `MutPPI/` | Per-fold checkpoints under `output/checkpoint/`; `mutppi_cv.py` prints the training command if they are absent. |
+| SWING | *(in-repo)* | `src/evaluation/swing_common.py`; no external checkout. |
+| DDMut-PPI | *(not benchmarked)* | Excluded outright: an 87% job-timeout rate on its public API made a complete scoring run unattainable. |
+
+Only SWING is implemented in this repository. Nothing under `src/` is
+third-party source.
+
+Which figure comes from which command is tabulated in
+[`MANUSCRIPT_FIGURES.md`](MANUSCRIPT_FIGURES.md), one row per label in
+`main_091026.tex` and `supplement_091026.tex`.
+
+## Running a whole suite
+
+The per-method commands below are the ground truth for what each script does, and
+are the right thing to run when reproducing one number. To run a *suite* to
+completion, use the job runner rather than looping over them by hand:
+
+```bash
+conda run -n ppi python src/run_benchmarks.py --status                  # what is done
+conda run -n ppi python src/run_benchmarks.py --suite gcv --gpus 0,1,2,3
+conda run -n ppi python src/run_benchmarks.py --suite all --dry-run     # print, run nothing
+```
+
+It skips jobs whose outputs are already complete, so an interrupted run is
+resumed by re-issuing the same command. Jobs are split into a CPU pool
+(`--jobs`, default 12) and a GPU pool (one job per id in `--gpus`).
+
+`--threads` caps BLAS/OpenMP threads per job and defaults to 1. The libraries
+otherwise start one thread per core, and on a many-core host a single small MLP
+fit spends most of its wall time in OpenMP barriers — measured on 72 cores, one
+fit took 394 s at 72 threads and 113 s at 1. Note that thread count is not
+numerically neutral: OpenBLAS partitions reductions by team size, which moves GCV
+AUCs in the 4th decimal, so keep one value for a whole suite rather than mixing.
 
 ## Grouped Cross-Validation (Fig 3, S1)
 
@@ -131,7 +226,7 @@ MutPred-PPI's loop is `src/training/train_fold.py::train_fold`, imported by both
 `mutpred_ppi_gcv.py` and `train_final_model.py` — it has no CLI of its own.
 
 ```bash
-DS=sahni_fragoza_varchamp_all_mapped090826
+DS=sahni_fragoza_varchamp_all
 
 # MutPred-PPI (graph + ProtT5). --ablation selects the freeze strategy;
 # megascale_all (default) freezes nothing.
@@ -182,10 +277,9 @@ Output: `results/biclass_gcv/roc_sahni_fragoza_biclass_with_variance.png` → **
 
 VarChAMP data is unpublished IGVF consortium data — cross-reference [data.igvf.org](https://data.igvf.org).
 
-Train on `sahni_fragoza_mapped090826`, predict on all of `varchamp_all_mapped090826` — the
-two canonical GCV datasets, nothing else. This replaced a retired, separately-built table
-(`datasets/sfvcfp_rows.csv.gz`, via a `vcfp_common.py` helper archived on 2026-09-07) that
-mixed pre-090826 sources; see `src/evaluation/run_varchamp_blind_test.py`'s module docstring.
+Train on `sahni_fragoza`, predict on all of `varchamp_all` — the two canonical datasets,
+nothing else. The trainable methods are retrained here rather than loading a checkpoint, so
+the blind test always reflects the current tables.
 DDMutPPI is excluded outright (not evaluated at all: 87% job-timeout rate on its public API).
 
 ```bash
@@ -204,7 +298,7 @@ conda run -n ppi python src/evaluation/run_varchamp_blind_test.py --method mutpp
 conda run -n ppi python src/analysis/import_mutpred2_varchamp_scores.py --csv /path/to/mutpred2_output.csv
 
 # Generate Fig 4 + S2
-conda run -n ppi python src/analysis/varchamp_blind_test.py
+conda run -n ppi python src/analysis/blind_test_figures.py
 ```
 
 `--method swing --test-pretrain` (the leaky Doc2Vec-on-everything variant) is not yet wired
@@ -216,13 +310,21 @@ stratification.
 
 ## Variant Database Inference (Fig 5–7)
 
-ProtT5 embeddings must be precomputed before inference (large, resume-safe):
+The script auto-detects a compact subgraph H5 (preferred, ~120-165 GB) or falls
+back to a full ProtT5 embeddings H5. If neither is present, build the subgraph H5:
 
 ```bash
+# Step 1 (once): precompute per-protein embeddings (~100-170 GB):
 nohup conda run -n ppi python src/variant_db_inference/precompute_prott5.py \
-    --fasta /path/to/gnomad_wt_and_vt.fasta --out prott5_embeddings.h5 \
-    --device cuda:0 > precompute.log 2>&1 &
+    --fasta /gnomad/gnomad_interaction_loss_wt_and_vt.fasta \
+    --out /gnomad/prott5_embeddings.h5 \
+    --device cuda:0 > precompute_gnomad.log 2>&1 &
 
+# Step 2 (once, optional but recommended): compress to 2-hop subgraphs (~120-165 GB):
+conda run -n ppi python src/variant_db_inference/compress_to_subgraphs.py \
+    --dataset gnomad
+
+# Step 3: run inference (uses subgraph H5 if present, else full embeddings):
 conda run -n ppi python src/variant_db_inference/run_variant_db_inference.py \
     --dataset gnomad --device cuda:0
 ```
@@ -236,12 +338,12 @@ Rows come from `datasets/variant_dbs/{db}_rows.csv.gz` and graphs from
 interactor	partner	mutation	score
 ```
 
-`mutation` is 1-based. The old composite `complex_id` = `{interactor}_{partner}` column is gone —
-splitting it on `_` mis-assigned both proteins whenever an accession itself contained the
-separator. The resume path still recognises a legacy `complex_id/variant/score` header so an
-interrupted older run can be continued, but new runs never write it. (The standalone
-`src/inference/` pipeline is the one place that still emits `complex_id`; see
-[`docs/INFERENCE.md`](INFERENCE.md).)
+`mutation` is 1-based. Both pipelines — this one and the standalone `src/inference/`
+three-step pipeline — write these same four columns. A composite
+`complex_id` = `{interactor}_{partner}` column was used previously; splitting it back on
+`_` mis-assigned both proteins whenever an accession itself contained the separator, so it
+was replaced by explicit columns. The resume path still recognises the old header, so an
+interrupted older run can be continued.
 
 HGMD and COSMIC require licensed access. HGMD is excluded from all distributed files. COSMIC
 columns are opt-in when the master CSV is assembled:
@@ -249,15 +351,42 @@ columns are opt-in when the master CSV is assembled:
 
 ### Variant-database source mapping
 
+Both this step and the per-database `map_*.py` scripts below are **optional**.
+The Zenodo bundle ships what they produce (`datasets/variant_dbs/*_rows.csv.gz`),
+and their inputs are licensed (COSMIC, HGMD) or many gigabytes (ClinVar, gnomAD,
+BioGRID). `notebooks/reproduce_all_figures.py` gates them behind
+`RUN_VARIANT_DB_MAPPING = False`; run them only to rederive the interactome from
+source.
+
+Every `map_*.py` below consumes the BioGRID pickles, so that step runs first:
+
+```bash
+conda run -n ppi python src/data_processing/variant_databases/get_biogrid_interactors.py \
+    --biogrid-tsv biogrid/biogrid_ppi.tsv \
+    --uniprot-fasta biogrid/all_uniprot_ids.fasta \
+    --output-dir $MUTPRED_DATA_ROOT/biogrid
+```
+
+This defines "physical binding evidence only": an edge is kept when BioGRID
+records it under one of five experimental systems evidencing a **direct**
+contact — Co-crystal Structure, Cross-Linking-MS (XL-MS), Far Western,
+Reconstituted Complex, Protein-Peptide. Systems that only establish co-complex
+membership (Affinity Capture-MS and similar) are excluded, because an edgotype
+is a claim about a specific binding interface. The set is
+`get_biogrid_interactors.BINDING_TECHNIQUES`, and every variant-database pair in
+`datasets/variant_dbs/{db}_rows.csv.gz` satisfies it.
+
 The per-database mapping steps that produce the annotation pickles the tables are built from.
 All of these take licensed or bulk downloads as required arguments — run each with `--help` for
 the full list, since the inputs differ per database:
 
 | Script | Required inputs |
 |---|---|
+| `src/data_processing/variant_databases/get_biogrid_interactors.py` | `--biogrid-tsv --uniprot-fasta --output-dir` (stage 0; all rows below need its output) |
 | `src/data_processing/variant_databases/map_clinvar.py` | `--stage {variants,interactors} --output-dir` (plus `--variant-summary`, `--hgnc`) |
 | `src/data_processing/variant_databases/get_cosmic_annotations.py` | `--cmc-file --gene-symbol-to-uniprot` |
-| `src/data_processing/variant_databases/map_tulika_autism.py` | `--variant-dir --biogrid-dir` (ASD/NDD) |
+| `src/data_processing/variant_databases/map_neurodev.py` | `--mode neurodev --neurodev-case --neurodev-control --biogrid-dir --output-dir` (builds the `neurodev` database's case/control labels) |
+| `src/data_processing/variant_databases/map_asd_ndd.py` | `--variant-dir --biogrid-dir` (Fu et al. de novo ASD; unlabelled) |
 | `src/data_processing/variant_databases/map_cosmic.py` | `--cmc-file --biogrid-dir --output-dir` (licensed) |
 | `src/data_processing/variant_databases/map_hgmd.py` | `--hgmd-file --hgmd-dm-wts --hgmd-dm-vts --refseq-to-uniprot --biogrid-dir --output-dir` (licensed) |
 
@@ -270,7 +399,7 @@ Zenodo blobs:
 # plddt_cache.pkl — per-residue pLDDT from AlphaFold DB MONOMER models
 # (not the AF3 complexes: their chains are trimmed to the assayed constructs).
 # Consumer: src/analysis/plddt_stratification.py
-conda run -n ppi python src/analysis/build_plddt_cache.py --compare-to datasets/annotations/plddt_cache.pkl
+conda run -n ppi python src/analysis/build_plddt_cache.py --compare-legacy
 
 # confidence_scores.pkl — {complex_key: {'iptm','ptm'}} from AF3 *_summary_confidences.json.
 # Consumer: src/analysis/roc_plots.py

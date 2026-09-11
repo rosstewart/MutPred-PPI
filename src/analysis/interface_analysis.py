@@ -24,17 +24,17 @@ import re
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_curve
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import DATA_ROOT, REPO_ROOT, cv_reference_dir
 from variant_db_inference import variant_rows as vr
-from utils.gcv_common import StaleCacheError, load_gcv_detailed_results  # noqa: E402
+from analysis.stratification_common import (  # noqa: E402
+    load_canonical_rows, stratified_fold_curves)
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ CANONICAL_ROWS_PATH = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
 OUT_DIR = f"{_PUB}/results/robustness"
 N_SEEDS = 30
 MIN_N = 5  # matches roc_plots.py spirit: just require both label classes per fold
-from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
+from analysis.gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -95,8 +95,8 @@ def _complex_id_sequences(dataset: str = "sahni_fragoza_mapped090826") -> dict:
     `O43889-2-J3QKU0`, an isoform accession), so a split silently mis-assigns
     both accessions for ~9% of pairs.
     """
-    from utils.gcv_common import DATASET_CONFIGS, load_data
-    df = load_data(DATASET_CONFIGS[dataset])
+    from utils.gcv_common import dataset_config, load_data
+    df = load_data(dataset_config(dataset))
     return {f"{i}-{p}": (a, b)
             for i, p, a, b in zip(df["interactor"], df["partner"],
                                   df["interactor_sequence"], df["partner_sequence"])}
@@ -154,121 +154,27 @@ def build_row_iface_flags(canonical_rows: pd.DataFrame, store=None) -> list:
 # ── Main analysis ──────────────────────────────────────────────────────────────
 
 def compute_curves():
-    """Load data and compute per-(class, group) ROC fold curves.
+    """Per-(test class, interface-vs-non-interface) ROC fold curves.
 
-    Returns (fold_curves, all_rows_group) — same structure as before but keyed by
-    row_index rather than vt_id strings.  Row identity is the positional integer
-    into the 6,219-row canonical table (`sahni_fragoza_train_rows.csv.gz`).
-
-    This removes the dependency on the pre-090826 5,894-row vt_ids pickles.
+    The reconstruction lives in `analysis.stratification_common`, shared with
+    the protein-class and pLDDT supplements; this only builds the flags.
     """
-    # ── Canonical rows ────────────────────────────────────────────────────────
-    canonical_rows = pd.read_csv(CANONICAL_ROWS_PATH)
-    n_rows = len(canonical_rows)
-    print(f"Canonical rows: {n_rows}")
+    canonical_rows = load_canonical_rows(ROWS_FILE)
+    print(f"Canonical rows: {len(canonical_rows)}")
 
-    # ── Per-row interface flags ────────────────────────────────────────────────
-    print("Building interface label cache from canonical rows...")
-    row_iface = build_row_iface_flags(canonical_rows)  # list[bool|None], len=n_rows
-    n_iface     = sum(1 for v in row_iface if v is True)
-    n_non_iface = sum(1 for v in row_iface if v is False)
-    n_no_graph  = sum(1 for v in row_iface if v is None)
-    print(f"  Interface: {n_iface}, Non-interface: {n_non_iface}, Missing: {n_no_graph}")
+    flags = build_row_iface_flags(canonical_rows)       # list[bool|None]
+    # The plotting code and the colour/label tables key on these strings, so
+    # translate once here rather than carrying booleans through and mapping at
+    # every use. None (no structure / position not resolvable) stays None and is
+    # therefore never selected.
+    row_groups = [None if v is None else ("interface" if v else "non_interface")
+                  for v in flags]
+    groups = ["interface", "non_interface"]
+    counts = {g: row_groups.count(g) for g in groups}
+    print(f"  interface flags: {counts} | missing: {row_groups.count(None)}")
 
-    # ── GCV results ───────────────────────────────────────────────────────────
-    gcv_results = load_gcv_detailed_results(GCV_RESULTS, CANONICAL_DATASET)
-
-    # fold_curves[class][group] = list of per-fold interpolated TPR arrays
-    fold_curves = {c: {"interface": [], "non_interface": []} for c in (1, 2, 3)}
-    # all_rows_group[class][group] = set of row_index values (for n_variants counting)
-    all_rows_group = {c: {"interface": set(), "non_interface": set()} for c in (1, 2, 3)}
-
-    for seed in range(N_SEEDS):
-        fold_splits_path = f"{CV_DIR}/sahni_fragoza_train_fold_splits_{seed}.pkl"
-        ptc_path = f"{CV_DIR}/swing_train_pair_test_classes_{seed}.npy"
-
-        if not all(os.path.exists(p) for p in [fold_splits_path, ptc_path]):
-            print(f"  Seed {seed}: missing fold_splits or ptc, skipping")
-            continue
-
-        with open(fold_splits_path, "rb") as f:
-            fold_splits = pickle.load(f)
-        pair_test_classes = np.load(ptc_path)
-
-        iteration = gcv_results["iterations"].get(seed)
-        if iteration is None:
-            print(f"  Seed {seed}: not in GCV results, skipping")
-            continue
-
-        # Freshness of GCV_RESULTS as a whole is already asserted once, by
-        # `load_gcv_detailed_results` above (via the shared
-        # `utils.gcv_common.assert_gcv_pkl_fresh`) -- every seed in the same
-        # pkl was written by the same run, so a per-seed re-check here would
-        # only repeat that one assertion, not add coverage.
-
-        flat_cursor = 0
-        for fold_tuple in sorted(fold_splits, key=lambda t: t[0]):
-            fold, train_idx, test_idx = fold_tuple
-            fold_data = iteration["folds"][fold]
-            n_test = len(test_idx)
-            ptc_fold = pair_test_classes[flat_cursor:flat_cursor + n_test]
-
-            # Per-row interface flags for this fold's test rows.
-            fold_iface = [row_iface[ridx] for ridx in test_idx]
-
-            # Reconstruct preds/labels in test-sample order.
-            preds_fold = {cls: list(fold_data[f"class_{cls}"]["preds"]) for cls in (1, 2, 3)}
-            labels_fold = {cls: list(fold_data[f"class_{cls}"]["labels"]) for cls in (1, 2, 3)}
-
-            # The overall pkl's row count matched the canonical table (checked
-            # once, above), but that does not guarantee THIS fold's per-class
-            # buckets line up with THIS fold split -- the interleave below
-            # indexes `preds_fold[cls][cls_cursor[cls]]` unconditionally, so a
-            # per-fold mismatch must be caught here or it surfaces as an opaque
-            # `IndexError` instead of a named cause.
-            n_cached = sum(len(v) for v in preds_fold.values())
-            if n_cached != n_test:
-                raise StaleCacheError(
-                    f"{GCV_RESULTS}: seed {seed} fold {fold} holds {n_cached} "
-                    f"cached predictions but the canonical fold has {n_test} "
-                    f"test rows, despite the pkl's overall row count matching "
-                    f"the canonical table. This fold is internally inconsistent "
-                    f"and must be recomputed.")
-
-            preds_ordered, labels_ordered = [], []
-            cls_cursor = {1: 0, 2: 0, 3: 0}
-            for cls in ptc_fold:
-                preds_ordered.append(preds_fold[cls][cls_cursor[cls]])
-                labels_ordered.append(labels_fold[cls][cls_cursor[cls]])
-                cls_cursor[cls] += 1
-
-            preds_ordered = np.array(preds_ordered)
-            labels_ordered = np.array(labels_ordered)
-            classes_ordered = np.array(ptc_fold)
-            iface_flags = np.array(fold_iface, dtype=object)
-
-            for cls in (1, 2, 3):
-                mask_cls = classes_ordered == cls
-                for is_iface, key in [(True, "interface"), (False, "non_interface")]:
-                    mask = mask_cls & (iface_flags == is_iface)
-                    p = preds_ordered[mask]
-                    l = labels_ordered[mask]
-                    ridxs = np.array(test_idx)[mask]
-                    all_rows_group[cls][key].update(ridxs.tolist())
-                    if len(p) >= MIN_N and len(np.unique(l)) == 2:
-                        fpr, tpr, _ = roc_curve(l, p)
-                        fold_curves[cls][key].append(np.interp(FPR_GRID, fpr, tpr))
-
-            flat_cursor += n_test
-
-        print(f"  Seed {seed}: done", flush=True)
-
-    return fold_curves, all_rows_group
-
-
-CLASS_LABELS = {1: "Class 1 (both seen)", 2: "Class 2 (one seen)", 3: "Class 3 (neither seen)"}
-CURVE_COLORS = {"interface": "#1f77b4", "non_interface": "#aec7e8"}
-DISPLAY_NAMES = {"interface": "Interface", "non_interface": "Non-interface"}
+    return stratified_fold_curves(row_groups, groups, min_n=MIN_N,
+                                  n_seeds=N_SEEDS, rows_file=ROWS_FILE)
 
 
 def plot_on_axes(axes, fold_curves, all_rows_group):
@@ -338,7 +244,7 @@ def main():
 
     plt.tight_layout()
     out_png = os.path.join(OUT_DIR, "interface_auroc_by_class.png")
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}")
 
     out_tsv = os.path.join(OUT_DIR, "interface_auroc_summary.tsv")

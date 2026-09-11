@@ -17,12 +17,14 @@ Usage:
 import os
 
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
-import interface_analysis as ia
-import plddt_stratification as ps
-import protein_class_stratification as pc
+from analysis import interface_analysis as ia
+from analysis import plddt_stratification as ps
+from analysis import protein_class_stratification as pc
 
 OUT_DIR = ia.OUT_DIR
 ROW_LABELS = ["Interface vs. non-interface", "AF3 pLDDT confidence", "Single- vs. multi-domain"]
@@ -61,7 +63,7 @@ def main():
 
     plt.tight_layout()
     out_png = os.path.join(OUT_DIR, "combined_robustness_by_class.png")
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}")
 
 

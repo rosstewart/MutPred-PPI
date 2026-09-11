@@ -55,7 +55,10 @@ def open_store(path: Path | str = STORE_PATH) -> ContactGraphStore:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(
-            f"{p} not found -- run repro_test/migrate_graphs_to_store.py")
+            f"{p} not found -- build it with\n"
+            f"  python src/data_processing/rebuild_graphs_from_structures.py \\\n"
+            f"      --structures datasets/af3_structures_canonical --out {p}\n"
+            f"or download it with the Zenodo bundle (see docs/SETUP.md).")
     return ContactGraphStore(p)
 
 

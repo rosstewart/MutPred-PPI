@@ -1,6 +1,6 @@
 """One ProtT5 driver, and one place the no-truncation guarantee is enforced.
 
-Four near-identical copies existed (`inference/utils/prott5_loader.py`,
+Four near-identical copies existed (`inference/pipeline/prott5_loader.py`,
 `variant_db_inference/precompute_prott5.py`,
 `data_processing/precompute_prott5_datasets.py`,
 `training/preprocess_stability_data.py`). The model, dtype, `.eval()`, the
@@ -52,7 +52,8 @@ from collections.abc import Iterator
 
 __all__ = [
     "PROTT5_MODEL", "EmbeddingResult", "assert_untruncated",
-    "batched_by_residues", "clean_sequence", "embed_sequences", "load_prott5",
+    "batched_by_residues", "clean_sequence", "embed_sequences",
+    "load_embeddings_h5", "load_prott5",
 ]
 
 PROTT5_MODEL = "Rostlab/prot_t5_xl_half_uniref50-enc"
@@ -216,7 +217,7 @@ def embed_sequences(seq_dict, model, vocab, device, *, per_protein: bool = False
 def load_prott5(device, cache_dir=None):
     """Load the ProtT5 encoder + tokenizer. The only copy.
 
-    Four identical copies existed (`inference/utils/prott5_loader.get_T5_model`,
+    Four identical copies existed (`inference/pipeline/prott5_loader.get_T5_model`,
     `variant_db_inference/precompute_prott5._get_t5_model`,
     `data_processing/precompute_prott5_datasets.load_model`,
     `training/preprocess_stability_data`). All four agreed -- fp32 on CPU,
@@ -235,3 +236,29 @@ def load_prott5(device, cache_dir=None):
     model = model.eval()
     vocab = T5Tokenizer.from_pretrained(PROTT5_MODEL, do_lower_case=False, **kw)
     return model, vocab
+
+
+def load_embeddings_h5(h5_path, progress: bool = False):
+    """`{key: ndarray}` from a flat per-key embedding H5. The only reader.
+
+    Two identical copies existed (`inference/pipeline/inference_utils.read_h5` and
+    `variant_db_inference/run_variant_db_inference._load_embeddings_h5`): both
+    iterated `f.keys()` and sliced each dataset into a dict. Consolidated
+    2026-09-10.
+
+    This loads the WHOLE file into memory, which is correct for an inference
+    working directory and wrong for the multi-hundred-GB variant-DB stores --
+    those use the subgraph path instead. `progress` prints the count, matching
+    the variant-DB copy's logging.
+    """
+    import h5py
+
+    if progress:
+        print(f"Loading embeddings from {h5_path} ...", flush=True)
+    out = {}
+    with h5py.File(str(h5_path), "r") as f:
+        for key in f.keys():
+            out[key] = f[key][:]
+    if progress:
+        print(f"  {len(out)} sequences loaded", flush=True)
+    return out

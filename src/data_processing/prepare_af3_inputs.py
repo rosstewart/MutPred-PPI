@@ -53,7 +53,7 @@ import sys
 from pathlib import Path
 
 from paths import DATASETS_DIR
-from utils.gcv_common import DATASET_CONFIGS, load_data, load_sequences
+from utils.gcv_common import DATASET_CONFIGS, load_sequences, union_rows_across_datasets
 
 # `00_make_af3_json_input` is not a valid identifier, so it cannot be imported
 # with `from ... import`; importlib takes the name as a string. Importing rather
@@ -69,12 +69,9 @@ DEFAULT_OUT_DIR = DATASETS_DIR / "af3_inputs_to_fold"
 
 def required_pairs() -> set[tuple[str, str]]:
     """Union of unordered (interactor, partner) pairs across all five datasets."""
-    pairs: set[tuple[str, str]] = set()
-    for cfg in DATASET_CONFIGS.values():
-        df = load_data(cfg)
-        pairs.update(tuple(sorted((a, b)))
-                     for a, b in zip(df["interactor"], df["partner"]))
-    return pairs
+    df = union_rows_across_datasets()
+    return {tuple(sorted((a, b)))
+            for a, b in zip(df["interactor"], df["partner"])}
 
 
 def present_pairs(manifest_path: Path = MANIFEST) -> set[tuple[str, str]]:

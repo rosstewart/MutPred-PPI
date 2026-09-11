@@ -80,6 +80,7 @@ def train_fold(
     lr_patience: int = 3,
     es_patience: int = 5,
     n_epochs: int = 100,
+    preload: bool | None = None,   # None = decide from free GPU memory
 ) -> Tuple[list, list]:
     # ── reproducibility ───────────────────────────────────────────────────────
     torch.manual_seed(seed)
@@ -168,21 +169,66 @@ def train_fold(
     assert set(test_idx).isdisjoint(val_idx)
     assert set(train_idx).isdisjoint(val_idx)
 
+    def _fold_device_bytes(indices) -> int:
+        """Bytes this fold's node features, edges and diffs would occupy on GPU."""
+        total = 0
+        for j in indices:
+            total += X[j].size * 4                       # float32 node features
+            total += edge_indices[j].size * 8            # int64 COO edges
+            total += np.asarray(mutation_site_diffs[j]).size * 4
+        return total
+
+    def _should_preload(indices) -> bool:
+        """Whether the whole fold fits on the device with room to train.
+
+        Streaming per sample exists because full complexes did not fit: ~900
+        nodes x 1024 dims x 4 B is ~4 MB each, and sfvca would need ~92 GB. The
+        two-hop restriction cuts that ~30x, so the same fold is ~3 GB and the
+        transfers can be dropped entirely rather than merely overlapped -- at
+        100 epochs the streamed version moves hundreds of GB across PCIe per
+        fold, which is what actually bounds the step time.
+
+        The guard is deliberately conservative: activations, gradients, optimizer
+        state and the model itself also need room, so the data is allowed at most
+        a third of what is free. Anything larger keeps the pinned-CPU path, which
+        stays correct at any size.
+        """
+        if preload is not None:
+            return bool(preload)
+        if device.type != "cuda":
+            return False
+        try:
+            free, _total = torch.cuda.mem_get_info(device)
+        except Exception:
+            return False
+        return _fold_device_bytes(indices) < free / 3
+
     def _graphs_edges_diffs(indices):
-        # Keep tensors on CPU (pinned); move per-sample to device in the training loop.
-        # Pinned memory enables truly async PCIe DMA via non_blocking=True,
-        # overlapping transfers with GPU compute (avoids loading all N graphs to GPU at
-        # once which causes OOM for large datasets like sfvc).
-        if X_t is not None:
+        # Resident on the device when the fold fits, pinned on the host otherwise.
+        # Pinned memory enables async PCIe DMA via non_blocking=True, overlapping
+        # transfers with compute; resident tensors skip the transfer altogether,
+        # and `.to(device)` on an already-resident tensor returns it unchanged,
+        # so the training loops need no special case.
+        on_device = _should_preload(indices)
+        if X_t is not None and not on_device:
             g = [X_t[j] for j in indices]   # already pinned from precompute
             e = [edge_t[j] for j in indices] # already pinned from precompute
+        elif on_device:
+            g = [torch.as_tensor(X[j], dtype=torch.float).to(device) for j in indices]
+            e = [torch.as_tensor(edge_indices[j], dtype=torch.long).to(device)
+                 for j in indices]
         else:
             g = [torch.tensor(X[j], dtype=torch.float).pin_memory() for j in indices]
             # The store already returns both directions plus self-loops, so this
             # is a view change, not a graph change.
             e = [torch.as_tensor(edge_indices[j], dtype=torch.long).pin_memory()
                  for j in indices]
-        d = [torch.tensor(mutation_site_diffs[j], dtype=torch.float).pin_memory() for j in indices]
+        if on_device:
+            d = [torch.as_tensor(mutation_site_diffs[j], dtype=torch.float).to(device)
+                 for j in indices]
+        else:
+            d = [torch.tensor(mutation_site_diffs[j], dtype=torch.float).pin_memory()
+                 for j in indices]
         return g, e, d
 
     train_g, train_e, train_d = _graphs_edges_diffs(train_idx)

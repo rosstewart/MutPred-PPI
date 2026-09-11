@@ -23,12 +23,12 @@ import os
 import pickle
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+from analysis import edgotypes, plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import REPO_ROOT  # noqa: E402
 
 
@@ -54,68 +54,68 @@ THRESHOLD_COLORS = {
 }
 
 # ── Group definitions (posterior_ls files) ─────────────────────────────────────
-# Each entry: (display_group_key, pkl_path, x_label, bar_color)
+# Each entry: (display_group_key, (db, group), x_label, bar_color)
 # Groups and order matching enrichment_bootstrap_sufficient_partners layout
 
 GROUPS = [
     # ClinVar
-    ("clinvar_rare_benign",  f"{DATA_DIR}/clinvar/rare_benign_posterior_ls.pkl",
+    ("clinvar_rare_benign",  ("clinvar", "rare_benign"),
      "Rare Benign\n(ClinVar)", "#1565C0"),
-    ("clinvar_benign",       f"{DATA_DIR}/clinvar/benign_posterior_ls.pkl",
+    ("clinvar_benign",       ("clinvar", "benign"),
      "Benign\n(ClinVar)", "#1976D2"),
-    ("clinvar_pathogenic",   f"{DATA_DIR}/clinvar/pathogenic_posterior_ls.pkl",
+    ("clinvar_pathogenic",   ("clinvar", "pathogenic"),
      "Pathogenic\n(ClinVar)", "#D32F2F"),
-    ("clinvar_vus",          f"{DATA_DIR}/clinvar/vus_posterior_ls.pkl",
+    ("clinvar_vus",          ("clinvar", "vus"),
      "VUS\n(ClinVar)", "#9E9E9E"),
-    ("clinvar_ar_pathogenic", f"{DATA_DIR}/clinvar/ar_pathogenic_posterior_ls.pkl",
+    ("clinvar_ar_pathogenic", ("clinvar", "ar_pathogenic"),
      "Pathogenic AR\n(ClinVar)", "#00897B"),
-    ("clinvar_ad_pathogenic", f"{DATA_DIR}/clinvar/ad_pathogenic_posterior_ls.pkl",
+    ("clinvar_ad_pathogenic", ("clinvar", "ad_pathogenic"),
      "Pathogenic AD\n(ClinVar)", "#FFB300"),
     # COSMIC
-    ("cosmic_single",        f"{DATA_DIR}/cosmic/cosmic_single_posterior_ls.pkl",
+    ("cosmic_single",        ("cosmic", "cosmic_single"),
      "Single\n(COSMIC)", "#FDD835"),
-    ("cosmic_2+",            f"{DATA_DIR}/cosmic/cosmic_2+_posterior_ls.pkl",
+    ("cosmic_2+",            ("cosmic", "cosmic_2+"),
      "≥2\n(COSMIC)", "#FFCA28"),
-    ("cosmic_4+",            f"{DATA_DIR}/cosmic/cosmic_4+_posterior_ls.pkl",
+    ("cosmic_4+",            ("cosmic", "cosmic_4+"),
      "≥4\n(COSMIC)", "#FF8F00"),
-    ("cosmic_8+",            f"{DATA_DIR}/cosmic/cosmic_8+_posterior_ls.pkl",
+    ("cosmic_8+",            ("cosmic", "cosmic_8+"),
      "≥8\n(COSMIC)", "#FF5722"),
-    ("cosmic_16+",           f"{DATA_DIR}/cosmic/cosmic_16+_posterior_ls.pkl",
+    ("cosmic_16+",           ("cosmic", "cosmic_16+"),
      "≥16\n(COSMIC)", "#E64A19"),
-    ("cosmic_32+",           f"{DATA_DIR}/cosmic/cosmic_32+_posterior_ls.pkl",
+    ("cosmic_32+",           ("cosmic", "cosmic_32+"),
      "≥32\n(COSMIC)", "#B71C1C"),
     # HGMD
-    ("hgmd",                 f"{DATA_DIR}/hgmd/hgmd_posterior_ls.pkl",
+    ("hgmd",                 ("hgmd", "hgmd"),
      "HGMD", "#E74C3C"),
-    ("hgmd_ar",              f"{DATA_DIR}/hgmd/ar_hgmd_posterior_ls.pkl",
+    ("hgmd_ar",              ("hgmd", "ar_hgmd"),
      "AR\n(HGMD)", "#00897B"),
-    ("hgmd_ad",              f"{DATA_DIR}/hgmd/ad_hgmd_posterior_ls.pkl",
+    ("hgmd_ad",              ("hgmd", "ad_hgmd"),
      "AD\n(HGMD)", "#FFB300"),
     # gnomAD AF bins
-    ("gnomad_af1",           f"{DATA_DIR}/gnomad/gnomad_upper_af_1e-06_posterior_ls.pkl",
+    ("gnomad_af1",           ("gnomad", "gnomad_upper_af_1e-06"),
      "AF≤1e-6\n(gnomAD)", "#FF7043"),
-    ("gnomad_af2",           f"{DATA_DIR}/gnomad/gnomad_upper_af_1e-05_posterior_ls.pkl",
+    ("gnomad_af2",           ("gnomad", "gnomad_upper_af_1e-05"),
      "1e-6<AF≤1e-5\n(gnomAD)", "#FFA726"),
-    ("gnomad_af3",           f"{DATA_DIR}/gnomad/gnomad_upper_af_0.0001_posterior_ls.pkl",
+    ("gnomad_af3",           ("gnomad", "gnomad_upper_af_0.0001"),
      "1e-5<AF≤1e-4\n(gnomAD)", "#FFCA28"),
-    ("gnomad_af4",           f"{DATA_DIR}/gnomad/gnomad_upper_af_0.001_posterior_ls.pkl",
+    ("gnomad_af4",           ("gnomad", "gnomad_upper_af_0.001"),
      "1e-4<AF≤1e-3\n(gnomAD)", "#9CCC65"),
-    ("gnomad_af5",           f"{DATA_DIR}/gnomad/gnomad_upper_af_0.01_posterior_ls.pkl",
+    ("gnomad_af5",           ("gnomad", "gnomad_upper_af_0.01"),
      "1e-3<AF≤1e-2\n(gnomAD)", "#66BB6A"),
-    ("gnomad_af6",           f"{DATA_DIR}/gnomad/gnomad_upper_af_0.1_posterior_ls.pkl",
+    ("gnomad_af6",           ("gnomad", "gnomad_upper_af_0.1"),
      "1e-2<AF\n(gnomAD)", "#4CAF50"),
     # NDD
-    ("ndd_case",             f"{DATA_DIR}/neurodev/ndd_case_posterior_ls.pkl",
+    ("ndd_case",             ("neurodev", "ndd_case"),
      "NDD Case", "#9C27B0"),
-    ("ndd_control",          f"{DATA_DIR}/neurodev/ndd_control_posterior_ls.pkl",
+    ("ndd_control",          ("neurodev", "ndd_control"),
      "NDD Control", "#607D8B"),
     # ASD
-    ("fu_autism",            f"{DATA_DIR}/fu_autism/fu_autism_posterior_ls.pkl",
+    ("asd",            ("asd", "asd"),
      "ASD Case", "#FF9800"),
 ]
 
 # gnomAD overall (reference)
-GNOMAD_ALL_PKL = f"{DATA_DIR}/gnomad/gnomad_posterior_ls.pkl"
+GNOMAD_REFERENCE = ("gnomad", "gnomad")
 
 # Visual separators between dataset groups (after these group keys, add spacing)
 SEPARATOR_AFTER = {
@@ -128,15 +128,16 @@ SEPARATOR_AFTER = {
 def classify_posterior_ls(posterior_ls, threshold):
     """Reclassify each variant's score list at the given threshold.
 
-    Returns array of counts [n_quasi_null, n_edgetic, n_quasi_wt].
+    Returns array of counts [n_quasi_null, n_edgetic, n_quasi_wt]. The per-variant
+    rule is `edgotypes.classify`, so a sweep here cannot drift from the default
+    analysis.
     """
     qn = e = qwt = 0
     for scores in posterior_ls:
-        n_dis = sum(s > threshold for s in scores)
-        n = len(scores)
-        if n_dis == n:
+        cls = edgotypes.classify(scores, threshold)
+        if cls == "Quasi-null":
             qn += 1
-        elif n_dis == 0:
+        elif cls == "Quasi-wild-type":
             qwt += 1
         else:
             e += 1
@@ -175,21 +176,24 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     rng = np.random.default_rng(42)
 
-    # Load all posterior_ls files once
-    print("Loading posterior_ls data...")
+    # Load every group's per-variant score lists once
+    print("Loading edgotype group tables...")
     group_data = {}
-    for gkey, pkl_path, label, color in GROUPS:
-        if os.path.exists(pkl_path):
-            with open(pkl_path, "rb") as f:
-                group_data[gkey] = pickle.load(f)
-            print(f"  {gkey}: n={len(group_data[gkey])}")
-        else:
-            print(f"  WARNING: {pkl_path} not found")
+    for gkey, (db, name), label, color in GROUPS:
+        group = edgotypes.load_group(DATA_DIR, db, name)
+        if group is None:
+            print(f"  WARNING: {edgotypes.group_path(DATA_DIR, db, name)} not found")
+            continue
+        group_data[gkey] = group.scores_by_variant()
+        print(f"  {gkey}: n={len(group_data[gkey])}")
 
-    if not os.path.exists(GNOMAD_ALL_PKL):
-        raise FileNotFoundError(f"gnomAD reference not found: {GNOMAD_ALL_PKL}")
-    with open(GNOMAD_ALL_PKL, "rb") as f:
-        gnomad_all = pickle.load(f)
+    ref_db, ref_name = GNOMAD_REFERENCE
+    reference = edgotypes.load_group(DATA_DIR, ref_db, ref_name)
+    if reference is None:
+        raise FileNotFoundError(
+            f"gnomAD reference not found: "
+            f"{edgotypes.group_path(DATA_DIR, ref_db, ref_name)}")
+    gnomad_all = reference.scores_by_variant()
     print(f"  gnomad_all (reference): n={len(gnomad_all)}")
 
     # Compute bootstrap enrichment for each threshold and group
@@ -320,7 +324,7 @@ def main():
     plt.subplots_adjust(hspace=0)
 
     out_png = os.path.join(OUT_DIR, "threshold_sensitivity.png")
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}")
 
 

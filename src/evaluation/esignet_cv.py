@@ -29,8 +29,6 @@ from evaluation.predictors.esignet import ESigNetPredictor, _compute_573, _FEAT_
 from evaluation.predictors.nn_base import load_cache                                    # noqa: E402
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import DATASETS_DIR, GCV_RESULTS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 
 
@@ -40,7 +38,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 # ── shared GCV infrastructure ─────────────────────────────────────────────────
 # Lives in src/utils/gcv_common.py: mint_cv, pplm_cv, swing_gcv and the two
 # precompute_* scripts each import these names from there, not from here.
-from utils.gcv_common import DATASET_CONFIGS, DatasetConfig, run_gcv
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, DatasetConfig, run_gcv
 
 
 
@@ -146,7 +144,7 @@ def run(args: argparse.Namespace) -> None:
             _esignet_mod._ESM_CACHE_PATH = str(canonical)
             print(f"ESM cache: {canonical}", flush=True)
 
-    cfg = DATASET_CONFIGS[args.dataset]
+    cfg = dataset_config(args.dataset)
 
     def _preflight(ordered_df, cfg_, a):
         audit_esm_cache(ordered_df, cfg_, a.min_esm_hit_rate, a.require_esm)
@@ -167,7 +165,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dataset",
         required=True,
-        choices=list(DATASET_CONFIGS),
+        type=dataset_arg, choices=list(DATASET_CONFIGS),
         help="Dataset configuration to use",
     )
     p.add_argument(

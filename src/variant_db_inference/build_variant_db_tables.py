@@ -41,10 +41,10 @@ from pathlib import Path
 _PUB = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PUB / "src"))
 from contact_graphs import ContactGraphStore, pair_key  # noqa: E402
-from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATASETS_DIR  # noqa: E402
+from paths import DATA_ROOT, ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATASETS_DIR  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
 
-_ROOT = Path("/data/ross/ppi_lossgain/interaction_loss")
+_ROOT = DATA_ROOT
 STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
 OUT_DIR = DATASETS_DIR / "variant_dbs"
 BIOGRID_DIRBIND = _ROOT / "biogrid" / "biogrid_dirbind_uniprot_to_interactors.pkl"
@@ -53,7 +53,7 @@ BIOGRID_DIRBIND = _ROOT / "biogrid" / "biogrid_dirbind_uniprot_to_interactors.pk
 # physical-direct-binding pair, matching the legacy pipeline, so there is nothing
 # to flag -- a constant column is noise. Rows failing it are dropped and counted
 # in `stats`. This is load-bearing rather than a formality: cosmic, gnomad, hgmd
-# and autism are already 100% dirbind, but **clinvar is only 93.3% -- 455 of its
+# and neurodev are already 100% dirbind, but **clinvar is only 93.3% -- 455 of its
 # 6,836 pairs are not dirbind edges** (349 where both proteins are in the map but
 # the pair is not an edge, 92 with one accession absent, 14 with both). clinvar
 # is also the one database whose derivation notebook was never migrated, which
@@ -69,7 +69,9 @@ EXTRA_COLUMNS = {
     "gnomad":  ["allele_frequency"],
     "cosmic":  ["recurrence", "tumor_sites", "onco_tsg"],
     "hgmd":    [],
-    "autism":  ["neurodev_label"],
+    "neurodev":  ["neurodev_label"],
+    # Fu et al. de novo ASD cases only -- no case/control label to carry.
+    "asd":     [],
 }
 # `interactor_len` / `partner_len` are deliberately absent: both are one store
 # lookup from `pair_key`, and duplicating derived state is what this refactor
@@ -152,9 +154,9 @@ def load_annotations(db: str) -> dict:
         ot = _load_pkl(ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl")
         a["onco"] = _keyed_set(ot.get("oncogene", set()))
         a["tsg"] = _keyed_set(ot.get("TSG", set()))
-    elif db == "autism":
+    elif db == "neurodev":
         a["labels"] = _keyed_map(
-            _load_pkl(ANNOTATIONS_DIR / "autism" / "variant_label_dict.pkl").items())
+            _load_pkl(ANNOTATIONS_DIR / "neurodev" / "variant_label_dict.pkl").items())
     return a
 
 
@@ -170,7 +172,7 @@ def embedding_lookup(db: str):
 
         prott5_subgraphs.h5   clinvar/cosmic/gnomad   group per PAIR, one
                               dataset per variant -- a triplet is present or not
-        prott5_embeddings.h5  hgmd/autism             one dataset per PROTEIN,
+        prott5_embeddings.h5  hgmd/neurodev             one dataset per PROTEIN,
                               keyed 'ACC' and 'ACC MUT' -- a triplet is scoreable
                               when the interactor's WT and variant embeddings and
                               the partner's WT embedding all exist
@@ -270,7 +272,7 @@ def build(db: str, out_path: Path, store: ContactGraphStore,
                 row["tumor_sites"] = ";".join(sites)
                 row["onco_tsg"] = ("oncogene" if variant in ann["onco"]
                                    else "TSG" if variant in ann["tsg"] else "")
-            elif db == "autism":
+            elif db == "neurodev":
                 lab = ann["labels"].get(variant)
                 row["neurodev_label"] = "" if lab is None else int(lab)
             w.writerow(row)

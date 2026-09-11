@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
 """Generate the LaTeX training-data table for the MutPred-PPI paper.
 
-Every count comes from the CANONICAL row tables (`datasets/training_eval/`) via
-`utils.gcv_common.load_data`, one table per row of the figure. Those tables are
-the same rows the models train on, so the table cannot drift from the training
-set the way it used to.
+Counts come from the mapped source CSVs (`datasets/source_mapping/datasets/`),
+one per row of the figure, and therefore describe each dataset as collected.
+The separate **Modelled** column is the triplet count that survives the
+AlphaFold-coverage filter -- the rows in `datasets/training_eval/` that every
+method is actually trained and scored on.
 
-What this replaces, and why it was wrong
-----------------------------------------
-The previous version read three different `*_all_vt_ids_and_labels.txt` files
-and a `*_all_vt_ids.pkl`, and had to recover `(interactor, partner)` from a
-welded `complex_id` by trying `_` and then `-`. That heuristic silently split
-`NP_005190_KRTAP10-7` and every isoform accession in the wrong place, so the
-protein/pair counts it produced were not the counts of anything. It then
-*subtracted overlapping label files from each other* to get a VarChAMP row, and
-because the files overlapped it had to correct the result with an estimated
-disruption rate (`pool_rate`) applied to a row-count difference. None of that
-survives: the canonical tables are deduplicated, carry `perturbed` as a real
-label, and exist for each subset the table needs.
+Reading the canonical row table instead would report only the modelled figure
+under the heading "Triplets", understating every dataset with nothing to show
+that it had done so. The CSVs are deduplicated and carry `perturbed` as a real
+label, so each count is a direct read rather than a difference between
+overlapping label files.
 
-Consequence: the numbers change. The old SF row reported 5,894 triplets (a stale
-ordering); the canonical Sahni+Fragoza table has 6,219.
+Accessions are split with `utils.identifiers.split_variant_id` rather than by
+guessing a separator, which matters for pairs whose accession itself contains a
+hyphen or underscore (`NP_005190_KRTAP10-7`, and every isoform suffix).
 
 Writes figures/training_data_table.tex as a drop-in tabular block.
 """
@@ -28,11 +23,10 @@ from __future__ import annotations
 
 import pickle
 
+import pandas as pd
+
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from paths import DATA_ROOT, REPO_ROOT  # noqa: E402
-from utils.gcv_common import DATASET_CONFIGS, load_data  # noqa: E402
+from paths import DATA_ROOT, MAPPING_DIR, REPO_ROOT  # noqa: E402
 from utils.identifiers import split_variant_id  # noqa: E402
 
 
@@ -42,6 +36,25 @@ _OUT = _PUB / "figures" / "training_data_table.tex"
 
 # Table row -> canonical dataset. Each is a real table, so no row of the figure
 # is derived by subtracting one file from another any more.
+AF3_FAILED_COL = "af3_failed"
+_MAPPED_CSV_DIR = MAPPING_DIR / "datasets"
+
+
+def _load_mapped_csv(dataset: str):
+    """The mapped source CSV for a dataset, wherever the mapping wrote it.
+
+    Combined sets sit at the top level; single-source ones under single_source/.
+    """
+    for candidate in (_MAPPED_CSV_DIR / f"{dataset}.csv",
+                      _MAPPED_CSV_DIR / "single_source" / f"{dataset}.csv"):
+        if candidate.exists():
+            return pd.read_csv(candidate)
+    raise FileNotFoundError(
+        f"no mapped CSV for {dataset} under {_MAPPED_CSV_DIR}; "
+        f"run notebooks/map_ppi_datasets_090826.py then "
+        f"src/data_processing/annotate_af3_coverage.py")
+
+
 _SAHNI = "sahni_only_mapped090826"
 _FRAGOZA = "fragoza_only_mapped090826"
 _VARCHAMP = "varchamp_all_mapped090826"
@@ -56,22 +69,35 @@ def fmt(n) -> str:
 
 
 def stats(dataset: str) -> dict:
-    """Protein / pair / variant / triplet counts for one canonical table.
+    """Dataset counts, reported BEFORE the AlphaFold-coverage filter.
+
+    Read from the mapped source CSV rather than the canonical row table, because
+    the row table has already had `af3_failed` rows dropped -- so counting it
+    describes what the model was trained on, not what the dataset contains, and
+    understates every column with no indication that it has done so.
+
+    `modelled` is the triplet count that survives the filter: pairs AlphaFold 3
+    produced a structure for, which is what `datasets/training_eval/` holds and
+    what every method is scored on.
 
     `interactor` and `partner` are columns, so a pair is a tuple of two fields
     rather than a string that has to be taken apart again later. Accessions are
     used exactly as the table stores them -- collapsing an isoform onto its
     parent here would merge two rows the model treats as distinct.
     """
-    df = load_data(DATASET_CONFIGS[dataset])
-    pairs = set(zip(df["interactor"], df["partner"]))
-    variants = set(zip(df["interactor"], df["mutation"]))
+    df = _load_mapped_csv(dataset)
+    failed = df[AF3_FAILED_COL].astype(bool) if AF3_FAILED_COL in df.columns else None
+    if failed is None:
+        raise ValueError(
+            f"{dataset}: mapped CSV has no '{AF3_FAILED_COL}' column. Run\n"
+            f"  python src/data_processing/annotate_af3_coverage.py")
     n_dis = int((df["perturbed"] == 1).sum())
     out = dict(
         proteins=len(set(df["interactor"]) | set(df["partner"])),
-        pairs=len(pairs),
-        variants=len(variants),
+        pairs=len(set(zip(df["interactor"], df["partner"]))),
+        variants=len(set(zip(df["interactor"], df["mutation"]))),
         triplets=len(df),
+        modelled=int((~failed).sum()),
         dis=n_dis,
         non=len(df) - n_dis,
     )
@@ -114,35 +140,40 @@ def main() -> None:
           f"sources; the difference is deduplicated overlap.", flush=True)
 
     lines = [
-        r"\begin{tabular}{lrrrrrr}",
+        r"\begin{tabular}{lrrrrrrr}",
         r"\hline",
         (r"\textbf{Dataset} & \textbf{Proteins} & \textbf{Pairs} & "
-         r"\textbf{Variants} & \textbf{Triplets} & \textbf{Disruptive} & "
-         r"\textbf{Non-disruptive} \\"),
+         r"\textbf{Variants} & \textbf{Triplets} & \textbf{Modelled} & "
+         r"\textbf{Disruptive} & \textbf{Non-disruptive} \\"),
         r"\hline",
-        r"\multicolumn{7}{l}{\textit{PPI Perturbation Data}} \\",
+        r"\multicolumn{8}{l}{\textit{PPI Perturbation Data}} \\",
         (rf"Sahni \textit{{et al.}}~(Mendelian) & {fmt(sahni['proteins'])} & "
          rf"{fmt(sahni['pairs'])} & {fmt(sahni['variants'])} & "
-         rf"{fmt(sahni['triplets'])} & {fmt(sahni['dis'])} & {fmt(sahni['non'])} \\"),
+         rf"{fmt(sahni['triplets'])} & {fmt(sahni['modelled'])} & {fmt(sahni['dis'])} & {fmt(sahni['non'])} \\"),
         (rf"Fragoza \textit{{et al.}}~(Population) & {fmt(fragoza['proteins'])} & "
          rf"{fmt(fragoza['pairs'])} & {fmt(fragoza['variants'])} & "
-         rf"{fmt(fragoza['triplets'])} & {fmt(fragoza['dis'])} & {fmt(fragoza['non'])} \\"),
+         rf"{fmt(fragoza['triplets'])} & {fmt(fragoza['modelled'])} & {fmt(fragoza['dis'])} & {fmt(fragoza['non'])} \\"),
         (rf"VarChAMP (IGVF) & {fmt(varchamp['proteins'])} & {fmt(varchamp['pairs'])} & "
          rf"{fmt(varchamp['variants'])} & {fmt(varchamp['triplets'])} & "
-         rf"{fmt(varchamp['dis'])} & {fmt(varchamp['non'])} \\"),
+         rf"{fmt(varchamp['modelled'])} & {fmt(varchamp['dis'])} & "
+         rf"{fmt(varchamp['non'])} \\"),
         r"\hline",
-        r"\multicolumn{7}{l}{\textit{Combined Training Sets}} \\",
+        r"\multicolumn{8}{l}{\textit{Combined Training Sets}} \\",
         (rf"Sahni, Fragoza & {fmt(sf['proteins'])} & {fmt(sf['pairs'])} & "
          rf"{fmt(sf['variants'])} & {fmt(sf['triplets'])} & "
-         rf"{fmt(sf['dis'])} & {fmt(sf['non'])} \\"),
+         rf"{fmt(sf['modelled'])} & {fmt(sf['dis'])} & {fmt(sf['non'])} \\"),
         (rf"Sahni, Fragoza, VarChAMP & {fmt(sfvc['proteins'])} & "
          rf"{fmt(sfvc['pairs'])} & {fmt(sfvc['variants'])} & "
-         rf"{fmt(sfvc['triplets'])} & {fmt(sfvc['dis'])} & "
+         rf"{fmt(sfvc['triplets'])} & {fmt(sfvc['modelled'])} & {fmt(sfvc['dis'])} & "
          rf"{fmt(sfvc['non'])} \\"),
         r"\hline",
-        r"\multicolumn{7}{l}{\textit{Stability Pretraining Data}} \\",
+        r"\multicolumn{8}{l}{\textit{Stability Pretraining Data}} \\",
+        # Disruptive/Non-disruptive count PPI perturbation labels, which the
+        # stability set does not carry -- its labels are a ddG sign split, a
+        # different quantity, so the columns are left empty rather than filled
+        # with a number that does not mean the same thing.
         (rf"Tsuboyama \textit{{et al.}} & {fmt(ms['proteins'])} & - & "
-         rf"{fmt(ms['total'])} & - & {fmt(ms['dis'])} & {fmt(ms['non'])} \\"),
+         rf"{fmt(ms['total'])} & - & - & - & - \\"),
         r"\hline",
         r"\end{tabular}",
     ]

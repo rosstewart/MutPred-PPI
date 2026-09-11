@@ -1,5 +1,5 @@
 """Tests for utils/blind_test_common.py -- the one shared blind-test array
-loader, replacing what varchamp_blind_test.py and restratify_skempi_methods.py
+loader, replacing what blind_test_figures.py and restratify_skempi_methods.py
 each hand-rolled with no internal-consistency check at all.
 """
 import numpy as np

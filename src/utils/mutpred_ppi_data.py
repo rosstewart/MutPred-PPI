@@ -34,7 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
+from contact_graphs import (ContactGraphStore, check_embedding_lengths,
+                            two_hop_subgraph)  # noqa: E402
 from utils.structures import open_store  # noqa: E402
 from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 
@@ -67,7 +68,8 @@ class MissingInputs(RuntimeError):
 
 def build_tensors(rows, dataset: str, *, store: ContactGraphStore | None = None,
                   t5: dict | None = None, verbose: bool = True,
-                  use_wt_emb: bool = False, require_complete: bool = True):
+                  use_wt_emb: bool = False, require_complete: bool = True,
+                  two_hop: bool = True):
     """Per-row graph and embedding tensors, aligned to `rows` by position.
 
     Returns a dict of lists plus `usable`, a boolean mask, and `reasons`, a
@@ -82,6 +84,19 @@ def build_tensors(rows, dataset: str, *, store: ContactGraphStore | None = None,
     `use_wt_emb` is the `wt-emb` ablation: the interactor's node features become
     its wild-type embedding instead of the mutant one. `mut_diff` is deliberately
     unaffected -- it stays mutant minus wild type, as in the original loader.
+
+    `two_hop` restricts each sample to the two-hop neighbourhood of its mutation
+    site. The model reads one node after two GAT layers and pools nothing, so
+    this is exact rather than an approximation -- see
+    `contact_graphs.two_hop_subgraph`. It is on by default because the full
+    complex is ~30x larger than the part that can influence the output, and that
+    factor shows up directly in GPU memory and step time. Pass `two_hop=False`
+    to reproduce the whole-complex behaviour.
+
+    `seq_lengths` continues to describe the ORIGINAL sequences under `two_hop`:
+    it reaches the model only as `num_mut_res`, which the forward ignores
+    whenever a mutation-site difference is supplied, and train_fold always
+    supplies one.
     """
     own_store = store is None
     store = store or open_store()
@@ -156,18 +171,24 @@ def build_tensors(rows, dataset: str, *, store: ContactGraphStore | None = None,
                 f"{r.wt_aa!r} -- the sequence and the mutation disagree, or the "
                 f"chains are swapped")
 
+        node_emb = np.concatenate([wt if use_wt_emb else mt, pb])
+        local_mut_idx = mut_idx
+        if two_hop:
+            keep, edge_index, local_mut_idx = two_hop_subgraph(edge_index, mut_idx)
+            node_emb = node_emb[keep]
+
         out["edge_index"][i] = edge_index
-        out["node_emb"][i] = np.concatenate([wt if use_wt_emb else mt, pb])
+        out["node_emb"][i] = node_emb
         out["mut_diff"][i] = mt[mut_idx] - wt[mut_idx]
-        out["mutation_idx"][i] = mut_idx
+        out["mutation_idx"][i] = local_mut_idx
         out["seq_lengths"][i] = [len(a_seq), len(b_seq)]
         out["clusters"][i] = str(r.cluster)
         # Label encoding train_fold expects: a non-empty pos_labels marks a
         # disrupted interaction. Both hold NODE indices, which are 0-based.
         if bool(r.perturbed):
-            out["pos_labels"][i], out["neg_labels"][i] = [mut_idx], []
+            out["pos_labels"][i], out["neg_labels"][i] = [local_mut_idx], []
         else:
-            out["pos_labels"][i], out["neg_labels"][i] = [], [mut_idx]
+            out["pos_labels"][i], out["neg_labels"][i] = [], [local_mut_idx]
         usable[i] = True
         reasons["ok"] += 1
 

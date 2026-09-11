@@ -15,7 +15,7 @@ Usage:
 
 Outputs (datasets/reconstruction_tables/):
     gcv_{method}.csv                          one row per (gcv_seed, fold, test_class, sample)
-    blind_test_{method}.csv                   one row per (test_class, sample) for VarChAMP/VCFP
+    blind_test_{method}.csv                   one row per (test_class, sample) for VarChAMP blind test
     robustness_{interface,plddt,protein_class}_curves.csv
     robustness_{interface,plddt,protein_class}_summary.csv
     README.md                                 figure -> file -> column meaning -> regen command
@@ -33,9 +33,7 @@ import numpy as np
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from method_names import (  # noqa: E402
+from analysis.method_names import (  # noqa: E402
     METHOD_DISPLAY_NAMES, extract_method_and_dataset)
 from paths import (  # noqa: E402
     CV_DIR as _P_CV_DIR, GCV_RESULTS_DIR, REPO_ROOT, VARCHAMP_BLIND_TEST_DIR, cv_reference_dir)
@@ -51,31 +49,20 @@ OUT_DIR = os.path.join(_PUB, "datasets", "reconstruction_tables")
 
 
 N_SEEDS = 30
-from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
+from analysis.gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Shared helpers (copied, not imported, from roc_plots.py — that module has heavy
-# side-effecting top-level code (writes npy/pkl files on import) so we only reuse
-# its pure logic here).
-# ═════════════════════════════════════════════════════════════════════════════
-
-# Method display-name table + dataset/method extraction, copied verbatim (pure,
-# no side effects) from roc_plots.py so that the set of GCV files we export
-# exactly matches what main_comparison() actually plots for Fig 3 / S1 / S-new.
+# The method display-name table and the filename parser come from
+# analysis.method_names, which roc_plots.py also imports, so the set of GCV files
+# exported here is exactly the set main_comparison() plots for Fig 3 / S1 / S7.
 
 
-# Canonical rows support: datasets whose fold_splits indices are row positions
-# into a canonical rows CSV (built after the 090826 mapping).  These can be
-# linked to a specific (interactor, partner, mutation) directly.  Datasets not
-# listed here have no canonical rows CSV and return an empty index.
-#
-# NOTE: sahni_fragoza_varchamp2026 and other varchamp configs are deliberately
-# NOT included.  Their cv_splits carry '.bak_before_conflict_removal' backups
-# indicating the splits were edited after the GCV pkls were generated,
-# producing <1% per-fold/class count matches (744/221070 rows) and therefore
-# essentially no reliable alignment.  vt_id linkage for those datasets is left
-# blank rather than emitting misleading near-empty joins.
+# One entry per canonical GCV dataset. Each `test_idx` in the fold splits is a
+# positional index into the matching rows CSV, and the pair_test_classes array
+# is the concatenation of the per-fold test slices in fold order, so the three
+# files together identify every scored row without any string splitting.
+# A dataset not listed here returns an empty index and exports blank identifier
+# columns.
 CANONICAL_ROWS_SUPPORT = {
     'sahni': dict(
         rows_csv='sahni_only_train_rows.csv.gz',
@@ -86,6 +73,11 @@ CANONICAL_ROWS_SUPPORT = {
         rows_csv='sahni_fragoza_train_rows.csv.gz',
         splits_prefix='sahni_fragoza_train_',
         ptc_prefix='swing_train_',
+    ),
+    'sahni_fragoza_varchamp_all': dict(
+        rows_csv='sahni_fragoza_varchamp_all_train_rows.csv.gz',
+        splits_prefix='sahni_fragoza_varchamp_all_train_',
+        ptc_prefix='combined_sahni_fragoza_varchamp_all_',
     ),
 }
 
@@ -209,7 +201,7 @@ def export_gcv():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Blind test / VarChAMP-VCFP export (Fig 4, S2)
+# Blind test / VarChAMP export (Fig 4, S2)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _extract_blind_method_name(filepath: str) -> str:
@@ -374,8 +366,8 @@ conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure al
 
 | Figure(s) | File(s) | Columns | Regeneration command |
 |---|---|---|---|
-| Fig 3, S1 (GCV method comparison ROC curves) | `gcv_{method}.csv` (one per method/dataset combination plotted in `roc_plots.py`) | `vt_id, interactor, partner, variant, gcv_seed, fold, test_class, true_label, predicted_score`. `vt_id`/`interactor`/`partner`/`variant` are populated only where the underlying cv_splits bookkeeping files exist with per-seed variant orderings AND those orderings are internally consistent with the pkl's per-fold/class sample counts (sahni, sahni_fragoza, sahni_varchamp1p_cava, sahni_fragoza_varchamp1p_cava datasets); rows for datasets without usable per-seed vt_ids files (sahni_fragoza_varchamp2026, sahni_fragoza_varchamp_pooled/_full/_full_pooled) still contain preds/labels but leave those 4 columns blank. Recompute AUC per (gcv_seed, fold, test_class) with `sklearn.metrics.roc_auc_score`; average across seeds/folds per test_class to reproduce Fig 3/S1. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure gcv` |
-| Fig 4, S2 (VarChAMP/VCFP blind test ROC curves) | `blind_test_{method}.csv` (one per method key found in `results/varchamp_seqcnf_newvar_eval/`) | `vt_id, interactor, partner, variant, test_class, true_label, predicted_score` (test_class in {C1,C2,C3}). Recompute AUC per test_class with `sklearn.metrics.roc_auc_score` to reproduce Fig 4/S2. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure blind_test` |
+| Fig 3, S1 (GCV method comparison ROC curves) | `gcv_{method}.csv` (one per method/dataset combination plotted in `roc_plots.py`) | `vt_id, interactor, partner, variant, gcv_seed, fold, test_class, true_label, predicted_score`. `vt_id`/`interactor`/`partner`/`variant` are resolved from the canonical rows CSV in `datasets/cv_reference/` by positional index, for each of the three canonical GCV datasets. Where a fold/class row count does not match the pkl's prediction count -- a method may drop rows it cannot score -- that slice keeps its preds/labels and leaves those 4 columns blank rather than risk a misaligned join. Recompute AUC per (gcv_seed, fold, test_class) with `sklearn.metrics.roc_auc_score`; average across seeds/folds per test_class to reproduce Fig 3/S1. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure gcv` |
+| Fig 4, S2 (VarChAMP blind test ROC curves) | `blind_test_{method}.csv` (one per method key found in `results/varchamp_seqcnf_newvar_eval/`) | `vt_id, interactor, partner, variant, test_class, true_label, predicted_score` (test_class in {C1,C2,C3}). Recompute AUC per test_class with `sklearn.metrics.roc_auc_score` to reproduce Fig 4/S2. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure blind_test` |
 | Fig 5, S4, S-stability (variant-DB disease-enrichment / stability-interaction figures) | `../master_variant_db_predictions.csv.gz` (one row per interactor/variant/partner triplet, all-data-model predictions + disease-label flags) | See that file's own header row. | (already generated; not produced by this script) |
 | Interface-residue robustness panel | `robustness_interface_curves.csv`, `robustness_interface_summary.csv` | curves: `class, group (interface/non_interface), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure robustness` |
 | pLDDT-stratification robustness panel | `robustness_plddt_curves.csv`, `robustness_plddt_summary.csv` | curves: `class, group (low/medium/high), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | (same as above) |
@@ -414,7 +406,7 @@ def main():
         print("== GCV (Fig 3, S1) ==")
         export_gcv()
     if args.figure in ('blind_test', 'all'):
-        print("== Blind test / VCFP (Fig 4, S2) ==")
+        print("== Blind test / VarChAMP (Fig 4, S2) ==")
         export_blind_test()
     if args.figure in ('robustness', 'all'):
         print("== Robustness panels ==")

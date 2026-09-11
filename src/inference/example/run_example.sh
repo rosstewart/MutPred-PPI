@@ -33,8 +33,8 @@ if [[ -n "${missing}" ]]; then
     echo "ERROR: the active Python is $(command -v python)" >&2
     echo "       and is missing:${missing}" >&2
     echo >&2
-    echo "  conda activate mutpred-ppi     # then re-run this script" >&2
-    echo "  (see docs/SETUP.md and requirements.txt)" >&2
+    echo "  conda activate ppi             # then re-run this script" >&2
+    echo "  (environment setup: README.md; data layout: docs/SETUP.md)" >&2
     exit 1
 fi
 

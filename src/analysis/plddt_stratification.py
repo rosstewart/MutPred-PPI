@@ -33,17 +33,17 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_curve
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
-from build_plddt_cache import lookup  # pair-keyed cache accessor (either chain order)
-from utils.gcv_common import StaleCacheError, load_gcv_detailed_results  # noqa: E402
+from analysis.build_plddt_cache import lookup  # pair-keyed cache accessor (either chain order)
+from analysis.stratification_common import (  # noqa: E402
+    load_canonical_rows, stratified_fold_curves)
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ CANONICAL_ROWS_PATH = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
 OUT_DIR = f"{_PUB}/results/robustness"
 N_SEEDS = 30
 MIN_N = 5  # matches roc_plots.py spirit: just require both label classes per fold
-from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
+from analysis.gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 PLDDT_BINS = [
     ("low",    0,    70),
@@ -82,8 +82,8 @@ def complex_id_pairs(dataset: str = "sahni_fragoza_mapped090826") -> dict:
     them (`P60891-1-B4DP31` becomes `('P60891', '1-B4DP31')`). Constructing the
     key from the canonical table's own columns and matching it whole is exact.
     """
-    from utils.gcv_common import DATASET_CONFIGS, load_data
-    df = load_data(DATASET_CONFIGS[dataset])
+    from utils.gcv_common import dataset_config, load_data
+    df = load_data(dataset_config(dataset))
     return {f"{i}-{p}": (i, p) for i, p in zip(df["interactor"], df["partner"])}
 
 
@@ -166,123 +166,31 @@ def build_row_plddt_bins(canonical_rows: pd.DataFrame, plddt_cache: dict) -> lis
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def compute_curves():
-    """Load data and compute per-(class, pLDDT bin) ROC fold curves.
+    """Per-(test class, pLDDT bin) ROC fold curves.
 
-    Returns (fold_curves, all_rows_bin).
-
-    Row identity is `row_index` (a positional integer into the canonical table),
-    not a vt_id string.  This removes the dependency on the pre-090826 vt_ids
-    pickles, which had 5,894 rows against the current 6,219-row canonical table.
+    The reconstruction lives in `analysis.stratification_common`, shared with
+    the protein-class and interface supplements; this only builds the binning.
+    Row identity is `row_index`, a positional integer into the canonical table
+    -- and `load_canonical_rows` now VERIFIES that equivalence rather than
+    asserting it in a comment, which is what this script used to do.
     """
-    # ── Canonical rows ────────────────────────────────────────────────────────
-    canonical_rows = pd.read_csv(CANONICAL_ROWS_PATH)
-    # row_index == DataFrame position (verified: equals range(len(df)))
-    n_rows = len(canonical_rows)
-    print(f"Canonical rows: {n_rows}")
+    canonical_rows = load_canonical_rows(CANONICAL_ROWS_PATH)
+    print(f"Canonical rows: {len(canonical_rows)}")
 
-    # ── pLDDT cache ───────────────────────────────────────────────────────────
     print("Loading pLDDT cache...")
     with open(PLDDT_CACHE, "rb") as f:
         plddt_cache = pickle.load(f)
     print(f"  {len(plddt_cache)} AF3 complexes in cache")
 
-    # Per-row pLDDT bin list, indexed by canonical row position.
     row_plddt_bins = build_row_plddt_bins(canonical_rows, plddt_cache)
-    bin_counts = {b: sum(1 for v in row_plddt_bins if v == b) for b, *_ in PLDDT_BINS}
+    bin_names = [b for b, *_ in PLDDT_BINS]
+    bin_counts = {b: sum(1 for v in row_plddt_bins if v == b) for b in bin_names}
     none_count = sum(1 for v in row_plddt_bins if v is None)
     print(f"  pLDDT bins: {bin_counts} | missing: {none_count}")
 
-    # ── GCV results ───────────────────────────────────────────────────────────
-    gcv_results = load_gcv_detailed_results(GCV_RESULTS, CANONICAL_DATASET)
-
-    # fold_curves[class][bin] = list of per-fold interpolated TPR arrays
-    fold_curves = {c: {b: [] for b, *_ in PLDDT_BINS} for c in (1, 2, 3)}
-    # all_rows_bin[class][bin] = set of row_index values (for n_variants counting)
-    all_rows_bin = {c: {b: set() for b, *_ in PLDDT_BINS} for c in (1, 2, 3)}
-
-    for seed in range(N_SEEDS):
-        fold_splits_path = f"{CV_DIR}/sahni_fragoza_train_fold_splits_{seed}.pkl"
-        ptc_path = f"{CV_DIR}/swing_train_pair_test_classes_{seed}.npy"
-
-        if not all(os.path.exists(p) for p in [fold_splits_path, ptc_path]):
-            print(f"  Seed {seed}: missing fold_splits or ptc, skipping")
-            continue
-
-        with open(fold_splits_path, "rb") as f:
-            fold_splits = pickle.load(f)
-        pair_test_classes = np.load(ptc_path)
-
-        iteration = gcv_results["iterations"].get(seed)
-        if iteration is None:
-            print(f"  Seed {seed}: not in GCV results, skipping")
-            continue
-
-        # Freshness of GCV_RESULTS as a whole is already asserted once, by
-        # `load_gcv_detailed_results` above (via the shared
-        # `utils.gcv_common.assert_gcv_pkl_fresh`) -- every seed in the same
-        # pkl was written by the same run, so a per-seed re-check here would
-        # only repeat that one assertion, not add coverage.
-
-        flat_cursor = 0
-        for fold_tuple in sorted(fold_splits, key=lambda t: t[0]):
-            fold, train_idx, test_idx = fold_tuple
-            fold_data = iteration["folds"][fold]
-            n_test = len(test_idx)
-            ptc_fold = pair_test_classes[flat_cursor:flat_cursor + n_test]
-
-            # Row-level pLDDT bins for this fold's test rows (indexed by canonical position).
-            fold_bins = [row_plddt_bins[ridx] for ridx in test_idx]
-
-            preds_fold = {cls: list(fold_data[f"class_{cls}"]["preds"]) for cls in (1, 2, 3)}
-            labels_fold = {cls: list(fold_data[f"class_{cls}"]["labels"]) for cls in (1, 2, 3)}
-
-            # The overall pkl's row count matched the canonical table (checked
-            # once, above), but that does not guarantee THIS fold's per-class
-            # buckets line up with THIS fold split -- the interleave below
-            # indexes `preds_fold[cls][cls_cursor[cls]]` unconditionally, so a
-            # per-fold mismatch must be caught here or it surfaces as an opaque
-            # `IndexError` instead of a named cause.
-            n_cached = sum(len(v) for v in preds_fold.values())
-            if n_cached != n_test:
-                raise StaleCacheError(
-                    f"{GCV_RESULTS}: seed {seed} fold {fold} holds {n_cached} "
-                    f"cached predictions but the canonical fold has {n_test} "
-                    f"test rows, despite the pkl's overall row count matching "
-                    f"the canonical table. This fold is internally inconsistent "
-                    f"and must be recomputed.")
-
-            preds_ordered, labels_ordered = [], []
-            cls_cursor = {1: 0, 2: 0, 3: 0}
-            for cls in ptc_fold:
-                preds_ordered.append(preds_fold[cls][cls_cursor[cls]])
-                labels_ordered.append(labels_fold[cls][cls_cursor[cls]])
-                cls_cursor[cls] += 1
-
-            preds_ordered = np.array(preds_ordered)
-            labels_ordered = np.array(labels_ordered)
-            classes_ordered = np.array(ptc_fold)
-            bins_by_order = np.array(fold_bins, dtype=object)
-
-            for cls in (1, 2, 3):
-                mask_cls = classes_ordered == cls
-                for bin_name, lo, hi in PLDDT_BINS:
-                    mask = mask_cls & (bins_by_order == bin_name)
-                    p = preds_ordered[mask]
-                    l = labels_ordered[mask]
-                    ridxs = np.array(test_idx)[mask]
-                    all_rows_bin[cls][bin_name].update(ridxs.tolist())
-                    if len(p) >= MIN_N and len(np.unique(l)) == 2:
-                        fpr, tpr, _ = roc_curve(l, p)
-                        fold_curves[cls][bin_name].append(np.interp(FPR_GRID, fpr, tpr))
-
-            flat_cursor += n_test
-
-        print(f"  Seed {seed}: done", flush=True)
-
-    return fold_curves, all_rows_bin
-
-
-CLASS_LABELS = {1: "Class 1 (both seen)", 2: "Class 2 (one seen)", 3: "Class 3 (neither seen)"}
+    return stratified_fold_curves(row_plddt_bins, bin_names, min_n=MIN_N,
+                                  n_seeds=N_SEEDS,
+                                  rows_file=CANONICAL_ROWS_PATH)
 
 
 def plot_on_axes(axes, fold_curves, all_rows_bin):
@@ -351,7 +259,7 @@ def main():
 
     plt.tight_layout()
     out_png = os.path.join(OUT_DIR, "plddt_auroc_by_class.png")
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}")
 
     out_tsv = os.path.join(OUT_DIR, "plddt_auroc_summary.tsv")

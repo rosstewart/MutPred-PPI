@@ -21,21 +21,29 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_curve, auc
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from paths import CV_DIR, REPO_ROOT  # noqa: E402
-
+from paths import REPO_ROOT, cv_reference_dir
 
 _PUB = REPO_ROOT
-_CV = CV_DIR
-from roc_plots import (compute_roc_with_variance, plot_roc_with_confidence,
-                       METHOD_DISPLAY_NAMES, WORKING_DIR)
+# `cv_reference_dir()`, NOT `paths.CV_DIR`. The two are not interchangeable:
+# CV_DIR honours $MUTPRED_CV_DIR and falls back to an external `cv_splits/`,
+# whose seed-1 `pair_test_classes` is the corrupt file described in
+# roc_plots.py's header -- so with that variable set, this script would read the
+# corrupt classes while all six of its sibling analyses read the fixed ones.
+# Every other consumer already uses cv_reference_dir(); this was the last
+# holdout (fixed 2026-09-10).
+_CV = cv_reference_dir()
+from analysis.roc_plots import (compute_roc_with_variance, plot_roc_with_confidence,
+                       WORKING_DIR)
+from analysis.gcv_curves import class_roc_auc
+from analysis.method_names import with_baseline_variants
 from utils.gcv_common import (
     DATASET_CONFIGS, StaleCacheError, load_data, load_gcv_detailed_results,
     load_positional_cache)
@@ -53,14 +61,13 @@ N_SEEDS = 30
 # `load_pairs_in_row_order` reads.
 SKEMPI_METHODS = ["SAAMBE-3D", "MutPPI", "MutPPIPlus"]  # DDMutPPI excluded entirely: 87% job-timeout rate on its public API
 
-# roc_plots.py's main() only registers these display names at runtime (line ~1083),
-# so biclass_sf_gcv.py must register them itself before calling plot_roc_with_confidence.
-METHOD_DISPLAY_NAMES.update({
-    f"mutpred2_standalone_{DATASET}": "MutPred2",
-    f"saambe_3d_{DATASET}":           "SAAMBE-3D",
-    f"mutppi_{DATASET}":              "MutPPI",
-    f"mutppiplus_{DATASET}":          "MutPPI+",
-})
+# The per-dataset baseline keys are not in the base table, so build a LOCAL
+# extended copy. This used to call `METHOD_DISPLAY_NAMES.update(...)`, mutating
+# the module-level dict shared with `method_names`/`roc_plots` -- the exact
+# pattern method_names.py documents as removed, because the extra keys then leak
+# into every consumer imported later in the same process (e.g.
+# export_reconstruction_tables, which uses the dict as a membership filter).
+DISPLAY_NAMES = with_baseline_variants([DATASET])
 
 METHODS = [
     ("MutPredPPI_sahni_fragoza_megascale_all",   "MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"),
@@ -240,21 +247,21 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[tuple[str, str]
             mask     = (test_classes_all == tc) & biclass_mask_all
             preds_c  = preds_all[mask]
             labels_c = labels_all[mask]
-            valid    = ~np.isnan(preds_c)
-            preds_c  = preds_c[valid]
-            labels_c = labels_c[valid]
-            n_biclass_total += len(preds_c)
+            n_biclass_total += int((~np.isnan(preds_c)).sum())
 
-            if len(preds_c) == 0 or len(np.unique(labels_c)) < 2:
+            # class_roc_auc applies the one shared NaN policy (preds OR labels)
+            # -- this used to mask preds only, a real divergence from
+            # gcv_common's canonical mask, even though harmless in practice
+            # since labels here never contain NaN.
+            fpr, tpr, score = class_roc_auc(preds_c, labels_c)
+            if fpr is None:
                 baseline_results[method_key][f"class_{tc}"] = {
                     "fprs": [], "tprs": [], "aucs": [], "ns": [0]
                 }
                 continue
-
-            fpr, tpr, _ = roc_curve(labels_c, preds_c)
-            score = auc(fpr, tpr)
+            n_valid = int((~np.isnan(preds_c) & ~np.isnan(labels_c)).sum())
             baseline_results[method_key][f"class_{tc}"] = {
-                "fprs": [fpr], "tprs": [tpr], "aucs": [score], "ns": [len(preds_c)]
+                "fprs": [fpr], "tprs": [tpr], "aucs": [score], "ns": [n_valid]
             }
         print(f"  {method}: biclass n={n_biclass_total:,} "
               f"(C3 AUC={baseline_results[method_key]['class_3']['aucs'] or 'n/a'})",
@@ -263,16 +270,16 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[tuple[str, str]
     preds_file = os.path.join(WORKING_DIR, f"{dataset}_mutpred2_standalone_preds.npy")
     preds_all = load_positional_cache(preds_file, n_rows)
     if preds_all is not None:
-        mask     = biclass_mask_all & ~np.isnan(preds_all) & (labels_all >= 0)
+        mask     = biclass_mask_all & (labels_all >= 0)
         preds_c  = preds_all[mask]
         labels_c = labels_all[mask]
         method_key = f"mutpred2_standalone_{dataset}"
-        if len(preds_c) > 0 and len(np.unique(labels_c)) >= 2:
-            fpr, tpr, _ = roc_curve(labels_c, preds_c)
-            score = auc(fpr, tpr)
+        fpr, tpr, score = class_roc_auc(preds_c, labels_c)
+        if fpr is not None:
+            n_valid = int((~np.isnan(preds_c) & ~np.isnan(labels_c)).sum())
             baseline_results[method_key] = {
                 f"class_{c}": {"fprs": [fpr], "tprs": [tpr], "aucs": [score],
-                               "ns": [len(preds_c)]}
+                               "ns": [n_valid]}
                 for c in [1, 2, 3]
             }
             print(f"  mutpred2_standalone: biclass n={len(preds_c):,}  AUC={score:.3f}",
@@ -340,7 +347,7 @@ def main() -> None:
         f.write("method\tdisplay_name\tmean_auc_c3\tstd_auc_c3\tn_curves\n")
         for mkey, roc in results_dict.items():
             aucs    = np.array(roc["class_3"]["aucs"])
-            dname   = METHOD_DISPLAY_NAMES.get(mkey, mkey)
+            dname   = DISPLAY_NAMES.get(mkey, mkey)
             f.write(f"{mkey}\t{dname}\t{np.mean(aucs):.4f}\t{np.std(aucs, ddof=1):.4f}"
                     f"\t{len(aucs)}\n")
     print(f"AUCs saved → {tsv_path}", flush=True)

@@ -22,7 +22,9 @@ import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -32,8 +34,6 @@ from sklearn.metrics import silhouette_score
 from matplotlib.patches import Ellipse
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, HOME_DIR, REPO_ROOT
 from utils import mutations  # noqa: E402
 
@@ -44,7 +44,7 @@ _DB   = _PUB / "results" / "variant_dbs_all_data"
 _STAB = _PUB / "results" / "variant_dbs_stability"
 _OUT  = _PUB / "results" / "stability_interaction"
 
-from stability_interaction_scatter import load_tsv_grouped, aggregate_per_variant
+from analysis.stability_interaction_scatter import load_tsv_grouped, aggregate_per_variant
 
 
 
@@ -194,7 +194,7 @@ def plot_clusters(pooled: pd.DataFrame, labels: np.ndarray, title: str, out: Pat
     ax.legend(fontsize=8, markerscale=4)
 
     plt.tight_layout()
-    plt.savefig(out, dpi=200, bbox_inches="tight")
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
     plt.close()
     print(f"Saved → {out}", flush=True)
 

@@ -13,7 +13,8 @@ Data comes from the canonical tables in `datasets/training_eval/`:
     <dataset>_splits.csv.gz  seed, row_index, test_fold, test_class
     sequences.csv.gz         accession, sequence
 
-built by `repro_test/build_canonical_tables.py` from the 090826 mapping. Every
+built by `src/data_processing/training_sets/prepare_gcv_tables.py` from the
+090826 mapping (see docs/DATA_PREPARATION.md for the full chain). Every
 mutation is 1-based and validated against its sequence, accessions are UniProt
 (isoform suffix only where the sequence differs from canonical), there are no
 duplicate (interactor, partner, mutation) triples and no null labels.
@@ -35,8 +36,10 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from paths import DATASETS_DIR, GCV_RESULTS_DIR, TRAINING_EVAL_DIR  # noqa: E402
+from paths import (ANNOTATIONS_DIR, DATASETS_DIR, GCV_RESULTS_DIR,  # noqa: E402
+                   TRAINING_EVAL_DIR)
 from utils.identifiers import bare_accession  # noqa: E402
+from utils import mutations  # noqa: E402
 
 TABLES = TRAINING_EVAL_DIR
 
@@ -63,6 +66,63 @@ DATASET_CONFIGS: dict[str, DatasetConfig] = {
         "fragoza_only_mapped090826",
     )
 }
+
+# Short, readable aliases for the five canonical datasets.
+#
+# The `_mapped090826` suffix is a mapping-run date stamp: it is meaningful in a
+# FILENAME, where it distinguishes these tables from the pre-rebaseline ones, and
+# meaningless to anyone typing a command. Every `--dataset` argument accepts
+# either form, so the docs can say `--dataset sahni_fragoza` and a reader never
+# has to learn what 090826 means.
+DATASET_ALIASES = {
+    "sahni_fragoza_varchamp_all": "sahni_fragoza_varchamp_all_mapped090826",
+    "sahni_fragoza":              "sahni_fragoza_mapped090826",
+    "varchamp_all":               "varchamp_all_mapped090826",
+    "sahni_only":                 "sahni_only_mapped090826",
+    "fragoza_only":               "fragoza_only_mapped090826",
+}
+
+# What `--dataset` should offer: short names first, full names still valid.
+DATASET_CHOICES = list(DATASET_ALIASES) + list(DATASET_CONFIGS)
+
+
+def resolve_dataset(name: str) -> str:
+    """Canonical dataset name from either the short alias or the full name."""
+    if name in DATASET_CONFIGS:
+        return name
+    if name in DATASET_ALIASES:
+        return DATASET_ALIASES[name]
+    raise KeyError(
+        f"unknown dataset {name!r}. Choose one of: "
+        f"{', '.join(sorted(DATASET_ALIASES))} "
+        f"(or the full *_mapped090826 form).")
+
+
+def dataset_config(name: str) -> DatasetConfig:
+    """`DatasetConfig` for a short alias or a full dataset name."""
+    return DATASET_CONFIGS[resolve_dataset(name)]
+
+
+def dataset_arg(value: str) -> str:
+    """argparse `type=` converter: normalise `--dataset` to the canonical name.
+
+    Use this with `choices=list(DATASET_CONFIGS)`. argparse applies `type`
+    BEFORE checking `choices`, so a short alias is expanded first and then
+    validated, and `args.dataset` is always the full `*_mapped090826` name.
+
+    That matters because `args.dataset` is not only looked up as a config -- it
+    is interpolated directly into cache filenames
+    (`{dataset}_prott5.pkl`, `{dataset}_esm2.pkl`, ...) and passed to
+    `build_tensors`. Normalising only at the config lookup, as the first version
+    of these aliases did, left those paths pointing at
+    `sahni_fragoza_prott5.pkl` -- a file that does not exist.
+    """
+    import argparse as _argparse
+    try:
+        return resolve_dataset(value)
+    except KeyError as exc:
+        raise _argparse.ArgumentTypeError(str(exc).strip('"')) from exc
+
 
 _SEQ_CACHE: dict | None = None
 
@@ -195,18 +255,53 @@ def load_data(cfg: DatasetConfig) -> pd.DataFrame:
     return rows
 
 
+def union_rows_across_datasets() -> pd.DataFrame:
+    """Concatenated rows from all five canonical datasets.
+
+    `sahni_fragoza_varchamp_all_mapped090826` looks like a pre-built superset
+    but is a POOLED, conflict-resolved table: a row can be dropped during
+    pooling even though the same (interactor, partner, mutation) is present
+    and unconflicted in a smaller dataset. Consumers that need every triple
+    the five datasets collectively test (AF3 structure requirements, MutPred2
+    queries) must union the raw tables themselves rather than trust the
+    pooled one alone -- see `prepare_af3_inputs.py`'s module docstring for the
+    verification that this matters.
+    """
+    return pd.concat([load_data(cfg) for cfg in DATASET_CONFIGS.values()],
+                     ignore_index=True)
+
+
 def add_mutated_sequence(rows: pd.DataFrame) -> pd.DataFrame:
     """Append `mutated_sequence`: the interactor sequence with the variant applied.
 
     Not stored in the tables -- it is fully determined by `interactor_sequence`
     and `mutation`, and materialising it for every row would duplicate tens of MB.
     Only the embedding precomputes need it.
+
+    Goes through `utils.mutations.apply`, which verifies the wild-type residue
+    before substituting. This used to splice inline off the `position` COLUMN
+    (`s[:p-1] + m[-1] + s[p:]`) with no check at all -- a fifth private copy of
+    the operation `utils/mutations.py` exists to own, and the one place it
+    mattered most, since a wrong sequence here propagates silently into every
+    ProtT5/ESM-2/MINT/PPLM embedding cache. Verified 2026-09-10 to be
+    byte-identical on all 53,239 rows of the five canonical datasets, so this is
+    a guard rather than a change; it only bites if `position` and `mutation`
+    ever disagree, which is exactly the case the old form could not see.
     """
     out = rows.copy()
-    seqs, muts, pos = out["interactor_sequence"], out["mutation"], out["position"]
-    out["mutated_sequence"] = [
-        s[:p - 1] + m[-1] + s[p:] for s, m, p in zip(seqs, muts, pos)
-    ]
+    applied = [mutations.apply(s, m)
+               for s, m in zip(out["interactor_sequence"], out["mutation"])]
+    bad = [(i, m) for i, (m, a) in enumerate(zip(out["mutation"], applied))
+           if a is None]
+    if bad:
+        raise ValueError(
+            f"{len(bad)} row(s) have a mutation that does not fit their "
+            f"interactor sequence (wild-type mismatch or position out of "
+            f"range), e.g. row {bad[0][0]} mutation {bad[0][1]!r}. The "
+            f"canonical tables are validated at build time, so this means the "
+            f"rows and sequences.csv.gz are out of sync -- rebuild with "
+            f"src/data_processing/training_sets/prepare_gcv_tables.py.")
+    out["mutated_sequence"] = applied
     return out
 
 
@@ -244,14 +339,23 @@ def _compute_class_aucs(
         macro_auc         np.ndarray shape (3,) weighted per-fold mean
         fold_results      dict of per-fold results
     """
-    # Mask NaN in EITHER preds or labels. This is the union of what the three
-    # former implementations did: gcv_common masked preds only, mutpred_ppi_cv
-    # masked nothing, swing_gcv masked both. It was number-preserving on the
-    # historical results (zero NaNs across 14.8M values), but it is no longer
-    # merely defensive: mutpred_ppi_gcv emits NaN by design for rows with no
-    # structure or no embedding, so this mask is what excludes them. Those rows
-    # are dropped from the denominator, which is why MutPred-PPI's per-class
-    # counts are legitimately lower than the sequence-only methods'.
+    # Mask NaN in EITHER preds or labels -- the union of what the three former
+    # implementations did (gcv_common masked preds only, mutpred_ppi_cv masked
+    # nothing, swing_gcv masked both).
+    #
+    # This is DEFENSIVE, and as of 2026-09-10 it should never fire in GCV.
+    # `mutpred_ppi_gcv.py` builds tensors with `require_complete=True`, which
+    # RAISES on any row lacking a structure or an embedding rather than scoring
+    # it NaN; and rows whose complex has no AlphaFold3 structure are now dropped
+    # at dataset-build time (`af3_failed`, see
+    # src/data_processing/annotate_af3_coverage.py), so they never reach here at
+    # all. A NaN surviving to this point means a genuine defect -- a stale
+    # embedding cache, or a table built without the af3_failed filter -- so the
+    # count printed below is worth reading rather than ignoring.
+    #
+    # (An earlier version of this comment claimed mutpred_ppi_gcv "emits NaN by
+    # design". It does not, and never did: see its own comment at the
+    # build_tensors call, "No NaN, no shrunken denominator.")
     valid_mask = ~np.isnan(all_preds) & ~np.isnan(all_labels)
     micro_auc = []
     for ptc in (1, 2, 3):
@@ -521,7 +625,7 @@ def compute_blind_test_classes(train_pairs: list, test_pairs: list) -> np.ndarra
     SKEMPI-pretrained methods (SAAMBE-3D, MutPPI, MutPPI+) use
     `skempi_test_class` instead -- their training set is SKEMPI, not
     Sahni+Fragoza. MutPred2 is partner-agnostic and gets a constant class
-    (see `STRATIFICATION_INDEPENDENT_METHODS` in `varchamp_blind_test.py`).
+    (see `STRATIFICATION_INDEPENDENT_METHODS` in `blind_test_figures.py`).
     """
     train_proteins: set = set()
     for a, b in train_pairs:
@@ -538,19 +642,37 @@ _SKEMPI_TRAIN_UNIPROTS: set | None = None
 
 
 def load_skempi_train_uniprots() -> set:
-    """The 258 SKEMPI training proteins SAAMBE-3D/MutPPI/MutPPI+ were pretrained on.
+    """The SKEMPI 2.0 proteins SAAMBE-3D/MutPPI/MutPPI+ were pretrained on.
 
-    External reference (not derived from datasets/training_eval/): these
-    methods are not retrained per dataset, so their own training-set overlap
-    is what defines their C1/C2/C3, in both GCV (roc_plots.py) and the
-    VarChAMP blind test. Cached at module level -- every fold/row lookup in
-    a GCV or blind-test run reads the same 258-protein set.
+    These methods are not retrained per dataset, so their own training-set
+    overlap is what defines their C1/C2/C3, in both GCV (roc_plots.py) and the
+    VarChAMP blind test. Cached at module level -- every fold/row lookup in a
+    GCV or blind-test run reads the same set.
+
+    Derived from source by
+    `src/data_processing/training_sets/prepare_skempi_reference.py`
+    (SKEMPI 2.0 joined per chain against SIFTS), rather than being an opaque
+    input. It used to be `results/gcv/SAAMBE_train_uniprots.npy` -- an INPUT
+    living in a generated, gitignored directory, so no one cloning the repo
+    could stratify these three methods at all. That file also held only 258
+    accessions because its derivation kept only single-character chain groups,
+    silently dropping all 122 multi-chain SKEMPI complexes (antibody H/L pairs
+    and similar); the corrected derivation finds 342. Replaced 2026-09-10.
     """
     global _SKEMPI_TRAIN_UNIPROTS
     if _SKEMPI_TRAIN_UNIPROTS is None:
-        _SKEMPI_TRAIN_UNIPROTS = set(
-            np.load(GCV_RESULTS_DIR / "SAAMBE_train_uniprots.npy").tolist()
-        )
+        path = ANNOTATIONS_DIR / "skempi_train_uniprots.csv"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path} not found -- build it with\n"
+                f"  python src/data_processing/training_sets/prepare_skempi_reference.py")
+        accs = set()
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and line != "uniprot":
+                    accs.add(line)
+        _SKEMPI_TRAIN_UNIPROTS = accs
     return _SKEMPI_TRAIN_UNIPROTS
 
 

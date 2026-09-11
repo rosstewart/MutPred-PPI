@@ -53,11 +53,12 @@ warnings.filterwarnings("ignore")
 from Bio.PDB import MMCIFParser, PDBParser
 from joblib import Parallel, delayed
 
+from paths import DATA_ROOT  # noqa: E402
 from contact_graphs import _is_polymer_residue, residue_to_one, sha
 from utils.gcv_common import DATASET_CONFIGS, load_data
 from utils.sequences import iter_fasta
 
-_ROOT = Path("/data/ross/ppi_lossgain/interaction_loss")
+_ROOT = DATA_ROOT
 _VDB_FASTAS = [
     _ROOT / "clinvar" / "clinvar_interaction_loss_wt_and_vt.fasta",
     _ROOT / "clinvar" / "clinvar_benign_wt_vt_partners.fasta",
@@ -65,7 +66,8 @@ _VDB_FASTAS = [
     _ROOT / "gnomad" / "gnomad_8p_partner_wt_and_vt.fasta",
     _ROOT / "hgmd" / "hgmd_interaction_loss_wt_and_vt.fasta",
     _ROOT / "cosmic" / "cosmic_interaction_loss_wt_and_vt.fasta",
-    _ROOT / "autism" / "autism_interaction_loss_wt_and_vt.fasta",
+    _ROOT / "neurodev" / "neurodev_interaction_loss_wt_and_vt.fasta",
+    _ROOT / "asd" / "asd_interaction_loss_wt_and_vt.fasta",
 ]
 
 
@@ -273,12 +275,37 @@ def main() -> int:
     print("building sequence -> accession map ...", flush=True)
     seq2acc = build_seq_map()
 
-    files = sorted(f for d in args.structures
-                   for e in ("*.cif", "*.pdb", "*.cif.gz", "*.pdb.gz")
-                   for f in glob.glob(str(Path(d) / e)))
+    _EXTS = ("*.cif", "*.pdb", "*.cif.gz", "*.pdb.gz")
+    per_dir = {d: sorted(f for e in _EXTS for f in glob.glob(str(Path(d) / e)))
+               for d in args.structures}
+
+    # A source directory that contributes nothing is almost always a mistake --
+    # the glob is NOT recursive, and AlphaFold3 output is typically one level
+    # deeper than the directory you first reach for (`af3_out/models/`, not
+    # `af3_out/`). Reporting the total only, as this used to, makes a merge that
+    # ingested none of your new structures look like a success: it prints a
+    # plausible count (everything already in the canonical tree) and exits 0.
+    empty = [d for d, fs in per_dir.items() if not fs]
+    if empty:
+        hint = ""
+        for d in empty:
+            deeper = sorted(str(Path(sub).relative_to(d))
+                            for sub in glob.glob(str(Path(d) / "*"))
+                            if Path(sub).is_dir()
+                            and any(glob.glob(str(Path(sub) / e)) for e in _EXTS))
+            if deeper:
+                hint += f"\n    {d} -- did you mean {d}/{deeper[0]}/ ?"
+        raise SystemExit(
+            f"ERROR: {len(empty)} source directory/ies contain no structures "
+            f"(the search is not recursive):\n"
+            + "\n".join(f"    {d}" for d in empty) + hint)
+
+    files = sorted(f for fs in per_dir.values() for f in fs)
     if args.limit:
         files = files[:args.limit]
     print(f"{len(files)} structures across {len(args.structures)} dir(s)", flush=True)
+    for d, fs in per_dir.items():
+        print(f"    {len(fs):6d}  {d}", flush=True)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

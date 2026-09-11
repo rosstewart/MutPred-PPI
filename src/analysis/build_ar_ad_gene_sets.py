@@ -32,8 +32,6 @@ from pathlib import Path
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, DATA_ROOT  # noqa: E402
 
 

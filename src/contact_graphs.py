@@ -289,6 +289,44 @@ def symmetric_edge_index(edge_index: np.ndarray, n: int) -> np.ndarray:
     return np.vstack([src[order], dst[order]]).astype(np.int64)
 
 
+def two_hop_subgraph(edge_index, center: int):
+    """Induced subgraph of every node within two hops of `center`.
+
+    Returns `(kept_nodes, local_edge_index, local_center)`. `kept_nodes` is a
+    sorted array of original node ids, so node features are sliced with
+    `node_emb[kept_nodes]`; `local_edge_index` is re-indexed into that ordering.
+
+    This is exact, not an approximation, for the model in `model.py`: its forward
+    reads a single node, `h[mutation_idx]`, after two GAT layers and does no
+    global pooling. Layer 2 at the centre needs layer-1 outputs for its direct
+    neighbours; each of those needs only input features of ITS neighbours, which
+    are at most two hops from the centre. Attention normalises over a node's own
+    neighbour set, and the INDUCED subgraph keeps every such set complete for the
+    nodes that matter, so no softmax is taken over a truncated neighbourhood.
+
+    The same argument is what makes `compress_to_subgraphs.py` lossless for
+    inference; this is the training-side counterpart. Contact graphs carry both
+    edge directions and self-loops already, so `center` is never isolated.
+
+    Restricting to two hops is a large saving, not a micro-optimisation: complexes
+    in these datasets run to ~900 nodes at the median while the two-hop
+    neighbourhood is ~30, and GAT cost scales with edges.
+    """
+    src, dst = edge_index[0], edge_index[1]
+    center = int(center)
+
+    hop1 = np.unique(np.concatenate(
+        [dst[src == center], src[dst == center], np.array([center], dtype=src.dtype)]))
+    keep = np.unique(np.concatenate(
+        [hop1, dst[np.isin(src, hop1)], src[np.isin(dst, hop1)]]))
+
+    edge_mask = np.isin(src, keep) & np.isin(dst, keep)
+    remap = np.full(int(keep.max()) + 1, -1, dtype=np.int64)
+    remap[keep] = np.arange(len(keep), dtype=np.int64)
+    local_edges = np.stack([remap[src[edge_mask]], remap[dst[edge_mask]]])
+    return keep, local_edges, int(remap[center])
+
+
 def check_embedding_lengths(*, interactor_seq: str, partner_seq: str,
                             interactor_emb=None, partner_emb=None,
                             label: str = "") -> str | None:

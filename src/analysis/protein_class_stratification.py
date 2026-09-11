@@ -31,16 +31,16 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_curve
 import matplotlib
-matplotlib.use("Agg")
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
+plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
-from utils.gcv_common import StaleCacheError, load_gcv_detailed_results  # noqa: E402
+from analysis.stratification_common import (  # noqa: E402
+    load_canonical_rows, stratified_fold_curves)
 from utils.identifiers import bare_accession  # noqa: E402
 
 
@@ -62,7 +62,7 @@ OUT_DIR   = f"{_PUB}/results/robustness"
 
 N_SEEDS       = 30
 MIN_N         = 5
-from gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
+from analysis.gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)
 
 GROUPS  = ["single", "multi"]
 COLORS  = {"single": "#1a9641", "multi": "#a6d96a"}
@@ -98,9 +98,10 @@ def build_row_groups(rows: pd.DataFrame, domain_lookup: dict) -> np.ndarray:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def compute_curves():
-    """Load data and compute per-(class, domain-group) ROC fold curves.
+    """Per-(test class, domain-group) ROC fold curves.
 
-    Returns (fold_curves, all_rows_by_grp).
+    The reconstruction itself lives in `analysis.stratification_common`, shared
+    with the pLDDT and interface supplements; this only builds the grouping.
     """
     print("Loading pfam_domains_cache...", flush=True)
     with open(PFAM_CACHE, "rb") as f:
@@ -108,10 +109,7 @@ def compute_curves():
     domain_lookup = build_domain_lookup(pfam["hits"])
     print(f"  {len(domain_lookup)} proteins with IPR hits", flush=True)
 
-    rows = pd.read_csv(ROWS_FILE).sort_values("row_index").reset_index(drop=True)
-    if list(rows["row_index"]) != list(range(len(rows))):
-        raise ValueError(f"{ROWS_FILE}: row_index is not 0..n-1; it cannot be "
-                         f"used as a positional index into the fold splits")
+    rows = load_canonical_rows(ROWS_FILE)
     print(f"  {len(rows)} canonical rows", flush=True)
 
     row_groups = build_row_groups(rows, domain_lookup)
@@ -122,96 +120,8 @@ def compute_curves():
     known = len(row_groups) - unknown
     print(f"  Coverage: {known}/{len(rows)} = {known/len(rows):.1%}", flush=True)
 
-    gcv_results = load_gcv_detailed_results(GCV_RESULTS, CANONICAL_DATASET)
-
-    fold_curves   = {c: {g: [] for g in GROUPS} for c in (1, 2, 3)}
-    all_rows_by_grp = {c: {g: set() for g in GROUPS} for c in (1, 2, 3)}
-
-    for seed in range(N_SEEDS):
-        fold_splits_path = f"{CV_DIR}/sahni_fragoza_train_fold_splits_{seed}.pkl"
-        ptc_path         = f"{CV_DIR}/swing_train_pair_test_classes_{seed}.npy"
-
-        if not all(os.path.exists(p) for p in [fold_splits_path, ptc_path]):
-            print(f"  Seed {seed}: missing files, skipping", flush=True)
-            continue
-
-        with open(fold_splits_path, "rb") as f:
-            fold_splits = pickle.load(f)
-        pair_test_classes = np.load(ptc_path)
-
-        n_test_total = sum(len(t) for _, _, t in fold_splits)
-        if n_test_total != len(rows) or len(pair_test_classes) != len(rows):
-            raise ValueError(
-                f"seed {seed}: fold splits cover {n_test_total} rows and the "
-                f"test-class array {len(pair_test_classes)}, but "
-                f"{os.path.basename(ROWS_FILE)} has {len(rows)}. Regenerate the "
-                f"CV reference with src/analysis/export_cv_reference.py "
-                f"--dataset sahni_fragoza_mapped090826.")
-
-        iteration   = gcv_results["iterations"][seed]
-        flat_cursor = 0
-
-        for fold_tuple in sorted(fold_splits, key=lambda t: t[0]):
-            fold, train_idx, test_idx = fold_tuple
-            fold_data = iteration["folds"][fold]
-            n_test    = len(test_idx)
-            ptc_fold  = pair_test_classes[flat_cursor:flat_cursor + n_test]
-
-            preds_fold  = {cls: list(fold_data[f"class_{cls}"]["preds"])  for cls in (1, 2, 3)}
-            labels_fold = {cls: list(fold_data[f"class_{cls}"]["labels"]) for cls in (1, 2, 3)}
-
-            # Freshness of GCV_RESULTS AS A WHOLE is already asserted once, by
-            # `load_gcv_detailed_results` above (via the shared
-            # `utils.gcv_common.assert_gcv_pkl_fresh`), which compares one
-            # seed's TOTAL row count against the canonical table. That does not
-            # guarantee every INDIVIDUAL fold's class buckets are internally
-            # consistent with THIS fold split -- a global total can match by
-            # construction while a specific fold's bucket sizes still disagree.
-            # The interleave below indexes `preds_fold[cls][cls_cursor[cls]]`
-            # unconditionally, so a per-fold mismatch must be caught here or it
-            # surfaces as an opaque `IndexError` instead of a named cause.
-            n_cached = sum(len(v) for v in preds_fold.values())
-            if n_cached != n_test:
-                raise StaleCacheError(
-                    f"{os.path.basename(GCV_RESULTS)}: seed {seed} fold {fold} "
-                    f"holds {n_cached} cached predictions but the canonical "
-                    f"fold has {n_test} test rows, despite the pkl's overall row "
-                    f"count matching the canonical table. This fold is "
-                    f"internally inconsistent and must be recomputed.")
-
-            cls_cursor  = {1: 0, 2: 0, 3: 0}
-            preds_ordered, labels_ordered = [], []
-            for cls in ptc_fold:
-                preds_ordered.append(preds_fold[cls][cls_cursor[cls]])
-                labels_ordered.append(labels_fold[cls][cls_cursor[cls]])
-                cls_cursor[cls] += 1
-
-            preds_ordered  = np.array(preds_ordered)
-            labels_ordered = np.array(labels_ordered)
-            classes_ordered = np.array(ptc_fold)
-            # Rows, not welded vt_id strings: row_index is what the split holds.
-            fold_rows      = np.asarray(test_idx)
-            groups_ordered = row_groups[fold_rows]
-
-            for cls in (1, 2, 3):
-                mask_cls = classes_ordered == cls
-                for grp in GROUPS:
-                    mask = mask_cls & (groups_ordered == grp)
-                    p = preds_ordered[mask]
-                    l = labels_ordered[mask]
-                    all_rows_by_grp[cls][grp].update(fold_rows[mask].tolist())
-                    if len(p) >= MIN_N and len(np.unique(l)) == 2:
-                        fpr, tpr, _ = roc_curve(l, p)
-                        fold_curves[cls][grp].append(np.interp(FPR_GRID, fpr, tpr))
-
-            flat_cursor += n_test
-
-        print(f"  Seed {seed}: done", flush=True)
-
-    return fold_curves, all_rows_by_grp
-
-
-CLASS_LABELS = {1: "Class 1 (both seen)", 2: "Class 2 (one seen)", 3: "Class 3 (neither seen)"}
+    return stratified_fold_curves(row_groups, GROUPS, min_n=MIN_N,
+                                  n_seeds=N_SEEDS, rows_file=ROWS_FILE)
 
 
 def plot_on_axes(axes, fold_curves, all_rows_by_grp):
@@ -274,7 +184,7 @@ def main():
 
     plt.tight_layout()
     out_png = os.path.join(OUT_DIR, "protein_class_auroc_by_class.png")
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}", flush=True)
 
     out_tsv = os.path.join(OUT_DIR, "protein_class_auroc_summary.tsv")

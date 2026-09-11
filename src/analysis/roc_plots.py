@@ -3,6 +3,8 @@
 
 # %% Imports
 import matplotlib.pyplot as plt
+from analysis import plot_style
+from analysis.plot_style import SAVE_DPI
 from sklearn.metrics import roc_curve, auc
 import pickle
 import numpy as np
@@ -13,15 +15,16 @@ import os
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
-from method_names import (  # noqa: E402
-    METHOD_DISPLAY_NAMES, extract_method_and_dataset, with_baseline_variants)
+from analysis.method_names import (  # noqa: E402
+    _SHORT_DATASET_NAMES, METHOD_DISPLAY_NAMES, extract_method_and_dataset,
+    with_baseline_variants)
+from utils.legacy_guard import LegacyInputError, reject_legacy_dataset_name  # noqa: E402
 from paths import ANNOTATIONS_DIR, GCV_RESULTS_DIR, cv_reference_dir  # noqa: E402
 from ids import is_uniprot_accession  # noqa: E402  (single definition, see src/ids.py)
-from gcv_curves import N_SEM_DIVISOR  # noqa: E402  (single definition)
+from analysis.gcv_curves import N_SEM_DIVISOR  # noqa: E402  (single definition)
 from utils.gcv_common import (  # noqa: E402
-    DATASET_CONFIGS, StaleCacheError, load_data, load_positional_cache)
+    DATASET_CONFIGS, StaleCacheError, load_data, load_positional_cache,
+    load_skempi_train_uniprots, skempi_test_class)
 from utils.identifiers import bare_accession, pair_id, split_legacy_pair  # noqa: E402
 
 
@@ -39,37 +42,28 @@ CV_REF = str(cv_reference_dir())
 # in biclass_sf_gcv.py / interface_analysis.py / plddt_stratification.py keeps
 # working without those files needing to change on the same day.
 # %% Helper functions
-with open(ANNOTATIONS_DIR / 'all_to_uniprot.pkl', 'rb') as f:
-    all_to_uniprot = pickle.load(f)
-
-with open(ANNOTATIONS_DIR / 'confidence_scores.pkl', 'rb') as f:
-    iptm_scores_raw = pickle.load(f)
-
-SAAMBE_train_uniprots = set(
-    np.load(f'{WORKING_DIR}/SAAMBE_train_uniprots.npy').tolist()
-)
-
+#
+# NOTHING IS LOADED AT IMPORT TIME.
+# Until 2026-09-10 this module opened `all_to_uniprot.pkl` and
+# `confidence_scores.pkl`, np.load-ed a third file, and ran the ipTM key
+# normalisation below -- all at module scope. That made `import roc_plots` fail
+# outright on any machine missing those three files, which is every fresh clone,
+# and it made the module unimportable from a test. The data is now loaded on
+# first use and cached; `precompute_gcv_inputs()` was moved out of import time
+# earlier for exactly this reason, and this is the other half of that change.
 from collections import defaultdict
 
+_ALL_TO_UNIPROT = None
+_IPTM_SCORES = None
 
-# Legacy dataset label (what the output filenames and the detailed-results
-# filenames use) -> (canonical dataset, rows/fold_splits prefix,
-# pair_test_classes prefix). The prefixes are the ones
-# src/analysis/export_cv_reference.py::NAMING writes.
-#
-# `sahni_varchamp1p_cava` is gone: it has no canonical table, and per
-# the VC1p+CAVA configuration is superseded by the
-# full VarChAMP set. Fabricating its rows from the old label text file is what
-# this migration exists to stop.
-CANONICAL_DATASETS = {
-    'sahni':                      ('sahni_only_mapped090826',
-                                   'sahni_only_train_', 'sahni_only_'),
-    'sahni_fragoza':              ('sahni_fragoza_mapped090826',
-                                   'sahni_fragoza_train_', 'swing_train_'),
-    'sahni_fragoza_varchamp_all': ('sahni_fragoza_varchamp_all_mapped090826',
-                                   'sahni_fragoza_varchamp_all_train_',
-                                   'combined_sahni_fragoza_varchamp_all_'),
-}
+
+def _all_to_uniprot():
+    """Gene-symbol/RefSeq -> UniProt map, loaded once on first use."""
+    global _ALL_TO_UNIPROT
+    if _ALL_TO_UNIPROT is None:
+        with open(ANNOTATIONS_DIR / 'all_to_uniprot.pkl', 'rb') as f:
+            _ALL_TO_UNIPROT = pickle.load(f)
+    return _ALL_TO_UNIPROT
 
 
 def _legacy_iptm_key(wt_id):
@@ -84,32 +78,46 @@ def _legacy_iptm_key(wt_id):
         p1 = p1.replace('_', '-')
     p1 = p1.upper()
     p2 = p2.replace('_', '-').upper()
-    if not is_uniprot_accession(p1) and p1 in all_to_uniprot:
-        p1 = all_to_uniprot[p1]
-    if not is_uniprot_accession(p2) and p2 in all_to_uniprot:
-        p2 = all_to_uniprot[p2]
+    a2u = _all_to_uniprot()
+    if not is_uniprot_accession(p1) and p1 in a2u:
+        p1 = a2u[p1]
+    if not is_uniprot_accession(p2) and p2 in a2u:
+        p2 = a2u[p2]
     return p1, p2
 
 
-iptm_scores = defaultdict(dict)
-for key in iptm_scores_raw:
-    p1, p2 = _legacy_iptm_key(key)
-    if (not is_uniprot_accession(p1) and not is_uniprot_accession(p2)
-            and not (p1 in all_to_uniprot and p2 in all_to_uniprot)):
-        print(p1, p2)
-    # Register the pair under its own accessions and, where either side is an
-    # isoform, under the parent as well. `bare_accession` is the named form of
-    # what used to be an inline `split("-")[0]`: the AF3 run was keyed by
-    # whatever accession the structure was built from, which is not always the
-    # accession the canonical row carries.
-    for k1 in {p1, bare_accession(p1)}:
-        for k2 in {p2, bare_accession(p2)}:
-            entry = iptm_scores[pair_id(k1, k2)]
-            entry.setdefault('iptm', iptm_scores_raw[key]['iptm'])
-            entry.setdefault('ptm', iptm_scores_raw[key]['ptm'])
-    exact = iptm_scores[pair_id(p1, p2)]
-    exact['iptm'] = iptm_scores_raw[key]['iptm']
-    exact['ptm'] = iptm_scores_raw[key]['ptm']
+def _iptm_scores():
+    """`{pair_id: {iptm, ptm}}`, built once on first use.
+
+    Registers each pair under its own accessions and, where either side is an
+    isoform, under the parent as well: the AF3 run was keyed by whatever
+    accession the structure was built from, which is not always the accession
+    the canonical row carries.
+    """
+    global _IPTM_SCORES
+    if _IPTM_SCORES is not None:
+        return _IPTM_SCORES
+
+    with open(ANNOTATIONS_DIR / 'confidence_scores.pkl', 'rb') as f:
+        raw = pickle.load(f)
+    a2u = _all_to_uniprot()
+
+    scores = defaultdict(dict)
+    for key in raw:
+        p1, p2 = _legacy_iptm_key(key)
+        if (not is_uniprot_accession(p1) and not is_uniprot_accession(p2)
+                and not (p1 in a2u and p2 in a2u)):
+            print(f"[iptm] unresolved pair: {p1} {p2}")
+        for k1 in {p1, bare_accession(p1)}:
+            for k2 in {p2, bare_accession(p2)}:
+                entry = scores[pair_id(k1, k2)]
+                entry.setdefault('iptm', raw[key]['iptm'])
+                entry.setdefault('ptm', raw[key]['ptm'])
+        exact = scores[pair_id(p1, p2)]
+        exact['iptm'] = raw[key]['iptm']
+        exact['ptm'] = raw[key]['ptm']
+    _IPTM_SCORES = scores
+    return _IPTM_SCORES
 
 
 def _lookup_iptm(interactor, partner):
@@ -117,22 +125,17 @@ def _lookup_iptm(interactor, partner):
     for a, b in ((interactor, partner), (partner, interactor),
                  (bare_accession(interactor), bare_accession(partner)),
                  (bare_accession(partner), bare_accession(interactor))):
-        hit = iptm_scores.get(pair_id(a, b))
+        hit = _iptm_scores().get(pair_id(a, b))
         if hit:
             return hit['iptm'], hit['ptm']
     return float('nan'), float('nan')
 
 
-def _saambe_test_class(interactor, partner):
-    """1 = both proteins in SAAMBE's SKEMPI training set, 2 = one, 3 = neither.
-
-    SAAMBE_train_uniprots holds parent accessions only, so the membership test
-    is on `bare_accession`. This is a lookup in a per-accession database with no
-    isoform entries -- the case `bare_accession` exists for.
-    """
-    n_seen = sum(bare_accession(p) in SAAMBE_train_uniprots
-                 for p in (interactor, partner))
-    return {2: 1, 1: 2, 0: 3}[n_seen]
+# `_saambe_test_class` lived here and was a line-for-line duplicate of
+# `utils.gcv_common.skempi_test_class`, down to the `{2: 1, 1: 2, 0: 3}` map --
+# with its own second copy of the 258-accession cache. Removed 2026-09-10;
+# `restratify_skempi_methods.py` already imported the shared one, so the repo had
+# one caller doing it right and one doing it wrong.
 
 
 def _load_canonical_rows(canonical, prefix):
@@ -199,8 +202,10 @@ def precompute_gcv_inputs():
                             for a, b in zip(interactors, partners)))
         dataset_iptms[dataset] = np.array(iptms, dtype=float)
         dataset_ptms[dataset] = np.array(ptms, dtype=float)
+        _skempi = load_skempi_train_uniprots()
         dataset_saambe_test_classes[dataset] = np.array(
-            [_saambe_test_class(a, b) for a, b in zip(interactors, partners)])
+            [skempi_test_class(a, b, _skempi)
+             for a, b in zip(interactors, partners)])
 
         n_iptm = int(np.sum(~np.isnan(dataset_iptms[dataset])))
         print(f'{dataset} ({canonical}): {len(rows)} rows, {n_iptm} with an AF3 '
@@ -470,12 +475,11 @@ colors = {
     "PPLM (site diff)":     "#762a83",
 }
 
+# Keyed on the SHORT dataset names (method_names._SHORT_DATASET_NAMES values).
 dataset_to_display_name = {
-    'sahni':                         'Mendelian',
-    'sahni_fragoza':                 'Mendelian and Population',
-    'sahni_varchamp1p_cava':         'Mendelian and Benchmark',
-    'sahni_fragoza_varchamp1p_cava': 'Mendelian, Population, and Benchmark',
-    'sahni_fragoza_varchamp_all':    'Mendelian, Population, and Benchmark',
+    'sahni':                      'Mendelian',
+    'sahni_fragoza':              'Mendelian and Population',
+    'sahni_fragoza_varchamp_all': 'Mendelian, Population, and Benchmark',
 }
 
 # %% Analysis functions
@@ -485,22 +489,30 @@ def load_detailed_results(filepath):
 
 
 def extract_ablation_method_and_dataset(filename):
-    """Extract method key and dataset from an ablation results filename."""
+    """Method key and SHORT dataset name from an ablation results filename.
+
+    Unlike `method_names.extract_method_and_dataset`, the method key here is the
+    raw basename: ablation variants are keyed by their own filenames in
+    `ABLATION_DISPLAY_NAMES`, not mapped onto canonical method names. Dataset
+    resolution and the legacy check are shared, though.
+
+    `dataset='legacy'` means the filename carries a retired dataset token or
+    lacks the `_mapped090826` suffix a fresh GCV run always writes. Ablation
+    mode must apply the same guard as comparison mode, or a pre-090826 file
+    gets plotted alongside fresh results under a plausible-looking label --
+    the failure `utils.legacy_guard` exists to prevent.
+    """
     basename = os.path.basename(filename).replace('_detailed_results.pkl', '')
 
-    if 'sahni_fragoza_varchamp1p_cava' in basename:
-        dataset = 'sahni_fragoza_varchamp1p_cava'
-    elif 'sahni_varchamp1p_cava' in basename:
-        dataset = 'sahni_varchamp1p_cava'
-    elif 'sahni_fragoza' in basename:
-        dataset = 'sahni_fragoza'
-    elif 'sahni' in basename:
-        dataset = 'sahni'
-    else:
-        dataset = 'unknown'
+    try:
+        reject_legacy_dataset_name(basename)
+    except LegacyInputError:
+        return basename, 'legacy'
 
-    method = basename
-    return method, dataset
+    full_name = next((f for f in _SHORT_DATASET_NAMES if f in basename), None)
+    if full_name is None:
+        return basename, 'legacy'
+    return basename, _SHORT_DATASET_NAMES[full_name]
 
 
 from sklearn.metrics import precision_recall_curve, average_precision_score
@@ -653,7 +665,7 @@ def load_baseline_predictions(dataset, prc=False):
 def plot_roc_with_confidence(results_dict, dataset_name, save_path=None, prc=False,
                               ablation=False):
     """Plot mean ROC or PR curves with 95% CI shading."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=100)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=SAVE_DPI)
 
     key1, key2 = ('recalls', 'precisions') if prc else ('fprs', 'tprs')
     auc_label  = 'AP' if prc else 'AUC'
@@ -771,7 +783,7 @@ def plot_roc_with_confidence(results_dict, dataset_name, save_path=None, prc=Fal
 
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(save_path, dpi=SAVE_DPI, bbox_inches='tight')
         print(f"Saved: {save_path}")
     plt.show()
     return fig
@@ -786,7 +798,7 @@ def plot_auc_boxplots(results_dict, dataset_name, save_path=None, prc=False,
 
     class_num_to_word = ['One', 'Two', 'Three']
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=100)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=SAVE_DPI)
 
     for class_idx, class_num in enumerate([1, 2, 3]):
         ax = axes[class_idx]
@@ -890,7 +902,7 @@ def plot_auc_boxplots(results_dict, dataset_name, save_path=None, prc=False,
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(save_path, dpi=SAVE_DPI, bbox_inches='tight')
         print(f"Saved: {save_path}")
     plt.show()
     return fig
@@ -924,7 +936,7 @@ def plot_ablation_bars(results_dict, dataset_name, save_path=None, prc=False):
     ordered_colors  = [ABLATION_COLORS.get(dn, '#808080') for dn in ordered_display]
 
     x_pos = np.arange(len(ordered_methods))
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=100)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=SAVE_DPI)
 
     class_word = {1: 'One', 2: 'Two', 3: 'Three'}
 
@@ -984,7 +996,7 @@ def plot_ablation_bars(results_dict, dataset_name, save_path=None, prc=False):
     if save_path:
         # Always save with 'ablation_bar' prefix regardless of BOXPLOT flag
         bar_path = save_path.replace('ablation_boxplot_', 'ablation_bar_')
-        plt.savefig(bar_path, dpi=300, bbox_inches='tight')
+        plt.savefig(bar_path, dpi=SAVE_DPI, bbox_inches='tight')
         print(f"Saved: {bar_path}")
     plt.show()
     return fig
@@ -1059,15 +1071,11 @@ def main_comparison():
         baseline_results = load_baseline_predictions(dataset, prc=PRC)
         datasets_results[dataset].update(baseline_results)
 
-    # The only three GCV datasets any figure in this file reads (Fig 3, S1, S7).
-    # Every other dataset-name family this used to include (varchamp1p_cava,
-    # varchamp2026, varchamp_full[_pooled], varchamp_pooled) named datasets
-    # that no longer exist under the 090826 canonical tables -- see
-    # utils.legacy_guard and CANONICAL_DATASETS above, which is the actual
-    # source of truth this list must stay a subset of.
+    # The only three GCV datasets any figure in this file reads (Fig 3, S1, S7);
+    # CANONICAL_DATASETS above is the source of truth this must stay a subset of.
     _ds = list(CANONICAL_DATASETS)  # short display keys: sahni, sahni_fragoza, sahni_fragoza_varchamp_all
-    # Was an in-place update of the module-level dict; now a local extended copy,
-    # so sharing the mapping cannot leak baseline keys into other consumers.
+    # An extended copy, not an in-place update: METHOD_DISPLAY_NAMES is shared
+    # with export_reconstruction_tables.py and must not gain baseline keys there.
     globals()['METHOD_DISPLAY_NAMES'] = with_baseline_variants(_ds)
 
     if SAVE_PLOTS:
@@ -1105,6 +1113,11 @@ def main_ablation():
     for filepath in ablation_files:
         print(f"\nProcessing: {os.path.basename(filepath)}")
         method, dataset = extract_ablation_method_and_dataset(filepath)
+
+        if dataset == 'legacy':
+            print(f"  SKIPPING (legacy): {os.path.basename(filepath)} carries a "
+                  f"retired dataset name or lacks the _mapped090826 suffix")
+            continue
 
         if method not in ABLATION_DISPLAY_NAMES:
             print(f"  Skipping: not in ABLATION_DISPLAY_NAMES (method={method!r})")

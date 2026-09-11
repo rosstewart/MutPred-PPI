@@ -129,3 +129,76 @@ def test_load_positional_cache_wrong_length_raises(tmp_path):
     np.save(path, np.arange(5894))
     with pytest.raises(StaleCacheError, match="5894"):
         load_positional_cache(path, n_expected=6219)
+
+
+# ── dataset aliases ───────────────────────────────────────────────────────────
+#
+# The `_mapped090826` suffix is a mapping-run date stamp: meaningful in a
+# filename, meaningless to someone typing a command. Short aliases let the docs
+# say `--dataset sahni_fragoza`, which is also what they said BEFORE the aliases
+# existed -- so every documented training command failed argparse.
+
+def test_short_alias_resolves_to_canonical_name():
+    from utils.gcv_common import resolve_dataset
+    assert resolve_dataset("sahni_fragoza") == "sahni_fragoza_mapped090826"
+    assert resolve_dataset("varchamp_all") == "varchamp_all_mapped090826"
+
+
+def test_full_name_still_accepted():
+    from utils.gcv_common import resolve_dataset
+    for full in ("sahni_only_mapped090826", "fragoza_only_mapped090826"):
+        assert resolve_dataset(full) == full
+
+
+def test_every_alias_maps_to_a_real_config():
+    from utils.gcv_common import DATASET_ALIASES, DATASET_CONFIGS
+    assert set(DATASET_ALIASES.values()) == set(DATASET_CONFIGS)
+
+
+def test_choices_offer_both_forms():
+    from utils.gcv_common import DATASET_ALIASES, DATASET_CHOICES, DATASET_CONFIGS
+    assert set(DATASET_CHOICES) == set(DATASET_ALIASES) | set(DATASET_CONFIGS)
+
+
+def test_unknown_dataset_names_the_valid_ones():
+    import pytest as _pytest
+    from utils.gcv_common import resolve_dataset
+    with _pytest.raises(KeyError, match="sahni_fragoza"):
+        resolve_dataset("sahni_fragoza_varchamp_full_pooled")   # a retired codename
+
+
+def test_dataset_arg_normalises_to_canonical_name():
+    """Regression: a short alias must not leak into a cache FILENAME.
+
+    `args.dataset` is interpolated into `{dataset}_prott5.pkl`,
+    `{dataset}_esm2.pkl`, ... and passed to `build_tensors`. Resolving only at
+    the config lookup left those paths pointing at `sahni_fragoza_prott5.pkl`,
+    which does not exist -- the GCV died on startup with FileNotFoundError.
+    """
+    from utils.gcv_common import dataset_arg
+    assert dataset_arg("sahni_fragoza") == "sahni_fragoza_mapped090826"
+    assert dataset_arg("sahni_fragoza_mapped090826") == "sahni_fragoza_mapped090826"
+
+
+def test_dataset_arg_rejects_unknown_with_argparse_error():
+    import argparse
+    import pytest as _pytest
+    from utils.gcv_common import dataset_arg
+    with _pytest.raises(argparse.ArgumentTypeError):
+        dataset_arg("sahni_fragoza_varchamp_full_pooled")
+
+
+def test_every_dataset_argparse_site_normalises():
+    """No script may pair --dataset with raw choices and no type= converter."""
+    import pathlib
+    import re
+    offenders = []
+    for f in pathlib.Path("src").rglob("*.py"):
+        if "__pycache__" in str(f) or "variant_db_inference" in str(f):
+            continue
+        src = f.read_text()
+        for m in re.finditer(r'add_argument\(\s*"--dataset".*?\)', src, re.S):
+            block = m.group(0)
+            if "DATASET_CONFIGS" in block and "dataset_arg" not in block:
+                offenders.append(f"{f}: {block[:70]}")
+    assert not offenders, "\n".join(offenders)

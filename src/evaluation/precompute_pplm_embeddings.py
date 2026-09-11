@@ -55,19 +55,27 @@ import torch
 
 # ── dataset configs (vendored in-repo) ───────────────────────────────────────
 # Shared GCV data-loading layer (see src/utils/gcv_common.py).
-from utils.gcv_common import DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, add_mutated_sequence, load_data  # noqa: E402
 
 # ── PPLM package ─────────────────────────────────────────────────────────────
 
 # --- repo-relative path resolution (see src/paths.py) ---
-import sys as _sys
-from pathlib import Path as _Path
 from paths import DATASETS_DIR, EXTERNAL_DIR, REVISIONS_DIR, TRAINING_EVAL_DIR, cache_file  # noqa: E402
+from paths import method_dir  # noqa: E402
 
-_PPLM_DIR = REVISIONS_DIR / "PPLM"
-_WEIGHTS_PATH = str(_PPLM_DIR / "weights" / "pplm_t33_650M.pt")
-sys.path.insert(0, str(_PPLM_DIR))
-from pplm.pplm import PPLM, Alphabet  # noqa: E402
+# Upstream PPLM is imported LAZILY -- see the matching note in
+# precompute_mint_embeddings.py.
+def _pplm_classes():
+    """Upstream `(PPLM, Alphabet)`, importing PPLM on first use."""
+    d = method_dir("pplm")
+    if str(d) not in sys.path:
+        sys.path.insert(0, str(d))
+    from pplm.pplm import PPLM, Alphabet
+    return PPLM, Alphabet
+
+
+def _weights_path():
+    return str(method_dir("pplm") / "weights" / "pplm_t33_650M.pt")
 
 
 
@@ -80,7 +88,8 @@ from pplm.pplm import PPLM, Alphabet  # noqa: E402
 
 def load_pplm(device: torch.device):
     """Load PPLM base model and batch converter."""
-    data = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=False)
+    data = torch.load(_weights_path(), map_location="cpu", weights_only=False)
+    PPLM, Alphabet = _pplm_classes()
     alphabet = Alphabet.from_architecture()
     batch_converter = alphabet.get_batch_converter()
     model = PPLM(
@@ -245,7 +254,7 @@ def _entry_has_embeds(cache: dict, key: str) -> bool:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> None:
-    cfg = DATASET_CONFIGS[args.dataset]
+    cfg = dataset_config(args.dataset)
     device = torch.device(args.device if args.device else
                           ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"Device: {device}", flush=True)
@@ -290,7 +299,7 @@ def run(args: argparse.Namespace) -> None:
         print(f"  Backfilled mean for {n_backfilled} existing entries.", flush=True)
 
     # ── load PPLM model ───────────────────────────────────────────────────────
-    print(f"Loading PPLM model from {_WEIGHTS_PATH}", flush=True)
+    print(f"Loading PPLM model from {_weights_path()}", flush=True)
     model, batch_converter = load_pplm(device)
 
     # ── embed and cache ───────────────────────────────────────────────────────
@@ -322,7 +331,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dataset",
         required=True,
-        choices=list(DATASET_CONFIGS),
+        type=dataset_arg, choices=list(DATASET_CONFIGS),
         help="Dataset to generate embeddings for",
     )
     p.add_argument(

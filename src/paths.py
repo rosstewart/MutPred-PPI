@@ -16,7 +16,7 @@ Environment variables (all optional; defaults suit the original workstation):
                         else the legacy workstation location.
     MUTPRED_CACHE_DIR   Large regenerable prediction/embedding caches
                         (mint_cache.pkl, pplm_cache.pkl, ...).
-                        Default: $MUTPRED_DATA_ROOT/nm_revisions
+                        Default: $MUTPRED_DATA_ROOT/mutpred_ppi_data
     MUTPRED_PPI_RESULTS_DIR
                         Generated figure/table artifacts (GCV pickles, blind-test
                         arrays, variant-DB predictions). Every results/<subdir>
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 def _env_path(var: str, default: Path) -> Path:
@@ -112,13 +113,52 @@ ESIGNET_SUPPLEMENTS_DIR = DATASETS_DIR / "esignet_supplements"
 # multi-GB embedding/graph sets).  Created by scripts/link_external.sh.
 EXTERNAL_DIR = REPO_ROOT / "external"
 
-# The only machine-specific path left in src/.  It is the *last* resort in
-# cdhit_binary(): MUTPRED_CDHIT wins, then shutil.which("cd-hit"), then this.
-# Kept deliberately — on the build machine cd-hit is not on PATH, so removing it
-# would break split generation here for no benefit to anyone else (the path
-# simply does not exist elsewhere and is skipped).  Harmless to delete if you
-# have cd-hit installed: conda install -c bioconda cd-hit.
-_LEGACY_CDHIT = "/home/rcstewart/miniconda3/envs/pytorch_env/bin/cd-hit"
+# ── comparison-method upstream checkouts ─────────────────────────────────────
+#
+# ONE directory for every third-party method, gitignored, so a reader clones
+# each upstream repository into a predictable place instead of hunting for the
+# path each script happens to expect.  Before 2026-09-10 these were scattered
+# across three different roots plus one hardcoded absolute path
+# ($DATA_ROOT/2026/mint, $DATA_ROOT/2026/PPLM, external/esignet, and an
+# absolute path to MutPPI), and SAAMBE-3D was vendored into
+# src/ outright.
+#
+# See docs/REPRODUCING_ANALYSES.md for the repository URL and pinned commit of
+# each method.
+EXTERNAL_METHODS_DIR = _env_path("MUTPRED_PPI_METHODS_DIR",
+                                 REPO_ROOT / "external_methods")
+
+# name -> (subdirectory, upstream URL). The URL is only ever used to build an
+# error message; nothing here clones anything for you.
+EXTERNAL_METHODS = {
+    "saambe3d": ("saambe3d", "http://compbio.clemson.edu/SAAMBE-3D/"),
+    "mint":     ("mint",     "https://github.com/VarunUllanat/mint"),
+    "pplm":     ("PPLM",     "https://github.com/ChengfeiYan/PPLM"),
+    "esignet":  ("esignet",  "https://github.com/Liu-Jing/eSIG-Net"),
+    "mutppi":   ("MutPPI",   "https://github.com/Wang-Lin-boop/MutPPI"),
+}
+
+
+def method_dir(name: str, required: bool = True) -> Path:
+    """Path to one comparison method's upstream checkout.
+
+    Raises with the clone command rather than letting a missing checkout surface
+    later as an ImportError from deep inside a `sys.path` insert.
+    """
+    if name not in EXTERNAL_METHODS:
+        raise KeyError(f"unknown method {name!r}; known: {sorted(EXTERNAL_METHODS)}")
+    sub, url = EXTERNAL_METHODS[name]
+    path = EXTERNAL_METHODS_DIR / sub
+    if required and not path.is_dir():
+        raise FileNotFoundError(
+            f"{name} upstream checkout not found at {path}.\n"
+            f"  Clone it there:\n"
+            f"      mkdir -p {EXTERNAL_METHODS_DIR}\n"
+            f"      git clone {url} {path}\n"
+            f"  or set MUTPRED_PPI_METHODS_DIR to a directory that contains "
+            f"'{sub}'.\n"
+            f"  See docs/REPRODUCING_ANALYSES.md for the pinned commit.")
+    return path
 
 
 # ── external, configurable ────────────────────────────────────────────────────
@@ -141,11 +181,25 @@ def _default_cv_dir() -> Path:
 
 
 CV_DIR = _env_path("MUTPRED_CV_DIR", _default_cv_dir())
-CACHE_DIR = _env_path("MUTPRED_CACHE_DIR", DATA_ROOT / "nm_revisions")
+CACHE_DIR = _env_path("MUTPRED_CACHE_DIR", DATA_ROOT / "mutpred_ppi_data")
 
 # Frequently used subtrees of DATA_ROOT.
 HOME_DIR = DATA_ROOT / "home"
 REVISIONS_DIR = DATA_ROOT / "2026"
+
+
+def _sibling_conda_envs():
+    """Every conda environment reachable from the running interpreter.
+
+    Derived from `sys.prefix`, so it follows whatever conda installation is in
+    use rather than assuming a location.
+    """
+    prefix = Path(sys.prefix).resolve()
+    roots = []
+    for base in (prefix.parent, prefix.parent.parent / "envs"):
+        if base.is_dir():
+            roots.extend(sorted(p for p in base.iterdir() if p.is_dir()))
+    return roots
 
 
 def cdhit_binary() -> str:
@@ -162,8 +216,16 @@ def cdhit_binary() -> str:
     found = shutil.which("cd-hit")
     if found:
         return found
-    if Path(_LEGACY_CDHIT).is_file():  # original workstation install
-        return _LEGACY_CDHIT
+    # cd-hit is often installed into a *different* conda environment than the
+    # one running this code (it is a bioconda binary, not a Python package), so
+    # it is frequently absent from PATH here while present a directory away.
+    # Search sibling environments rather than hardcoding one machine's install
+    # -- src/ must contain no absolute paths, which the previous
+    # `_LEGACY_CDHIT` constant violated (and leaked a username with it).
+    for env_root in _sibling_conda_envs():
+        candidate = env_root / "bin" / "cd-hit"
+        if candidate.is_file():
+            return str(candidate)
     raise FileNotFoundError(
         "cd-hit not found on PATH. Install it (conda install -c bioconda cd-hit) "
         "or set MUTPRED_CDHIT to the binary. Sequence clustering supplies the "

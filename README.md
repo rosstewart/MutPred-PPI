@@ -35,14 +35,11 @@ conda activate ppi
 # Install sentencepiece (required for ProtT5)
 conda install sentencepiece -c conda-forge -y
 
-# Install PyTorch
-# For GPU with CUDA 11.8:
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# For CPU only:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install remaining dependencies
+# Install dependencies. requirements.txt pins the exact published environment,
+# including torch==2.5.1 -- so install it FIRST if you need a specific CUDA
+# build, or requirements.txt will pull the default PyPI wheel over the top.
+#   CUDA 12.1:  pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#   CPU only:   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
 # Install this repo as a package.
@@ -53,10 +50,7 @@ pip install -e .
 ```
 
 `requirements.txt` pins the exact environment the published results were produced in.
-(There used to be a second, inference-only `src/inference/requirements.txt`; it was an
-artifact of `src/inference/` once being a standalone repo, listed no package the root file
-does not, and had drifted to contradict it -- `pandas<2.0.0` against the real `pandas==2.3.3`.
-Removed 2026-09-10.) Cross-validation
+Cross-validation
 additionally needs `cd-hit`, which supplies the clustering groups:
 
 ```bash
@@ -67,27 +61,13 @@ See [`docs/SETUP.md`](docs/SETUP.md) for where the code expects data to live.
 
 ### System Requirements
 
-- Python 3.9 or higher
+- Python 3.10 or higher (`pyproject.toml` requires it)
 - CUDA-capable GPU (recommended for faster inference)
 - 16GB+ RAM recommended
-- ~4GB disk space for models and data
+- ~15 GB disk space for the Zenodo data bundle; the inference quickstart needs no download (structures are bundled)
 
 
 ## Quick Start
-
-> **Model checkpoint temporarily unavailable in this repo.** The trained
-> `weights/MutPred-PPI.pt` was fit on a since-corrected row ordering (the
-> 2026-09 canonical-table rebaseline) and has been retired pending retraining
-> on the corrected data — see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md). Until
-> an updated checkpoint is deposited, run predictions via:
-> - **Web server**: <https://mutpred.mutdb.org/mutpredppi> (AlphaFold 3 input,
->   no local setup), or
-> - **v1.0 release**: <https://github.com/rosstewart/MutPred-PPI/releases/tag/v1.0.0>
->   (an earlier checkpoint, trained on the pre-MegaScale/FoldX-RaSP pipeline —
->   trained on the pre-MegaScale/FoldX-RaSP pipeline).
->
-> `notebooks/reproduce_all_figures.py` retrains the model from scratch on the
-> corrected data if you'd rather regenerate `weights/MutPred-PPI.pt` yourself.
 
 ```bash
 # Step 1: Prepare AlphaFold3 inputs (if using AlphaFold3)
@@ -105,11 +85,6 @@ python src/inference/02_run_mutpred-ppi_inference.py working_dir/
 For a small, ready-to-run example (no data download required), see
 [`src/inference/example/`](src/inference/example/).
 
-> **Known issue (step 3).** On a clean working directory step 3 currently writes an empty
-> `wt_and_vt.fasta`, so step 4 has nothing to embed. See
-> [docs/INFERENCE.md](docs/INFERENCE.md#known-issue-empty-wt_and_vtfasta) for the cause and
-> the state of the fix.
-
 ## Data Availability
 
 Pre-trained model weights, Sahni+Fragoza training data (post-AF3 structure filtering, as used in Fig 3 GCV), and AF3 complex structures are available on Zenodo:
@@ -126,9 +101,11 @@ This README covers installation and a minimal inference example. For everything 
 - **[docs/DATA_PREPARATION.md](docs/DATA_PREPARATION.md)** — the ordered chain from published source files to canonical tables, structures and contact graphs
 - **[docs/INFERENCE.md](docs/INFERENCE.md)** — detailed inference usage, file formats, full worked example, troubleshooting
 - **[docs/TRAINING.md](docs/TRAINING.md)** — stability pretraining + model training from scratch
-- **[notebooks/reproduce_all_figures.py](notebooks/reproduce_all_figures.py)** — one runnable, cached, resumable script/notebook (jupytext percent format) that regenerates every figure and table end to end, from the Zenodo bundle. Set `QUICK = True` for a fast smoke test.
+- **[notebooks/reproduce_all_figures.py](notebooks/reproduce_all_figures.py)** — one runnable, cached, resumable script/notebook (jupytext percent format) that regenerates every figure and table end to end, from the Zenodo bundle.
+  **It ships with `QUICK = True`**, which finishes in hours instead of days but uses 1 cross-validation seed instead of 30 and subsampled variant databases, writing to `results_quick/`. Those are *not* the paper's numbers. Set `QUICK = False` (line 48) to reproduce the published results into `results/`.
 - **[docs/REPRODUCING_ANALYSES.md](docs/REPRODUCING_ANALYSES.md)** — every figure/table in the paper (GCV benchmarking, VarChAMP blind test, variant-repository inference and enrichment analyses, supplementary figures), with exact commands
 - **[docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)** — where every dataset comes from and licensing notes
+- **[docs/MANUSCRIPT_FIGURES.md](docs/MANUSCRIPT_FIGURES.md)** — every figure and table in the paper, the command that produces it, and what it depends on
 
 ## Project Structure
 
@@ -151,7 +128,7 @@ MutPred-PPI/
 ├── scripts/
 │   └── link_external.sh     # builds external/ (see docs/SETUP.md)
 ├── notebooks/               # runnable jupytext notebooks (mapping, figure reproduction)
-├── repro_test/              # reproduction checks (gitignored scratch)
+├── tests/                   # pytest test suite (run with: conda run -n ppi python -m pytest tests/ -q)
 ├── docs/                    # setup, inference, training, reproduction, provenance
 ├── weights/                 # model checkpoints
 ├── figures/                 # generated LaTeX tables (PNGs are gitignored)
@@ -167,7 +144,7 @@ Not in git — created locally or delivered via Zenodo (see docs/SETUP.md):
                      variant_dbs/, af3_structures*/         repositories, structures
   external/        symlinks to large machine-local data
   results/         generated by the evaluation scripts
-  results_revisions/  generated: per-figure prediction/label artifacts
+  results_quick/   generated by the notebook's QUICK mode
   data_caches/     optional dataset caches (regenerable)
 ```
 

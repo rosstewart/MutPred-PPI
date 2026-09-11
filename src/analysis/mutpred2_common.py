@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils import mutations
 from utils.legacy_guard import reject_legacy
 
 
@@ -53,7 +54,7 @@ def write_fasta_for_dataset(rows: pd.DataFrame, sequences: dict, out_path: Path)
             if seq is None:
                 continue
             muts = " ".join(sorted(by_protein[accession],
-                                   key=lambda m: int(m[1:-1])))
+                                   key=mutations.position))
             fh.write(f">{accession} {muts}\n{seq}\n")
     return len(by_protein)
 
@@ -65,8 +66,11 @@ def parse_mutpred2_csv(csv_path: Path) -> dict[tuple[str, str], float]:
     `accession, substitution, MutPred2 score` (header present). Reads with
     pandas rather than hand-rolled line splitting -- the header row and any
     blank/comment lines are handled by the parser, not by relying on a
-    `ValueError` from trying to float() the header (which is how the
-    now-archived `data/parse_mutpred2_output.py` silently skipped it).
+    `ValueError` from trying to float() the header (which is how the old
+    `data/parse_mutpred2_output.py` silently skipped it -- that script really is
+    archived now, at `archive/dead_scripts_20260910/`; until 2026-09-10 this
+    docstring called it archived while it was still sitting in `data/`, live and
+    able to overwrite the Fig 3 baseline arrays from a pre-090826 row ordering).
     """
     reject_legacy(csv_path, check_mtime=False)  # an external tool's fresh output, not repo data
     df = pd.read_csv(csv_path)

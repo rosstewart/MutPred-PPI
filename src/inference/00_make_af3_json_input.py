@@ -8,7 +8,8 @@ dialects:
       {"name", "modelSeeds": [...],
        "sequences": [{"protein": {"sequence": ..., "id": "A"}}, ...]}
       `id` may be a bare string or a list; both are accepted by AF3. This is the
-      format `run_af3_ross4.sh` consumes.
+      format the AlphaFold3 release's `run_alphafold.py` entrypoint consumes
+      via `--json_path` / `--input_dir`.
 
   --format server             the AlphaFold Server web UI
       {"name", "modelSeeds": [...],

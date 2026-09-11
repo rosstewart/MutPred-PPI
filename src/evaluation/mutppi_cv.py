@@ -5,7 +5,7 @@ Ported from `~/ppi_lossgain/mutppi_scripts/mutppi_preds.py`, an external,
 unversioned script wired entirely to the retired pipeline: a hardcoded
 `_CV_DIR` pointing at `~/gnn/ppi_interaction_loss/cv_splits`, per-dataset
 `*_all_vt_ids_and_labels.txt` label files (0-based positions, orphan **O1** in
-docs/FIGURE_INVENTORY.md), unsuffixed `fold_splits.pkl`, and structures
+`utils.legacy_guard`), unsuffixed `fold_splits.pkl`, and structures
 resolved by trying `fold_{gene}_{gene}_model_0.pdb` filenames across three
 separate PDB directories. None of that survives here -- see
 `utils.legacy_guard`. Everything below reads exactly what
@@ -18,7 +18,7 @@ MutPPI (`--model 0`, `GINGATRegressor`) and MutPPI+ (`--model 1`,
 `FusionEnsembleRegressor`, GIN+GAT + ESM-2 650M sequence branch) are both
 5-seed ensembles pretrained on SKEMPI2 S4169 -- not retrained here, exactly
 like SAAMBE-3D. The model architecture and checkpoints come from the pinned
-upstream checkout at `_MUTPPI_DIR` (unchanged from the external script); only
+upstream checkout resolved by `paths.method_dir('mutppi')`; only
 the input plumbing was replaced.
 
 Usage (GCV, mirrors saambe3d_cv.py):
@@ -46,13 +46,22 @@ warnings.filterwarnings("ignore")
 _HERE = Path(__file__).resolve().parent
 
 from utils import mutations  # noqa: E402
-from utils.gcv_common import DATASET_CONFIGS, load_data, load_splits  # noqa: E402
+from paths import GCV_RESULTS_DIR, method_dir  # noqa: E402
+from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data, load_splits  # noqa: E402
 from utils.legacy_guard import reject_legacy  # noqa: E402
 from utils.structures import Structures  # noqa: E402
 
-# ── pinned upstream checkout (source code + pretrained checkpoints; not repo data) ──
-_MUTPPI_DIR = Path("/data/ross/ppi_lossgain/interaction_loss/2026/nm_additional_models/MutPPI")
-_CKPT_DIR = _MUTPPI_DIR / "output" / "checkpoint"
+# ── upstream checkout (source + pretrained checkpoints; not repo data) ──
+#
+# Resolved lazily. Importing this module must not require the checkout to be
+# present, or `--help`, the test suite and any downstream import all fail on a
+# machine that has not cloned MutPPI. See paths.method_dir.
+def _mutppi_dir():
+    return method_dir("mutppi")
+
+
+def _ckpt_dir():
+    return _mutppi_dir() / "output" / "checkpoint"
 _ESM2_PATH = "facebook/esm2_t33_650M_UR50D"
 _ENSEMBLE_SEEDS = [34, 42, 1998, 2025, 3407]
 _EPOCH = {0: 1000, 1: 150}
@@ -73,8 +82,9 @@ def _import_mutppi_source():
     file doesn't require the external checkout or its cwd-relative model
     paths, which only inference actually needs.
     """
-    sys.path.insert(0, str(_MUTPPI_DIR))
-    os.chdir(_MUTPPI_DIR)  # MutPPI's own code resolves some paths relative to cwd
+    _dir = _mutppi_dir()
+    sys.path.insert(0, str(_dir))
+    os.chdir(_dir)  # MutPPI's own code resolves some paths relative to cwd
     from models.models import FusionEnsembleRegressor, GINGATRegressor  # noqa: E402
     return GINGATRegressor, FusionEnsembleRegressor
 
@@ -163,7 +173,7 @@ def _ckpt_path(model_type: int, seed: int) -> Path:
     else:
         stem = (f"FusionEnsembleRegressor(finetune-1,ESM2-650M)_Train-S4169_"
                 f"ReductionMode0-20_RandomSeed-{seed}")
-    return _CKPT_DIR / f"{stem}_epoch{_EPOCH[model_type]}.model"
+    return _ckpt_dir() / f"{stem}_epoch{_EPOCH[model_type]}.model"
 
 
 def load_ensemble(model_type: int, device: torch.device) -> list:
@@ -186,7 +196,7 @@ def load_ensemble(model_type: int, device: torch.device) -> list:
         if not ckpt.exists():
             raise FileNotFoundError(
                 f"Checkpoint not found: {ckpt}\n"
-                f"Train with (from {_MUTPPI_DIR}): "
+                f"Train with (from {_mutppi_dir()}): "
                 f"python train_model.py --Model {model_type} --RM 0 --reduction 20")
         reject_legacy(ckpt, check_mtime=False)  # pinned upstream checkpoint, not repo data
         m = make_model()
@@ -250,7 +260,7 @@ def score_rows(rows: pd.DataFrame, model_variant: int,
 # ── GCV entry point (mirrors saambe3d_cv.py) ───────────────────────────────────
 
 def run(args: argparse.Namespace) -> None:
-    cfg = DATASET_CONFIGS[args.dataset]
+    cfg = dataset_config(args.dataset)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -277,13 +287,18 @@ def run(args: argparse.Namespace) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="MutPPI/MutPPI+ inference — 090826 canonical datasets")
-    p.add_argument("--dataset", required=True, choices=list(DATASET_CONFIGS))
+    p.add_argument("--dataset", required=True, type=dataset_arg, choices=list(DATASET_CONFIGS))
     p.add_argument("--model", type=int, required=True, choices=(0, 1),
                    help="0 = MutPPI (GINGATRegressor), 1 = MutPPI+ (FusionEnsembleRegressor)")
     p.add_argument("--seed", type=int, default=0,
                    help="GCV split seed (default: 0; all rows appear in test exactly once)")
     p.add_argument("--device", default="")
-    p.add_argument("--outdir", default=".", help="Output directory")
+    p.add_argument("--outdir", default=str(GCV_RESULTS_DIR),
+                   help="Output directory (default: results/gcv/, matching every "
+                        "other CV script). Was '.' until 2026-09-10, which put "
+                        "this method's arrays in $CWD while its siblings wrote to "
+                        "results/gcv/ -- so a plain invocation produced results the "
+                        "figure scripts could not find.")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
     return p.parse_args()
 

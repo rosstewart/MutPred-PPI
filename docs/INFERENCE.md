@@ -99,23 +99,13 @@ with ContactGraphStore("working_dir/af3_graphs/contact_graphs.h5") as store:
 ```
 
 Both return the graph **already oriented to the requested interactor** — the interactor occupies
-nodes `[0, len(interactor))` — so orientation is never re-derived downstream and the old `NRR`
-split point is gone. Self-loops are added on read, unconditionally; they are not stored and
-cannot be disabled.
+nodes `[0, len(interactor))` — so orientation is never re-derived downstream from a filename
+or a stored split point. Self-loops are added on read, unconditionally; they are not stored
+and cannot be disabled.
 
 An edge joins two residues when any pair of their atoms is within 4.5 Å
 (`contact_graphs.contact_graph_from_structure`), which is the single contact-graph definition in
 the repo.
-
-#### Known issue: empty `wt_and_vt.fasta`
-
-Verified on a clean working directory at the current HEAD: step 2 writes the store and the
-`.labels` files correctly, but `generate_fasta_output` still gates each complex on the existence
-of a per-complex `.mat` file, which step 2 no longer produces. Every complex is therefore
-skipped and `wt_and_vt.fasta` comes out **0 bytes**, leaving step 3 with nothing to embed. A
-working directory left over from before the `.mat` removal still has those files and so still
-runs, which is why the bundled example does not surface it. There is no workaround command —
-the gate is in `src/inference/01_make_contact_graphs_and_fasta.py`.
 
 ## Step 3: Run MutPred-PPI Inference
 
@@ -133,16 +123,15 @@ python src/inference/02_run_mutpred-ppi_inference.py \
 
 **Output:**
 - `working_dir/results/MutPred-PPI_preds.tsv`: Prediction scores for each input variant
-  - Tab-separated format with headers: `complex_id`, `variant`, `score`
-    (`src/inference/utils/inference_utils.py::write_output`)
+  - Tab-separated, with headers: `interactor`, `partner`, `mutation`, `score`
+    (`src/inference/pipeline/inference_utils.py::write_output`)
+  - `mutation` is 1-based, matching every other table in the repo.
 
-**Note on schema.** This standalone pipeline still writes the composite `complex_id`
-(`{interactor}_{partner}`). The *variant-database* pipeline
-(`src/variant_db_inference/run_variant_db_inference.py`) does not: it writes explicit
-`interactor / partner / mutation / score` columns, because splitting a composite id on `_`
-mis-assigns isoform and RefSeq accessions. See
-[`docs/REPRODUCING_ANALYSES.md`](REPRODUCING_ANALYSES.md). The two schemas are not
-interchangeable; check the header before parsing.
+**Note on schema.** Both pipelines now emit the same four explicit columns; the
+variant-database pipeline (`src/variant_db_inference/run_variant_db_inference.py`)
+writes an identical header. The composite `complex_id` (`{interactor}_{partner}`)
+this step used to write is gone: splitting such an id back on `_` mis-assigns
+isoform and RefSeq accessions (`NP_002046_GFAP` has no unambiguous split).
 
 ## File Formats
 
@@ -213,10 +202,10 @@ directory, and then run steps 2 and 3 as the quickstart does.
 **Expected output** (from the quickstart's `expected_output/MutPred-PPI_preds.tsv`):
 
 ```
-complex_id	variant	score
-P40259_O43765	G137S	0.972222626209259
-O75603_Q96LI6	G63S	0.6895588040351868
-Q4ACX1_O43765	L171R	0.9620879888534546
+interactor	partner	mutation	score
+P40259	O43765	G137S	0.972222626209259
+O75603	Q96LI6	G63S	0.6895588040351868
+Q4ACX1	O43765	L171R	0.9620879888534546
 ```
 
 (`run_example.sh` compares sorted, so row order does not matter.)
@@ -288,8 +277,8 @@ interchangeable — a file in one will not run under the other.
 | chain key | `"protein"` | `"proteinChain"` |
 | chain identity | `"id": "A"` (a bare string or a list are both accepted) | `"count": 1` |
 
-Use `local` for anything run through `run_af3_ross4.sh` on this machine. Verified on disk: 1,813 of
-the JSONs in `2026/af3_inputs_all_pairs`, written in the local dialect, produced models.
+Use `local` for the AlphaFold 3 executable you run yourself, and `server` for the
+AlphaFold Server web interface. A file in one dialect will not run under the other.
 
 Two input modes:
 
@@ -297,7 +286,7 @@ Two input modes:
 # FASTA + triplet TSV
 python src/inference/00_make_af3_json_input.py <fasta> <triplets.tsv> <out_dir>
 
-# a rows CSV carrying sequences inline (the 090826 mapping layout)
+# a rows CSV carrying sequences inline (interactor, partner, mutation columns)
 python src/inference/00_make_af3_json_input.py --csv rows.csv <out_dir> [--format server]
 ```
 
@@ -305,7 +294,7 @@ python src/inference/00_make_af3_json_input.py --csv rows.csv <out_dir> [--forma
 inside a `sequence` string, so `U` (selenocysteine) becomes `C` and `O` (pyrrolysine) becomes `K` —
 each is structurally near-identical to its replacement at the resolution AF3 models, and every
 substitution is logged. Ambiguity codes (`BJXZ`) have no sensible substitute and still fail loudly.
-On the 090826 master this affects exactly one protein, `P59797` (one `U` in 346 aa).
+The canonical training data affects exactly one protein, `P59797` (one `U` in 346 aa).
 
 **Isoform accessions are preserved.** Hyphens are sanitised to underscores in the *filename* only.
 Do not canonicalise a trailing `-1`: the mapping keeps a suffix only where the isoform sequence
