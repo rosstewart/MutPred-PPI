@@ -6,7 +6,7 @@ cross-validation driver (`swing_gcv.py`), so the feature pipeline and
 hyperparameters cannot drift from a second copy.
 
 Vendored from the SWING author scripts (Ng et al. 2022) so the repo is
-self-contained; see docs/DATA_SOURCES.md for the upstream reference. The
+self-contained; see docs/DATA_PREPARATION.md for the upstream reference. The
 window-encoding / k-mer / Doc2Vec-corpus pipeline was verified against those
 scripts on 200 real benchmark rows -- the amino-acid score dictionary, the
 window encodings, the k-mers and the tagged corpus all match exactly.

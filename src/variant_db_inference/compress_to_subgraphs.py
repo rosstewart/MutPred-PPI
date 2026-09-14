@@ -48,13 +48,13 @@ import numpy as np
 import scipy.sparse as sp
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
-from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
+from paths import DATA_ROOT, DATASETS_DIR, contact_graph_store  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
 from utils import mutations  # noqa: E402
 
 
 _BASE = DATA_ROOT
-STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+STORE = contact_graph_store()
 # All six databases, derived from the inference runner so the paths cannot drift
 # apart. Only ClinVar and COSMIC were listed here before -- gnomAD, HGMD, NDD and
 # ASD were compressed by hand or not at all, which is why three of them still

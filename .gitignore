@@ -8,7 +8,7 @@ __pycache__/
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 # Everything under datasets/ arrives via the Zenodo deposit or is built locally.
-# See docs/SETUP.md and docs/ZENODO.md.
+# See docs/DATA.md.
 datasets/
 data/
 data_caches/
@@ -57,3 +57,4 @@ ZENODO_CHECKLIST.md
 docs/ZENODO_MANIFEST.md
 docs/METHOD_PROVENANCE.md
 docs/FIGURE_INVENTORY.md
+zenodo/

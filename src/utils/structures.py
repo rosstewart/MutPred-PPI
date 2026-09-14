@@ -40,12 +40,12 @@ import shutil
 from pathlib import Path
 
 from contact_graphs import ContactGraphStore, StructureResolver, sha  # noqa: E402
-from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
+from paths import DATASETS_DIR, contact_graph_store  # noqa: E402
 
 # The train/eval namespace. Variant-DB consumers have their own store; they must
 # not share this one, because a pair can be present in one and absent from the
 # other and the coverage difference is a reportable number.
-STORE_PATH = TRAINING_EVAL_DIR / "contact_graphs.h5"
+STORE_PATH = contact_graph_store()
 
 STRUCTURE_MANIFEST = DATASETS_DIR / "af3_structures_canonical" / "manifest.csv"
 
@@ -58,7 +58,7 @@ def open_store(path: Path | str = STORE_PATH) -> ContactGraphStore:
             f"{p} not found -- build it with\n"
             f"  python src/data_processing/rebuild_graphs_from_structures.py \\\n"
             f"      --structures datasets/af3_structures_canonical --out {p}\n"
-            f"or download it with the Zenodo bundle (see docs/SETUP.md).")
+            f"or download it with the Zenodo bundle (see docs/DATA.md).")
     return ContactGraphStore(p)
 
 

@@ -74,7 +74,7 @@ python src/inference/01_make_contact_graphs_and_fasta.py \
 
 **Outputs:**
 - `working_dir/af3_graphs/contact_graphs.h5`: a `ContactGraphStore`
-  ([`src/contact_graphs.py`](../src/contact_graphs.py)) — one HDF5 store for every graph,
+  ([`src/contact_graphs.py`](../src/contact_graphs.py)), one HDF5 store for every graph
   content-addressed rather than filename-addressed.
 - `working_dir/af3_graphs/complexes.csv`: columns `complex_id, interactor, partner,
   interactor_sequence, partner_sequence`. Step 3 joins on this and looks graphs up **by
@@ -98,8 +98,8 @@ with ContactGraphStore("working_dir/af3_graphs/contact_graphs.h5") as store:
     ei = store.load_edge_index(interactor=seq_a, partner=seq_b)  # what the GAT consumes
 ```
 
-Both return the graph **already oriented to the requested interactor** — the interactor occupies
-nodes `[0, len(interactor))` — so orientation is never re-derived downstream from a filename
+Both return the graph **already oriented to the requested interactor**, the interactor occupies
+nodes `[0, len(interactor))`, so orientation is never re-derived downstream from a filename
 or a stored split point. Self-loops are added on read, unconditionally; they are not stored
 and cannot be disabled.
 
@@ -153,15 +153,15 @@ The pipeline accepts mmCIF files with flexible naming:
 reassigns chains A/B accordingly), so accessions must be splittable out of the name.
 
 The structure trees shipped with the paper do **not** use this convention. They are canonicalized
-to `{ACC_LO}__{ACC_HI}.cif.gz` — accessions uppercase, sorted, joined by a double underscore, one
+to `{ACC_LO}__{ACC_HI}.cif.gz`, accessions uppercase, sorted, joined by a double underscore, one
 gzipped mmCIF per pair, alongside a `manifest.csv`. Because the accessions are sorted, **the
 filename encodes no orientation**; orientation is a property of a row and is resolved from
 sequences at load time. See [`docs/REPRODUCING_ANALYSES.md`](REPRODUCING_ANALYSES.md#af3-structures).
 
 ## Full Example Workflow
 
-A runnable end-to-end example ships in
-[`src/inference/example/`](../src/inference/example/) — three protein pairs
+A runnable end-to-end example includes in
+[`src/inference/example/`](../src/inference/example/), three protein pairs
 with their AlphaFold 3 structures bundled, so it needs no download and no cluster:
 
 ```bash
@@ -171,8 +171,7 @@ bash src/inference/example/run_example.sh --device cpu   # CPU, a few minutes
 ```
 
 It runs steps 2 and 3 of the real pipeline and prints the predictions, then diffs them against
-the committed `expected_output/MutPred-PPI_preds.tsv` (it does not overwrite that reference —
-it only writes it if it is missing).
+the committed `expected_output/MutPred-PPI_preds.tsv` (it does not overwrite that reference, it only writes it if it is missing).
 
 **Note:** the bundled AlphaFold 3 structures are subject to the AlphaFold 3 Output Terms of
 Use and are provided for non-commercial research only. See
@@ -263,7 +262,7 @@ conda activate ppi
 ## AlphaFold3 input dialects
 
 `src/inference/00_make_af3_json_input.py` emits **either** AF3 input dialect. They are not
-interchangeable — a file in one will not run under the other.
+interchangeable, a file in one will not run under the other.
 
 | | `--format local` (default) | `--format server` |
 |---|---|---|
@@ -285,12 +284,11 @@ python src/inference/00_make_af3_json_input.py --csv rows.csv <out_dir> [--forma
 ```
 
 **Non-standard residues are substituted, not rejected.** AF3 accepts only the 20 standard letters
-inside a `sequence` string, so `U` (selenocysteine) becomes `C` and `O` (pyrrolysine) becomes `K` —
-each is structurally near-identical to its replacement at the resolution AF3 models, and every
+inside a `sequence` string, so `U` (selenocysteine) becomes `C` and `O` (pyrrolysine) becomes `K`, each is structurally near-identical to its replacement at the resolution AF3 models, and every
 substitution is logged. Ambiguity codes (`BJXZ`) have no sensible substitute and still fail loudly.
 The canonical training data affects exactly one protein, `P59797` (one `U` in 346 aa).
 
 **Isoform accessions are preserved.** Hyphens are sanitised to underscores in the *filename* only.
 Do not canonicalise a trailing `-1`: the mapping keeps a suffix only where the isoform sequence
-genuinely differs from canonical, and both `Q9BRI3-1` and bare `Q9BRI3` are present — collapsing
+genuinely differs from canonical, and both `Q9BRI3-1` and bare `Q9BRI3` are present, collapsing
 them pairs an accession with the wrong sequence.

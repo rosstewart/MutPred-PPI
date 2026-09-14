@@ -195,3 +195,78 @@ def test_symmetric_edge_index_idempotent_on_stored_diagonal():
     with_diag = np.array([[0, 0], [1, 0]])
     assert np.array_equal(
         symmetric_edge_index(no_diag, n=2), symmetric_edge_index(with_diag, n=2))
+
+
+class TestOneStoreOneName:
+    """The shared contact-graph store must be reachable by exactly one name.
+
+    It held every graph for training/evaluation AND the variant repositories,
+    but existed as three hardlinks under three directory names, and the path was
+    spelled six different ways across src/. One of those spellings,
+    `datasets/mapped090826/contact_graphs.h5`, pointed at a directory that has
+    never existed, so every check guarded on it skipped silently.
+
+    Consumers now call `paths.contact_graph_store()`. These tests stop the
+    aliasing growing back.
+    """
+
+    #: Modules allowed to name a store file directly, because they build their
+    #: OWN store into a caller-supplied directory rather than resolving the
+    #: shared one.
+    ALLOWED = {
+        "src/paths.py",                                  # defines it
+        "src/inference/01_make_contact_graphs_and_fasta.py",   # per-run, user's workdir
+        "src/inference/pipeline/inference_utils.py",           # reads that per-run store
+        "src/training/preprocess_stability_data.py",           # MegaScale monomer store
+        "src/data_processing/rebuild_graphs_from_structures.py",  # --out is the point
+        "src/build_zenodo_deposit.py",   # names the deposit ENTRY; sources it via the resolver
+    }
+
+    def test_no_module_hardcodes_the_shared_store_path(self):
+        import subprocess
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[1]
+        offenders = []
+        for path in sorted((repo / "src").rglob("*.py")):
+            rel = str(path.relative_to(repo))
+            if rel in self.ALLOWED:
+                continue
+            text = path.read_text()
+            if "contact_graphs.h5" in text or "contact_graphs_v4" in text:
+                offenders.append(rel)
+        assert not offenders, (
+            f"these modules name a store file directly instead of calling "
+            f"paths.contact_graph_store(): {offenders}")
+
+    def test_resolver_prefers_the_canonical_location(self):
+        from paths import CONTACT_GRAPH_STORE, contact_graph_store
+        assert CONTACT_GRAPH_STORE.name == "contact_graphs.h5"
+        assert CONTACT_GRAPH_STORE.parent.name == "datasets", (
+            "the store covers every dataset, so it belongs at the datasets root "
+            "rather than inside one tier's directory")
+        if CONTACT_GRAPH_STORE.exists():
+            assert contact_graph_store() == CONTACT_GRAPH_STORE
+
+    def test_legacy_locations_are_still_accepted(self, tmp_path, monkeypatch):
+        """An existing data tree must keep working, with a warning."""
+        import paths as P
+
+        canonical = tmp_path / "datasets" / "contact_graphs.h5"
+        legacy = tmp_path / "datasets" / "training_eval" / "contact_graphs.h5"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"")
+
+        monkeypatch.setattr(P, "CONTACT_GRAPH_STORE", canonical)
+        monkeypatch.setattr(P, "_LEGACY_CONTACT_GRAPH_STORES", (legacy,))
+        monkeypatch.setattr(P, "_warned_legacy_store", False)
+        assert P.contact_graph_store() == legacy
+
+    def test_missing_store_reports_the_canonical_path(self, tmp_path, monkeypatch):
+        """With nothing on disk the error must name where the store belongs."""
+        import paths as P
+
+        canonical = tmp_path / "datasets" / "contact_graphs.h5"
+        monkeypatch.setattr(P, "CONTACT_GRAPH_STORE", canonical)
+        monkeypatch.setattr(P, "_LEGACY_CONTACT_GRAPH_STORES", ())
+        assert P.contact_graph_store() == canonical

@@ -119,7 +119,7 @@ def collect_all_interactors() -> set[str]:
     if not tables:
         raise FileNotFoundError(
             f"no *_rows.csv.gz under {_DB_DIR}. The variant-database row tables "
-            f"ship in the Zenodo datasets/ bundle; see docs/DATA_SOURCES.md.")
+            f"ship in the Zenodo datasets/ bundle; see docs/DATA_PREPARATION.md.")
 
     interactors: set[str] = set()
     for table in tables:

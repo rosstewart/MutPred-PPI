@@ -41,11 +41,12 @@ from pathlib import Path
 _PUB = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PUB / "src"))
 from contact_graphs import ContactGraphStore, pair_key  # noqa: E402
-from paths import DATA_ROOT, ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATASETS_DIR  # noqa: E402
+from paths import (DATA_ROOT, ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR,  # noqa: E402
+                   DATASETS_DIR, contact_graph_store)
 from variant_db_inference import variant_rows as vr  # noqa: E402
 
 _ROOT = DATA_ROOT
-STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+STORE = contact_graph_store()
 OUT_DIR = DATASETS_DIR / "variant_dbs"
 BIOGRID_DIRBIND = _ROOT / "biogrid" / "biogrid_dirbind_uniprot_to_interactors.pkl"
 

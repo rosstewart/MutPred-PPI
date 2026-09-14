@@ -79,7 +79,7 @@ from utils import mutations  # noqa: E402
 from paths import (SOURCE_DATA_DIR, SOURCE_DATA_RESTRICTED_DIR,  # noqa: E402
                    MAPPING_DIR)
 
-# Published sources (Sahni 2015, Fragoza 2019) -- see docs/DATA_SOURCES.md for
+# Published sources (Sahni 2015, Fragoza 2019) -- see docs/DATA_PREPARATION.md for
 # the citations and where to download them.
 RAW_SF = SOURCE_DATA_DIR
 # Unpublished IGVF/VarChAMP data. Not redistributable; absent from Zenodo.
@@ -119,10 +119,10 @@ _RESTRICTED = {"maxim", "luke", "flo_vc1p", "flo_cava"}
 for name, p in PATHS.items():
     if not p.exists():
         tier = ("datasets/source_data_restricted/ (unpublished IGVF/VarChAMP data, "
-                "not redistributable -- see docs/DATA_SOURCES.md)"
+                "not redistributable -- see docs/DATA_PREPARATION.md)"
                 if name in _RESTRICTED else
                 "datasets/source_data/ (published; download from the original "
-                "publication -- see docs/DATA_SOURCES.md)")
+                "publication -- see docs/DATA_PREPARATION.md)")
         raise FileNotFoundError(f"missing input '{name}': {p}\n  Expected in {tier}")
 
 # --- Dataset tags ------------------------------------------------------------

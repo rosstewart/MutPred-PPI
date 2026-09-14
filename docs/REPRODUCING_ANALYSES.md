@@ -3,7 +3,7 @@
 Cross-validation benchmarking, the VarChAMP blind test, variant-repository
 inference/classification/charts, and supplementary analyses. For training the model from
 scratch, see [`docs/TRAINING.md`](TRAINING.md). `datasets/` and `results/` are gitignored and
-come from the Zenodo deposit -- see [`docs/ZENODO.md`](ZENODO.md).
+come from the Zenodo deposit -- see [`docs/DATA.md`](DATA.md).
 
 Every ROC and PR curve can be recomputed without rerunning anything from
 `results/gcv/*_detailed_results.pkl`, which store the raw predictions and labels per seed,
@@ -17,21 +17,21 @@ its target exists; `ls -l figures/` shows the targets.
 
 | Label | Output | Produced by | Needs |
 |---|---|---|---|
-| Table 1 | `training_data_table.tex` | `analysis/generate_training_table.py` | mapped source CSVs | 
+| Table 1 | `training_data_table.tex` | `analysis/generate_training_table.py` | mapped source CSVs |
 | Fig 3 | `roc_sahni_fragoza_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza`, all methods |
 | Fig 4 | `roc_varchamp_blind_test.png` | `analysis/blind_test_figures.py` | VarChAMP blind test |
 | Fig 5 | `enrichment_bootstrap_sufficient_partners.png` | `analysis/variant_db_charts.py --edgotype-bootstrap` | all six repositories classified |
 | Table S1 | `variant_db_stats_table.tex` | `analysis/extract_variant_db_stats.py` | all six repositories |
-| S1 | `roc_sahni_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_only` |
-| S2 | `roc_varchamp_blind_test_training_comparison.png` | `analysis/blind_test_figures.py` | blind test, both training sets |
-| S3 | `ablation_bar_sahni_fragoza_with_variance.png` | `analysis/run_roc_ablation.py` | GCV ablations, `sahni_fragoza` |
-| S7 | `roc_sahni_fragoza_varchamp_all_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza_varchamp_all` |
-| S8 | `enrichment_bootstrap_sufficient_partners_k3.png` | `analysis/variant_db_charts.py --controlled-bootstrap --k3-only` | all six repositories classified |
-| S9 | `threshold_sensitivity.png` | `analysis/threshold_sensitivity.py` | all six repositories classified |
-| S-biclass | `roc_sahni_fragoza_biclass_with_variance.png` | `analysis/biclass_sf_gcv.py` | GCV, `sahni_fragoza` |
-| S-protclass | `pathogenic_by_class.png` | `analysis/protein_class_enrichment.py` | ClinVar + gnomAD predictions, GO annotations |
-| S-robustness | `combined_robustness_by_class.png` | `analysis/combined_robustness_figure.py` | interface / pLDDT / protein-class stratifications |
-| S-stability | `stability_interaction_scatter.png` | `analysis/stability_interaction_scatter.py` | interaction + stability predictions |
+| S2 | `roc_sahni_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_only` |
+| S3 | `roc_varchamp_blind_test_training_comparison.png` | `analysis/blind_test_figures.py` | blind test, both training sets |
+| S4 | `ablation_bar_sahni_fragoza_with_variance.png` | `analysis/run_roc_ablation.py` | GCV ablations, `sahni_fragoza` |
+| S6 | `roc_sahni_fragoza_varchamp_all_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza_varchamp_all` |
+| S7 | `enrichment_bootstrap_sufficient_partners_k3.png` | `analysis/variant_db_charts.py --controlled-bootstrap --k3-only` | all six repositories classified |
+| S8 | `threshold_sensitivity.png` | `analysis/threshold_sensitivity.py` | all six repositories classified |
+| S1 | `roc_sahni_fragoza_biclass_with_variance.png` | `analysis/biclass_sf_gcv.py` | GCV, `sahni_fragoza` |
+| S9 | `pathogenic_by_class.png` | `analysis/protein_class_enrichment.py` | ClinVar + gnomAD predictions, GO annotations |
+| S5 | `combined_robustness_by_class.png` | `analysis/combined_robustness_figure.py` | interface / pLDDT / protein-class stratifications |
+| S10 | `stability_interaction_scatter.png` | `analysis/stability_interaction_scatter.py` | interaction + stability predictions |
 
 These labels are the ones `notebooks/reproduce_all_figures.py` prints, so the notebook's
 output and this table agree.
@@ -41,9 +41,9 @@ hand-drawn or rendered in ChimeraX; nothing in this repository regenerates them.
 
 ## Excluding variants the model was trained on
 
-Every figure that measures **enrichment over a variant repository** — Fig 5, S8, S9,
-S-protclass and the stability figure — excludes variants the model was trained on, and so
-does **Table S1**, which describes those same groups. A
+Every figure that measures **enrichment over a variant repository** (Fig 5, S7, S8, S9
+and S10) excludes variants the model was trained on, and so does **Table S1**, which
+describes those same groups. A
 variant in the training set has a fitted score rather than a predicted one, and the
 disease sets overlap training far more than the gnomAD background does, so leaving them
 in inflates precisely the contrast being measured.
@@ -54,8 +54,8 @@ model reads the same mutated-site features whichever partner it is scored agains
 Matching the full triple instead would keep those rows.
 
 The definition lives in `src/analysis/training_overlap.py` and is applied in one place
-per input path — `classify_variant_dbs.py` for the stratum tables that Fig 5/S8/S9 and
-the stability figure read, and `protein_class_enrichment.py` and
+per input path: `classify_variant_dbs.py` for the stratum tables that Fig 5, S7, S8
+and S10 read, and `protein_class_enrichment.py` and
 `extract_variant_db_stats.py`, which read the raw prediction TSVs. Table S1's variant
 counts therefore match the sample sizes printed on the figures; `pytest tests/ --run-data`
 asserts that they do. Pass `--keep-training-overlap` to `classify_variant_dbs.py` to
@@ -64,6 +64,23 @@ reproduce the unfiltered view; those are not the published numbers.
 The deposited master tables are **annotated rather than filtered**: a `training_overlap`
 boolean column marks the affected rows, so either view can be reproduced from the
 deposit without needing the training set, which is not redistributable.
+
+## Presentation figures
+
+Not referenced by the manuscript, and off by default. Set `PRESENTATION_FIGURES = True` in
+`notebooks/reproduce_all_figures.py`, or run directly:
+
+```bash
+conda run -n ppi python src/analysis/enrichment_scatter.py
+```
+
+Output: `results/variant_dbs_all_data/enrichment_scatter.png`, linked into
+`figures/enrichment_scatter.png` like the manuscript figures.
+
+Quasi-null enrichment against edgetic enrichment, one point per variant sample, which puts
+the two layers of Fig 5 on one pair of axes: right is loss of function, up is rewiring, and
+the lower left is no perturbation. It reads the bootstrap cache Fig 5 already wrote, so it
+adds no computation and cannot disagree with it. Sized for a projector rather than a page.
 
 ## Verification utilities
 
@@ -80,15 +97,9 @@ invariants the analysis code assumes.
 
 `pytest tests/ --run-data` asserts the same properties non-interactively.
 
-**One command runs everything below in order:** `notebooks/reproduce_all_figures.py`
-(jupytext percent format -- `jupytext --to notebook` for a `.ipynb`, or run it directly as a
-script) caches every step, generates missing embeddings on first use, displays each figure
-inline, and writes to the exact paths this document describes.
-
-**It ships with `QUICK = True`** (line 48): a fast smoke test that uses 1 cross-validation
-seed instead of 30 and subsampled variant databases, writing to `results_quick/` so it never
-touches the canonical `results/` tree. Those are **not** the published numbers -- set
-`QUICK = False` to reproduce them, which takes days rather than hours.
+`notebooks/reproduce_all_figures.py` runs everything below in order, caching each step and
+writing to the paths this document describes. `QUICK = True` (line 52) is the default and
+writes to `results_quick/`; set it to `False` for the published numbers.
 
 ## The canonical data layer
 
@@ -105,7 +116,7 @@ sequences.csv.gz         accession, sequence
 ```
 
 Guarantees, asserted at build time: every `mutation` is 1-based and validated against its
-sequence, accessions are UniProt (isoform suffix only where the sequence differs from canonical),
+sequence, accessions are UniProt (isoform suffix only where the sequence differs from canonical)
 no duplicate `(interactor, partner, mutation)`, no null labels, `row_index` contiguous and never
 renumbered. **The pipeline is 1-based end to end** -- mutation strings, embedding-cache keys and
 the tables all agree, so nothing converts between conventions. Node indices (`mutation_idx`) stay
@@ -155,8 +166,7 @@ conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
 
 ### AF3 structures
 
-`datasets/af3_structures_canonical/` holds one gzipped mmCIF per pair, 100,739 in total —
-training/evaluation complexes and variant-repository complexes were merged into this single
+`datasets/af3_structures_canonical/` holds one gzipped mmCIF per pair, 100,739 in total, training/evaluation complexes and variant-repository complexes were merged into this single
 tree:
 
 ```
@@ -194,7 +204,7 @@ in-house. The `provenance` column of `datasets/af3_structures_canonical/manifest
 which is which for every structure. neurodev and asd need none of it.
 
 Omitting ProtVar does not affect the figures if you use the deposited contact-graph store,
-which already contains all 100,739 graphs — it matters only when rebuilding the store from
+which already contains all 100,739 graphs, it matters only when rebuilding the store from
 structures.
 
 `canonicalize_structures.py` resolves every chain by SEQUENCE against the
@@ -212,7 +222,7 @@ datasets/variant_dbs/{clinvar,cosmic,gnomad,hgmd,neurodev}_rows.csv.gz
 ```
 
 Shared columns: `interactor`, `partner`, `mutation` (**1-based**), `pair_key` (the contact-graph
-content address — sequences are not inlined), `clingen_moi`, `in_embedding_store`. Per-DB
+content address, sequences are not inlined), `clingen_moi`, `in_embedding_store`. Per-DB
 annotations follow: `clinical_significance`/`allele_frequency` (clinvar), `allele_frequency`
 (gnomad), `recurrence`/`tumor_sites`/`onco_tsg` (cosmic), `neurodev_label` (neurodev); hgmd carries
 the shared columns only. Row counts: clinvar 949,065, cosmic 1,447,917, gnomad 10,529,577,
@@ -256,7 +266,7 @@ rather than an `ImportError` from inside a `sys.path` insert.
 
 | Method | Directory | Additional files it needs |
 |---|---|---|
-| SAAMBE-3D | `saambe3d/` | Ships its own SKEMPI-trained `*_v01.model` boosters. Requires `prody` (not in the `ppi` env). It therefore needs its own interpreter: set `SAAMBE3D_PYTHON=/path/to/python` to an environment that has `prody` installed. (`saambe3d_cv.py` also looks for a `py311_saambe3d` conda env next to your Miniconda install, which is a convenience, not a requirement.) |
+| SAAMBE-3D | `saambe3d/` | Includes its own SKEMPI-trained `*_v01.model` boosters. Requires `prody` (not in the `ppi` env). It therefore needs its own interpreter: set `SAAMBE3D_PYTHON=/path/to/python` to an environment that has `prody` installed. (`saambe3d_cv.py` also looks for a `py311_saambe3d` conda env next to your Miniconda install, which is a convenience, not a requirement.) |
 | MINT | `mint/` | `mint.ckpt` and `esm2_t33_650M_UR50D.json` from the MINT release page. |
 | PPLM | `PPLM/` | `weights/pplm_t33_650M.pt` from the PPLM release page. |
 | eSIG-Net | `esignet/` | Uses `backbones/sdnn/sdnn_model.py` from the checkout. Publishes no feature-extraction code, so ours is reconstructed and validated -- see `src/evaluation/predictors/validate_esignet_features.py`. |
@@ -288,19 +298,19 @@ resumed by re-issuing the same command. Jobs are split into a CPU pool
 
 `--threads` caps BLAS/OpenMP threads per job and defaults to 1. The libraries otherwise start
 one thread per core, and on a many-core host a single small MLP fit spends most of its wall
-time in OpenMP barriers — raising the thread count can make a fit several times *slower*.
+time in OpenMP barriers, raising the thread count can make a fit several times *slower*.
 
 Thread count is also not numerically neutral: OpenBLAS partitions reductions by team size,
 which moves cross-validation AUCs in the 4th decimal. Use one value for a whole suite rather
 than mixing.
 
-## Grouped Cross-Validation (Fig 3, S1)
+## Grouped Cross-Validation (Fig 3, S2)
 
 Every trained method runs through one shared runner
 ([`src/utils/gcv_common.py`](../src/utils/gcv_common.py)`::run_gcv`, which also holds
 `DATASET_CONFIGS`, `load_data` and the split loading); only the training loop differs per method.
 MutPred-PPI's loop is `src/training/train_fold.py::train_fold`, imported by both
-`mutpred_ppi_gcv.py` and `train_final_model.py` — it has no CLI of its own.
+`mutpred_ppi_gcv.py` and `train_final_model.py`, it has no CLI of its own.
 
 ```bash
 DS=sahni_fragoza_varchamp_all
@@ -337,7 +347,7 @@ conda run -n ppi python src/evaluation/precompute_pplm_embeddings.py      --data
 # eSIG-Net: use eSIG-Net's own precompute script (see its repository)
 ```
 
-### Biclass SF GCV (S-biclass)
+### Biclass SF GCV (S1)
 
 Restricts Fig 3's cross-validation to ordered protein pairs (A, B) where mutations in A include
 both disruptive and non-disruptive labels.
@@ -346,13 +356,13 @@ both disruptive and non-disruptive labels.
 conda run -n ppi python src/analysis/biclass_sf_gcv.py
 ```
 
-Output: `results/biclass_gcv/roc_sahni_fragoza_biclass_with_variance.png` → **S-biclass**
+Output: `results/biclass_gcv/roc_sahni_fragoza_biclass_with_variance.png` → **S1**
 
-## VarChAMP Blind Test (Fig 4, S2)
+## VarChAMP Blind Test (Fig 4, S3)
 
-VarChAMP data is unpublished IGVF consortium data — cross-reference [data.igvf.org](https://data.igvf.org).
+VarChAMP data is not redistributable; see [DATA.md](DATA.md#unpublished). Cross-reference [data.igvf.org](https://data.igvf.org).
 
-Train on `sahni_fragoza`, predict on all of `varchamp_all` — the two canonical datasets,
+Train on `sahni_fragoza`, predict on all of `varchamp_all`, the two canonical datasets
 nothing else. The trainable methods are retrained here rather than loading a checkpoint, so
 the blind test always reflects the current tables.
 DDMut-PPI is excluded; see the comparator table above.
@@ -380,10 +390,10 @@ conda run -n ppi python src/analysis/blind_test_figures.py
 SWING's own default configuration; the plain `--method swing` arm fits it on the training
 rows only. Both are reported. SAAMBE-3D/MutPPI/MutPPI+ are pretrained on SKEMPI, not
 retrained here, and are classed by SKEMPI training-protein overlap
-(`utils.gcv_common.skempi_test_class`), not Sahni+Fragoza overlap — same rule as their GCV
+(`utils.gcv_common.skempi_test_class`), not Sahni+Fragoza overlap, same rule as their GCV
 stratification.
 
-## Variant Repository Inference (Fig 5, S8, S9)
+## Variant Repository Inference (Fig 5, S6, S8)
 
 Scored with the single all-data model (`weights/MutPred-PPI.pt`);
 `assert_all_data_model` refuses to start with anything else, so there is only ever one
@@ -434,8 +444,8 @@ Rows come from `datasets/variant_dbs/{db}_rows.csv.gz` and graphs from
 interactor	partner	mutation	score
 ```
 
-`mutation` is 1-based. Both pipelines — this one and the standalone `src/inference/`
-three-step pipeline — write these same four columns. A composite
+`mutation` is 1-based. Both pipelines, this one and the standalone `src/inference/`
+three-step pipeline, write these same four columns. A composite
 `complex_id` = `{interactor}_{partner}` column was used previously; splitting it back on
 `_` mis-assigned both proteins whenever an accession itself contained the separator, so it
 was replaced by explicit columns. The resume path still recognises the old header, so an
@@ -448,7 +458,7 @@ columns are opt-in when the master CSV is assembled:
 ### Variant-database source mapping
 
 Both this step and the per-database `map_*.py` scripts below are **optional**.
-The Zenodo bundle ships what they produce (`datasets/variant_dbs/*_rows.csv.gz`),
+The Zenodo bundle includes what they produce (`datasets/variant_dbs/*_rows.csv.gz`)
 and their inputs are licensed (COSMIC, HGMD) or many gigabytes (ClinVar, gnomAD,
 BioGRID). `notebooks/reproduce_all_figures.py` gates them behind
 `RUN_VARIANT_DB_MAPPING = False`; run them only to rederive the interactome from
@@ -465,7 +475,7 @@ conda run -n ppi python src/data_processing/variant_databases/get_biogrid_intera
 
 This defines "physical binding evidence only": an edge is kept when BioGRID
 records it under one of five experimental systems evidencing a **direct**
-contact — Co-crystal Structure, Cross-Linking-MS (XL-MS), Far Western,
+contact, Co-crystal Structure, Cross-Linking-MS (XL-MS), Far Western
 Reconstituted Complex, Protein-Peptide. Systems that only establish co-complex
 membership (Affinity Capture-MS and similar) are excluded, because an edgotype
 is a claim about a specific binding interface. The set is
@@ -473,7 +483,7 @@ is a claim about a specific binding interface. The set is
 `datasets/variant_dbs/{db}_rows.csv.gz` satisfies it.
 
 The per-database mapping steps that produce the annotation pickles the tables are built from.
-All of these take licensed or bulk downloads as required arguments — run each with `--help` for
+All of these take licensed or bulk downloads as required arguments, run each with `--help` for
 the full list, since the inputs differ per database:
 
 | Script | Required inputs |
@@ -492,12 +502,12 @@ Two caches under `datasets/annotations/` have explicit rebuilders rather than be
 Zenodo blobs:
 
 ```bash
-# plddt_cache.pkl — per-residue pLDDT from AlphaFold DB MONOMER models
+# plddt_cache.pkl, per-residue pLDDT from AlphaFold DB MONOMER models
 # (not the AF3 complexes: their chains are trimmed to the assayed constructs).
 # Consumer: src/analysis/plddt_stratification.py
 conda run -n ppi python src/analysis/build_plddt_cache.py --compare-legacy
 
-# confidence_scores.pkl — {complex_key: {'iptm','ptm'}} from AF3 *_summary_confidences.json.
+# confidence_scores.pkl, {complex_key: {'iptm','ptm'}} from AF3 *_summary_confidences.json.
 # Consumer: src/analysis/roc_plots.py
 conda run -n ppi python src/analysis/build_confidence_cache.py --json-dir <af3_output_dir> --recursive
 ```
@@ -518,44 +528,49 @@ conda run -n ppi python src/analysis/variant_db_charts.py \
 
 Output:
 - `enrichment_bootstrap_sufficient_partners.png` → **Fig 5** (ClinVar row includes Rare Benign/Benign/Pathogenic/VUS/Pathogenic AR/Pathogenic AD; HGMD row includes HGMD/AR/AD)
-- `enrichment_bootstrap_sufficient_partners_k3.png` → **S8** (same grouping, partner-controlled)
+- `enrichment_bootstrap_sufficient_partners_k3.png` → **S7** (same grouping, partner-controlled)
 
 ### Gene inheritance-mode (AR/AD) mapping
 
-Required once, before Fig 5/S8/S-stability:
+Required once, before Fig 5, S7, S8 and S10:
 
 ```bash
 conda run -n ppi python src/analysis/build_ar_ad_gene_sets.py
 ```
 
-Produces a gene→UniProt AR/AD mapping (mutually exclusive sets) from ClinGen MOI curations — see
-[`docs/DATA_SOURCES.md`](DATA_SOURCES.md). `classify_variant_dbs.py` consumes this directly; no
+Produces a gene→UniProt AR/AD mapping (mutually exclusive sets) from ClinGen MOI curations, see
+[`docs/DATA_PREPARATION.md`](DATA_PREPARATION.md). `classify_variant_dbs.py` consumes this directly; no
 separate re-run step is needed.
 
-### COSMIC Onco/TSG QN vs. Edgetic stat test (S-cosmic-stat)
+### COSMIC Onco/TSG QN vs. Edgetic stat test (COSMIC oncogene/TSG test)
 
 ```bash
 conda run -n ppi python src/analysis/cosmic_onco_tsg_stat_test.py
 ```
 
-Output: `results/cosmic_stat_test/cosmic_onco_tsg_qn_vs_edgetic.tex` → **S-cosmic-stat**
+Output: `results/cosmic_stat_test/cosmic_onco_tsg_qn_vs_edgetic.tex` → **COSMIC oncogene/TSG test**
 
-### Protein class enrichment (S-protclass)
+### Protein class enrichment (S9)
 
 ```bash
 conda run -n ppi python src/analysis/protein_class_enrichment.py
 ```
 
-Output: `results/protein_class/pathogenic_by_class.png` → **S-protclass**
+Output: `results/protein_class/pathogenic_by_class.png` → **S9**
 
-### Stability vs. interaction per-variant scatter (S-stability, 6 panels)
+### Stability vs interaction enrichment (S10)
 
 ```bash
-conda run -n ppi python src/analysis/stability_interaction_scatter.py --cosmic-min-recurrence 32
+conda run -n ppi python src/analysis/stability_interaction_scatter.py
 ```
 
-Output: `results/stability_interaction/scatter_per_variant_kde.png` → **S-stability**
-(ClinVar Pathogenic, ClinVar Benign, ClinVar VUS, gnomAD, HGMD, COSMIC recurrence≥32)
+Output: `results/stability_interaction/stability_interaction_scatter.png` → **S10**
+
+Two panels. (A) one point per variant sample: stability-disruption enrichment against
+PPI-disruption enrichment, both relative to gnomAD, using the same statistic and the same
+100,000-replicate bootstrap as Fig 5. (B) the per-variant density behind twelve of those
+samples. `--panels vignette` reduces panel A to the six disease groups plus the gnomAD
+gradient.
 
 ### Robustness analyses
 
@@ -586,11 +601,11 @@ importing it executes both the ROC generation and the separate ipTM analysis.
 Use the wrappers:
 
 ```bash
-conda run -n ppi python src/analysis/run_roc_comparison.py   # Fig 3, S1, S7
+conda run -n ppi python src/analysis/run_roc_comparison.py   # Fig 3, S3, S7
 conda run -n ppi python src/analysis/run_roc_ablation.py     # S3
 ```
 
-## Ablation figure (S3)
+## Ablation figure (S4)
 
 ```bash
 conda run -n ppi python src/analysis/run_roc_ablation.py
@@ -599,8 +614,7 @@ conda run -n ppi python src/analysis/run_roc_ablation.py
 The **"Prior Best" bar is omitted by default.** It is the previously published model rather
 than an ablation of the current architecture, and its checkpoint is distributed separately:
 
-> RECOMB model (bioRxiv v2): MutPred-PPI v1.0 —
-> <https://github.com/rosstewart/MutPred-PPI/releases/tag/v1.0.0>
+> RECOMB model (bioRxiv v2): MutPred-PPI v1.0, > <https://github.com/rosstewart/MutPred-PPI/releases/tag/v1.0.0>
 
 Unpack that release into `weights/v1_0/` and pass `--include-prior-best` to draw it:
 
@@ -611,4 +625,4 @@ conda run -n ppi python src/analysis/run_roc_ablation.py --include-prior-best
 Every other ablation arm uses `weights/MutPred-PPI_stability_pretrain.pt`, which is in the
 Zenodo weights bundle.
 
-Output: `results/gcv/roc_plots_with_variance/ablation_bar_sahni_fragoza_with_variance.png` → **S3**
+Output: `results/gcv/roc_plots_with_variance/ablation_bar_sahni_fragoza_with_variance.png` → **S4**

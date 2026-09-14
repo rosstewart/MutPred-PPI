@@ -4,16 +4,14 @@ Every path used by the codebase resolves through here so that:
   * nothing hardcodes an absolute repo location (the repo is relocatable), and
   * every external data root can be redirected with an environment variable.
 
-Environment variables (all optional; defaults suit the original workstation):
+Environment variables, all optional:
 
     MUTPRED_DATA_ROOT   Large shared data tree: contact graphs, ProtT5/ESM
                         embedding pickles, variant-database subsets.
                         Default: the repository's parent directory.
-    MUTPRED_CV_DIR      Cross-validation reference artifacts (canonical vt_id
-                        orderings, label text files). Fold splits themselves are
-                        generated inline and no longer read from here.
-                        Default: $MUTPRED_DATA_ROOT/cv_splits if present,
-                        else the legacy workstation location.
+    MUTPRED_CV_DIR      Cross-validation reference artifacts: row orderings,
+                        cd-hit clusters, fold splits and per-seed test classes.
+                        Default: datasets/cv_reference/ if present.
     MUTPRED_CACHE_DIR   Large regenerable prediction/embedding caches
                         (mint_cache.pkl, pplm_cache.pkl, ...).
                         Default: $MUTPRED_DATA_ROOT/mutpred_ppi_data
@@ -59,7 +57,7 @@ FIGURES_DIR = REPO_ROOT / "figures"
 #
 # Raw published inputs to the mapping notebook. Not vendored and not in the
 # Zenodo deposit -- obtain them from the original publications, see
-# docs/DATA_SOURCES.md. SOURCE_DATA_RESTRICTED_DIR holds the four VarChAMP/IGVF
+# docs/DATA_PREPARATION.md. SOURCE_DATA_RESTRICTED_DIR holds the four VarChAMP/IGVF
 # files, which are unpublished and cannot be redistributed at all.
 SOURCE_DATA_DIR = DATASETS_DIR / "source_data"
 SOURCE_DATA_RESTRICTED_DIR = DATASETS_DIR / "source_data_restricted"
@@ -71,11 +69,52 @@ SOURCE_DATA_RESTRICTED_DIR = DATASETS_DIR / "source_data_restricted"
 MAPPING_DIR = _env_path("MUTPRED_PPI_MAPPING_DIR", DATASETS_DIR / "source_mapping")
 
 # The prepared train/eval data layer: validated row tables, GCV splits,
-# sequences, the contact-graph store and the per-method embedding caches.
-# Named for its domain, matching its VARIANT_DBS sibling below, rather than
-# for the mapping generation that produced it -- "mapped090826" was two
-# characters from "mapping090826" while meaning something quite different.
+# sequences and the per-method embedding caches. Named for its domain, matching
+# its VARIANT_DBS sibling below.
 TRAINING_EVAL_DIR = DATASETS_DIR / "training_eval"
+
+# ONE contact-graph store, holding every graph: training/eval complexes and
+# variant-repository complexes alike. They share it because graphs are keyed by
+# sequence, so a pair appearing in both is stored once. It therefore belongs
+# under neither training_eval/ nor variant_dbs/, and lives at the tree root.
+#
+# It previously existed as three hardlinks under three directory names, which
+# made "are these the same file?" a question anyone reading the tree had to
+# answer by checking inodes. Resolve it here; never spell the filename out in a
+# consumer.
+CONTACT_GRAPH_STORE = DATASETS_DIR / "contact_graphs.h5"
+
+_LEGACY_CONTACT_GRAPH_STORES = (
+    TRAINING_EVAL_DIR / "contact_graphs.h5",
+    DATASETS_DIR / "variant_dbs" / "contact_graphs.h5",
+    DATASETS_DIR / "af3_structures_canonical" / "contact_graphs_v4.h5",
+)
+
+_warned_legacy_store = False
+
+
+def contact_graph_store() -> Path:
+    """Path to the contact-graph store.
+
+    Prefers the canonical location and falls back to the three places the store
+    used to be reachable from, so an existing data tree keeps working. The
+    fallback warns once, naming the move, rather than silently depending on a
+    layout the code no longer documents.
+    """
+    global _warned_legacy_store
+    if CONTACT_GRAPH_STORE.exists():
+        return CONTACT_GRAPH_STORE
+    for legacy in _LEGACY_CONTACT_GRAPH_STORES:
+        if legacy.exists():
+            if not _warned_legacy_store:
+                _warned_legacy_store = True
+                print(f"[warn] using the contact-graph store at {legacy}. It now "
+                      f"belongs at {CONTACT_GRAPH_STORE}; move it there "
+                      f"(the store covers every dataset, not one tier).",
+                      file=sys.stderr)
+            return legacy
+    # Nothing on disk: return the canonical path so the error names where it goes.
+    return CONTACT_GRAPH_STORE
 
 # One results/ tree (2026-09-10): results_revisions/ is gone, its subdirectories
 # moved under results/ unchanged except the three renamed below. Every script
@@ -101,7 +140,7 @@ MASTER_VARIANT_DB_CSV = RESULTS_DIR / "master_variant_db_predictions.csv.gz"
 
 # Small annotation/label inputs copied into the repo so every analysis script
 # resolves inside the tree.  Delivered via the Zenodo bundle (datasets/ is
-# gitignored); see docs/DATA_SOURCES.md.
+# gitignored); see docs/DATA_PREPARATION.md.
 ANNOTATIONS_DIR = DATASETS_DIR / "annotations"
 # COSMIC/HGMD-derived summaries.  Same role, but licence-restricted: excluded
 # from the Zenodo deposit and from git.  Analyses that need these must degrade
@@ -275,7 +314,7 @@ def require(path: Path, what: str, hint: str = "") -> Path:
 def describe() -> str:
     """Every resolved path plus whether it exists — the setup self-test.
 
-    docs/SETUP.md points readers here, so this must cover all three data tiers:
+    docs/DATA.md points readers here, so this must cover all three data tiers:
     in-repo (datasets/), symlinked (external/), and configurable roots.
     """
     def row(label: str, path, env: str = "") -> str:

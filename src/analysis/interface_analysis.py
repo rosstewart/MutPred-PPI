@@ -31,7 +31,7 @@ plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import DATA_ROOT, REPO_ROOT, cv_reference_dir
+from paths import DATA_ROOT, REPO_ROOT, contact_graph_store, cv_reference_dir
 from variant_db_inference import variant_rows as vr
 from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
@@ -42,7 +42,7 @@ from analysis.stratification_common import (  # noqa: E402
 _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
-TRAIN_EVAL_STORE = f"{_PUB}/datasets/training_eval/contact_graphs.h5"
+TRAIN_EVAL_STORE = str(contact_graph_store())
 GCV_RESULTS = (f"{_PUB}/results/gcv/"
                f"MutPredPPI_sahni_fragoza{DATASET_SUFFIX}_megascale_all"
                f"_detailed_results.pkl")

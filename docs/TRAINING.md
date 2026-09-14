@@ -7,7 +7,7 @@ Covers stability pretraining and PPI fine-tuning. For inference with the pre-tra
 
 ## Downloads
 
-From Zenodo (see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md) for links):
+From Zenodo (see [`docs/DATA_PREPARATION.md`](DATA_PREPARATION.md) for links):
 - Model weights: `weights/`
 - Training data: `datasets/training_eval/<dataset>_rows.csv.gz` for each of the five
   canonical datasets (`sahni_fragoza`, `sahni_only`, and the other three
@@ -46,7 +46,7 @@ tracked.
 Required once before any fine-tuning. Source data: [Tsuboyama et al. 2023](https://doi.org/10.1038/s41586-023-06328-6).
 Train/val/test splits (`datasets/mega_splits.pkl`) are from
 [SPURS](https://doi.org/10.1038/s41467-025-67609-4). `datasets/` is gitignored, so this
-arrives with the Zenodo bundle rather than the git clone -- see [`docs/SETUP.md`](SETUP.md).
+arrives with the Zenodo bundle rather than the git clone -- see [`DATA.md`](DATA.md).
 
 ```bash
 conda run -n ppi python src/training/preprocess_stability_data.py \
@@ -95,12 +95,12 @@ the standalone inference pipeline; it is not the path used for the training data
 
 `src/training/train_fold.py` holds the single training loop (`train_fold`) shared by
 `src/evaluation/mutpred_ppi_gcv.py` and `src/training/train_final_model.py`, so the CV numbers
-and the released weights come from one implementation. **It has no CLI** — it is imported, never
-invoked directly. Tensor construction lives in `src/utils/mutpred_ppi_data.py::build_tensors`,
+and the released weights come from one implementation. **It has no CLI**, it is imported, never
+invoked directly. Tensor construction lives in `src/utils/mutpred_ppi_data.py::build_tensors`
 which reads rows from the canonical tables and graphs from the store.
 
 CV fold assignments (30-seed grouped cross-validation, used for Fig 3) are generated inline
-during the GCV run — no separate step required.
+during the GCV run, no separate step required.
 
 ## Model Training
 
@@ -119,6 +119,6 @@ conda run -n ppi python src/training/train_final_model.py \
 `--save-models-dir` is required. `--dataset` accepts the short names above or the
 full stamped filenames on disk.
 
-VarChAMP training data is unpublished IGVF consortium data — cross-reference
+VarChAMP training data is not redistributable; see [DATA.md](DATA.md#unpublished). Cross-reference
 [data.igvf.org](https://data.igvf.org). It is required only for the second command above; the
 public Sahni+Fragoza model needs no VarChAMP data.

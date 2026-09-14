@@ -29,11 +29,11 @@ from pathlib import Path
 import h5py
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths
-from paths import DATA_ROOT, DATASETS_DIR
+from paths import DATA_ROOT, DATASETS_DIR, contact_graph_store
 from utils import mutations
 from variant_db_inference import variant_rows as vr
 
-STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+STORE = contact_graph_store()
 
 # Reasons a row cannot be scored. Only the first two are legitimate; the rest
 # mean a cache needs rebuilding.

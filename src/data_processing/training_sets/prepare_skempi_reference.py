@@ -8,7 +8,7 @@ overlap with *SKEMPI's* proteins, not with ours, which is why this set exists
 separately from the per-dataset training pairs (see
 `utils.gcv_common.skempi_test_class`).
 
-Inputs (both under `datasets/source_data/`, see docs/DATA_SOURCES.md):
+Inputs (both under `datasets/source_data/`, see docs/DATA_PREPARATION.md):
 
     skempi_v2.csv            SKEMPI 2.0, semicolon-delimited. The `#Pdb` column
                              is `PDB_<chains1>_<chains2>`, e.g. `1CSE_E_I`.
@@ -81,7 +81,7 @@ def skempi_complexes(path: Path = SKEMPI_CSV) -> set[str]:
     """The unique `#Pdb` tags in SKEMPI."""
     if not path.exists():
         sys.exit(f"ERROR: {path} not found. SKEMPI 2.0 is downloadable from "
-                 f"https://life.bsc.es/pid/skempi2/ -- see docs/DATA_SOURCES.md.")
+                 f"https://life.bsc.es/pid/skempi2/ -- see docs/DATA_PREPARATION.md.")
     with open(path) as f:
         return {r["#Pdb"] for r in csv.DictReader(f, delimiter=";") if r.get("#Pdb")}
 

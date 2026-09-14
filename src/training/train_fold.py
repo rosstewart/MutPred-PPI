@@ -128,7 +128,7 @@ def train_fold(
             raise FileNotFoundError(
                 f"Checkpoint not found: {path}\n"
                 "If this is the MegaScale pretrain checkpoint, either download it "
-                "into weights/ (see Zenodo, docs/DATA_SOURCES.md) or generate it "
+                "into weights/ (see Zenodo, docs/DATA_PREPARATION.md) or generate it "
                 "from scratch: see 'Stability Pretraining' in docs/TRAINING.md "
                 "(preprocess_stability_data.py + pretrain_stability.py)."
             )

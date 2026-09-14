@@ -21,7 +21,7 @@ underscore the interactor and the rest the partner, and read chain identity from
     rows    `datasets/variant_dbs/{db}_rows.csv.gz`  -- explicit interactor,
             partner and 1-BASED mutation columns, so nothing is split on a
             delimiter that can occur inside an identifier
-    graphs  `datasets/variant_dbs/contact_graphs.h5` -- fetched by the two chain
+    graphs  the contact-graph store -- fetched by the two chain
             SEQUENCES and returned already oriented to the requested interactor
 
 Two consequences that are behaviour changes, not refactors:
@@ -62,7 +62,7 @@ import torch
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
 from model import GAT_mut_processor  # noqa: E402
-from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
+from paths import DATA_ROOT, DATASETS_DIR, contact_graph_store  # noqa: E402
 from utils import mutations  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
 
@@ -73,7 +73,7 @@ _MEGASCALE_PRETRAINED = _PUB / "weights" / "MutPred-PPI_stability_pretrain.pt"
 _SCALER_PATH = _PUB / "weights" / "mutation_diff_scaler.pkl"
 _OUT_DIR = _PUB / "results" / "variant_dbs_stability"
 
-STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+STORE = contact_graph_store()
 
 DATASET_CONFIGS = {
     db: {
@@ -355,7 +355,7 @@ def main() -> None:
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--store", default=str(STORE),
                     help="Contact-graph store (default: "
-                         "datasets/variant_dbs/contact_graphs.h5)")
+                         "the contact-graph store)")
     ap.add_argument("--out-dir", default=str(_OUT_DIR))
     args = ap.parse_args()
 

@@ -67,6 +67,10 @@ os.chdir(REPO)
 
 N_GCV = 1 if QUICK else 30
 N_BOOTSTRAP = 1_000 if QUICK else 100_000
+
+# Extra figures for talks rather than the paper. Off by default: they are
+# not referenced by the manuscript and cost a step each.
+PRESENTATION_FIGURES = False
 DB_SUBSAMPLE = 20_000 if QUICK else None   # rows per variant DB; None = all
 
 # Every results/<subdir> constant in src/paths.py derives from this one env
@@ -88,7 +92,8 @@ import pandas as pd
 from IPython.display import Image, display
 
 sys.path.insert(0, str(REPO / "src"))
-from paths import DATA_ROOT, DATASETS_DIR, REPO_ROOT, TRAINING_EVAL_DIR, WEIGHTS_DIR, describe  # noqa: E402
+from paths import (CONTACT_GRAPH_STORE, DATA_ROOT, DATASETS_DIR,  # noqa: E402
+                   REPO_ROOT, TRAINING_EVAL_DIR, WEIGHTS_DIR, describe)
 from utils.gcv_common import dataset_name  # noqa: E402
 from utils.legacy_guard import LegacyInputError, reject_legacy  # noqa: E402
 
@@ -283,7 +288,7 @@ else:
 # %%
 _AF3_CANON = DATASETS_DIR / "af3_structures_canonical"
 _MAPPED = TRAINING_EVAL_DIR
-_STORE = _MAPPED / "contact_graphs.h5"
+_STORE = CONTACT_GRAPH_STORE
 
 # ONE canonical structure tree and ONE graph store. Training/evaluation
 # complexes and variant-repository complexes share both: graphs are keyed by
@@ -294,7 +299,7 @@ _STORE = _MAPPED / "contact_graphs.h5"
 # precomputed AlphaFold 3 interfaces, which supply about three quarters of the
 # canonical tree (76,023 of 100,739 structures). Chains are resolved by SEQUENCE,
 # so the whole ProtVar tree can be passed unfiltered; PDB input is auto-detected
-# and normalised to gzipped mmCIF. See docs/SETUP.md for the download.
+# and normalised to gzipped mmCIF. See docs/DATA.md for the download.
 _PROTVAR = REPO / "external" / "protvar_pdb"
 _STRUCT_SOURCES = [str(DATASETS_DIR / "af3_structures"),
                    str(DATASETS_DIR / "af3_structures_variant_dbs")]
@@ -302,7 +307,7 @@ if _PROTVAR.exists():
     _STRUCT_SOURCES.append(str(_PROTVAR))
 else:
     print(f"[warn]    {_PROTVAR} absent -- the variant repositories will lose the "
-          f"pairs only ProtVar covers (see docs/SETUP.md)")
+          f"pairs only ProtVar covers (see docs/DATA.md)")
 
 run([PY, "src/data_processing/canonicalize_structures.py",
     "--structures", *_STRUCT_SOURCES, "--out", str(_AF3_CANON)],
@@ -313,14 +318,6 @@ run([PY, "src/data_processing/rebuild_graphs_from_structures.py",
    produces=[_STORE],
    stale=graph_store_is_stale(_STORE, _AF3_CANON / "manifest.csv"),
    name="rebuild_graphs_from_structures.py")
-
-# The variant-repository code resolves its own path to the store. It is the same
-# file; link rather than rebuild, so the two can never diverge.
-_VDB_STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
-if _STORE.exists() and not _VDB_STORE.exists():
-    _VDB_STORE.parent.mkdir(parents=True, exist_ok=True)
-    os.link(_STORE, _VDB_STORE)
-    print(f"[run]     linked {_VDB_STORE} -> {_STORE}")
 
 # Record which complexes AlphaFold3 actually produced. Writes an `af3_failed`
 # column into the mapping CSVs; `prepare_gcv_tables.py` then drops those rows
@@ -456,7 +453,7 @@ run([PY, "src/analysis/fetch_protein_class_annotations.py"],
 #
 # ProtT5 (MutPred-PPI), ESM-2 (eSIG-Net), MINT, PPLM -- one cache per dataset.
 # QUICK mode covers `sahni_fragoza` only (Fig 3); full mode adds `sahni_only`
-# (S1) and `sahni_fragoza_varchamp_all` (S7), plus `varchamp_all` for the
+# (S2) and `sahni_fragoza_varchamp_all` (S6), plus `varchamp_all` for the
 # blind test. SWING needs no precomputed cache -- Doc2Vec is fit per run.
 
 # %%
@@ -481,7 +478,7 @@ for ds in _GCV_DATASETS:
        produces=[_MAPPED / f"{ds}_pplm.pkl"], name=f"precompute_pplm_embeddings.py [{ds}]")
 
 # %% [markdown]
-# ## Step 4 -- Group cross-validation (Fig 3, S1, S7)
+# ## Step 4 -- Group cross-validation (Fig 3, S3, S6)
 #
 # One command per method. `--n-gcv {N_GCV}` throughout (30 in a full run, 1
 # in QUICK mode). MutPred-PPI, eSIG-Net, MINT x2, PPLM x2, SWING x2 are
@@ -568,7 +565,7 @@ else:
           "figures render without its curve.")
 
 # %% [markdown]
-# ## Step 5 -- Cross-validation figures (Fig 3, S1, S3, S-biclass)
+# ## Step 5 -- Cross-validation figures (Fig 3, S3, S4, S1)
 
 # %%
 try:
@@ -576,7 +573,7 @@ try:
 except RuntimeError as exc:
     print(f"[skip] run_roc_comparison.py: {exc}")
 
-# The ablation figure (S3) omits the "Prior Best" bar by default. That bar is
+# The ablation figure (S4) omits the "Prior Best" bar by default. That bar is
 # the previously published model rather than an ablation of this architecture,
 # and its checkpoint ships in neither the repository nor the Zenodo deposit:
 #
@@ -597,12 +594,12 @@ except RuntimeError as exc:
 
 _ROC_DIR = _GCV_DIR / "roc_plots_with_variance"
 show(_ROC_DIR / "roc_sahni_fragoza_with_variance.png", "Fig 3")
-show(_ROC_DIR / "roc_sahni_with_variance.png", "S1")
-show(_ROC_DIR / "ablation_bar_sahni_fragoza_with_variance.png", "S3")
-show(_RESULTS_DIR / "biclass_gcv" / "roc_sahni_fragoza_biclass_with_variance.png", "S-biclass")
+show(_ROC_DIR / "roc_sahni_with_variance.png", "S2")
+show(_ROC_DIR / "ablation_bar_sahni_fragoza_with_variance.png", "S4")
+show(_RESULTS_DIR / "biclass_gcv" / "roc_sahni_fragoza_biclass_with_variance.png", "S1")
 
 # %% [markdown]
-# ## Step 6 -- VarChAMP blind test (Fig 4, S2)
+# ## Step 6 -- VarChAMP blind test (Fig 4, S3)
 #
 # Train on `sahni_fragoza_mapped090826`, predict on all of
 # `varchamp_all_mapped090826` -- see `run_varchamp_blind_test.py`'s module
@@ -653,7 +650,7 @@ else:
         print(f"[skip] blind_test_figures.py: {exc}")
 
     show(_BLIND_DIR / "roc_plots" / "roc_varchamp_blind_test.png", "Fig 4")
-    show(_BLIND_DIR / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png", "S2")
+    show(_BLIND_DIR / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png", "S3")
 
 # %% [markdown]
 # ## Step 7 -- Final model and variant-repository inference
@@ -683,7 +680,7 @@ if _DEMO_TIER:
     if not _SF_CKPT.exists():
         print(f"[skip] Steps 7-9: neither the unpublished VarChAMP data nor the "
               f"Sahni+Fragoza demonstration model ({_SF_CKPT}) is present. "
-              f"The latter ships in the Zenodo weights bundle; see docs/ZENODO.md.")
+              f"The latter ships in the Zenodo weights bundle; see docs/DATA.md.")
     else:
         print("=" * 72)
         print("DEMONSTRATION TIER: VarChAMP data absent, using the Sahni+Fragoza")
@@ -769,25 +766,35 @@ else:
     print("[skip] Step 8: needs Step 7's variant-DB predictions.")
 
 # %% [markdown]
-# ## Step 9 -- Variant-repository figures and tables (Fig 5, S8, S9, ...)
+# ## Step 9 -- Variant-repository figures and tables (Fig 5, S6, S8, ...)
 
 # %%
 if _VDB_READY:
     run([PY, "src/analysis/variant_db_charts.py", "--data-dir", str(_VDB_DIR)] + _DEMO_ARGS,
        name="variant_db_charts.py [Fig 5]")
-    # The k=3 figure (S8) is written by the --controlled-bootstrap --k3-only run
+    # The k=3 figure (S7) is written by the --controlled-bootstrap --k3-only run
     # in Step 8; there is no separate pass. `--controlled-k 3` is not an argument
     # variant_db_charts.py accepts, so this call aborted the notebook.
     show(_VDB_DIR / "enrichment_bootstrap_sufficient_partners.png", "Fig 5")
-    show(_VDB_DIR / "enrichment_bootstrap_sufficient_partners_k3.png", "S8")
+    show(_VDB_DIR / "enrichment_bootstrap_sufficient_partners_k3.png", "S7")
 
     run([PY, "src/analysis/threshold_sensitivity.py", "--n-bootstrap", str(N_BOOTSTRAP),
         "--data-dir", str(_VDB_DIR)] + _DEMO_ARGS,
        name="threshold_sensitivity.py")
-    show(_RESULTS_DIR / "robustness" / "threshold_sensitivity.png", "S9")
+
+    # Optional presentation figure: quasi-null against edgetic enrichment on one
+    # pair of axes, read from the bootstrap cache the Fig 5 step already wrote.
+    # Not a manuscript figure, so it is off unless PRESENTATION_FIGURES is set.
+    if PRESENTATION_FIGURES:
+        run([PY, "src/analysis/enrichment_scatter.py",
+            "--cache", str(_VDB_DIR / "all_bootstrap_results.pkl"),
+            "--out", str(_VDB_DIR / "enrichment_scatter.png")] + _DEMO_ARGS,
+           name="enrichment_scatter.py")
+        show(_VDB_DIR / "enrichment_scatter.png", "enrichment scatter (slides)")
+    show(_RESULTS_DIR / "robustness" / "threshold_sensitivity.png", "S8")
 
     run([PY, "src/analysis/protein_class_enrichment.py"], name="protein_class_enrichment.py")
-    show(_RESULTS_DIR / "protein_class" / "pathogenic_by_class.png", "S-protclass")
+    show(_RESULTS_DIR / "protein_class" / "pathogenic_by_class.png", "S9")
 
     # One figure, two panels. (A) one point per variant sample:
     # stability-disruption enrichment (x) against PPI-disruption enrichment (y),
@@ -798,11 +805,11 @@ if _VDB_READY:
         "--data-dir", str(_VDB_DIR)] + _DEMO_ARGS,
        name="stability_interaction_scatter.py")
     show(_RESULTS_DIR / "stability_interaction" / "stability_interaction_scatter.png",
-         "S-stability")
+         "S10")
 
     try:
         run([PY, "src/analysis/combined_robustness_figure.py"], name="combined_robustness_figure.py")
-        show(_RESULTS_DIR / "robustness" / "combined_robustness_by_class.png", "S-robustness")
+        show(_RESULTS_DIR / "robustness" / "combined_robustness_by_class.png", "S5")
     except RuntimeError as exc:
         print(f"[skip] combined_robustness_figure.py: {exc}")
 
@@ -854,24 +861,31 @@ import datetime
 
 _MANIFEST = [
     ("Fig 3",  _ROC_DIR / "roc_sahni_fragoza_with_variance.png"),
-    ("S1",     _ROC_DIR / "roc_sahni_with_variance.png"),
-    ("S3",     _ROC_DIR / "ablation_bar_sahni_fragoza_with_variance.png"),
-    ("S7",     _ROC_DIR / "roc_sahni_fragoza_varchamp_all_with_variance.png"),
-    ("S-biclass", _RESULTS_DIR / "biclass_gcv" / "roc_sahni_fragoza_biclass_with_variance.png"),
+    ("S2",     _ROC_DIR / "roc_sahni_with_variance.png"),
+    ("S4",     _ROC_DIR / "ablation_bar_sahni_fragoza_with_variance.png"),
+    ("S6",     _ROC_DIR / "roc_sahni_fragoza_varchamp_all_with_variance.png"),
+    ("S1", _RESULTS_DIR / "biclass_gcv" / "roc_sahni_fragoza_biclass_with_variance.png"),
     ("Fig 4",  _RESULTS_DIR / "varchamp_seqcnf_newvar_eval" / "roc_plots" / "roc_varchamp_blind_test.png"),
-    ("S2",     _RESULTS_DIR / "varchamp_seqcnf_newvar_eval" / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png"),
+    ("S3",     _RESULTS_DIR / "varchamp_seqcnf_newvar_eval" / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png"),
     ("Fig 5",  _VDB_DIR / "enrichment_bootstrap_sufficient_partners.png"),
-    ("S8",     _VDB_DIR / "enrichment_bootstrap_sufficient_partners_k3.png"),
-    ("S9",     _RESULTS_DIR / "robustness" / "threshold_sensitivity.png"),
-    ("S-protclass", _RESULTS_DIR / "protein_class" / "pathogenic_by_class.png"),
-    ("S-stability", _RESULTS_DIR / "stability_interaction" / "stability_interaction_scatter.png"),
-    ("S-robustness", _RESULTS_DIR / "robustness" / "combined_robustness_by_class.png"),
+    ("S7",     _VDB_DIR / "enrichment_bootstrap_sufficient_partners_k3.png"),
+    ("S8",     _RESULTS_DIR / "robustness" / "threshold_sensitivity.png"),
+    ("S9", _RESULTS_DIR / "protein_class" / "pathogenic_by_class.png"),
+    ("S10", _RESULTS_DIR / "stability_interaction" / "stability_interaction_scatter.png"),
+    ("S5", _RESULTS_DIR / "robustness" / "combined_robustness_by_class.png"),
     ("Table 1", REPO / "figures" / "training_data_table.tex"),
     ("Table S1", REPO / "figures" / "variant_db_stats_table.tex"),
 ]
 
+# Figures for talks rather than the paper. They are linked into figures/ and
+# pruned alongside the rest, but carry no manuscript number, so the numbering
+# check that reads main_*.tex/supplement_*.tex skips them.
+_PRESENTATION_MANIFEST = [
+    ("enrichment scatter (slides)", _VDB_DIR / "enrichment_scatter.png"),
+]
+
 print(f"{'label':<14} {'exists':<7} {'age':<12} path")
-for label, path in _MANIFEST:
+for label, path in _MANIFEST + (_PRESENTATION_MANIFEST if PRESENTATION_FIGURES else []):
     exists = path.exists()
     age = (datetime.datetime.now() - datetime.datetime.fromtimestamp(path.stat().st_mtime)
           ) if exists else None
@@ -883,7 +897,7 @@ for label, path in _MANIFEST:
 _FIG_DIR = REPO / "figures"
 _FIG_DIR.mkdir(exist_ok=True)
 _wanted = {}
-for label, path in _MANIFEST:
+for label, path in _MANIFEST + _PRESENTATION_MANIFEST:
     if path.suffix != ".png" or not path.exists():
         continue
     link = _FIG_DIR / path.name

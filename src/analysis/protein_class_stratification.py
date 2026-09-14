@@ -200,12 +200,11 @@ def main():
         f.write("\n".join(summary_rows) + "\n")
     print(f"Saved: {out_tsv}", flush=True)
 
-    # Symlink into figures/
-    fig_link = f"{_PUB}/figures/protein_class_auroc_by_class.png"
-    if os.path.islink(fig_link):
-        os.remove(fig_link)
-    os.symlink(out_png, fig_link)
-    print(f"Symlink: {fig_link}", flush=True)
+    # No symlink into figures/. This panel is an intermediate: the manuscript
+    # figure is the combined three-row robustness figure that
+    # combined_robustness_figure.py assembles from this and its two siblings.
+    # figures/ is rebuilt from the notebook's manifest, so a link planted here
+    # would be pruned on the next run anyway, and neither sibling plants one.
 
 
 if __name__ == "__main__":

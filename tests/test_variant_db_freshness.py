@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from paths import DATASETS_DIR
+from paths import DATASETS_DIR, contact_graph_store
 from utils.gcv_common import DATASET_SUFFIX  # noqa: F401  (import guard)
 
 
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.requires_data
 
 DBS = ["clinvar", "cosmic", "gnomad", "hgmd", "neurodev", "asd"]
 DATA_ROOT = Path("/data/ross/ppi_lossgain/interaction_loss")
-STORE = DATASETS_DIR / "af3_structures_canonical" / "contact_graphs_v4.h5"
+STORE = contact_graph_store()
 MANIFEST = DATASETS_DIR / "af3_structures_canonical" / "manifest.csv"
 
 # gnomAD is scoped to variants with an assigned allele frequency; a row without

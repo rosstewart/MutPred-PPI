@@ -13,7 +13,7 @@ the graph already oriented to the requested interactor, so `NRR` is gone.
 Prerequisites:
 1. ProtT5 embeddings precomputed with precompute_prott5.py (and, for the large
    databases, compressed with compress_to_subgraphs.py)
-2. `datasets/variant_dbs/contact_graphs.h5` and `{db}_rows.csv.gz`
+2. the contact-graph store (see paths.contact_graph_store) and `{db}_rows.csv.gz`
    (build_variant_db_tables.py)
 3. Trained model checkpoints in weights/ (the all-data model — variant-DB inference
    is not a blind test, so the model trained on the most data is used)
@@ -80,7 +80,7 @@ def resolve_model_tier(tier: str, models_dir: str | None) -> tuple[Path, str]:
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
 from inference.pipeline.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
-from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
+from paths import DATA_ROOT, DATASETS_DIR, contact_graph_store  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
 from utils import mutations  # noqa: E402
 from utils.legacy_guard import LegacyInputError  # noqa: E402
@@ -89,7 +89,7 @@ from utils.legacy_guard import LegacyInputError  # noqa: E402
 # ── dataset path registry ─────────────────────────────────────────────────────
 
 _BASE = DATA_ROOT
-STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+STORE = contact_graph_store()
 DATASET_CONFIGS = {
     db: {
         "default_emb_h5":      _BASE / db / "prott5_embeddings.h5",

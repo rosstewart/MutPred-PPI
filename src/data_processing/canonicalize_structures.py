@@ -34,6 +34,13 @@ Usage:
     python src/data_processing/canonicalize_structures.py \\
         --structures datasets/af3_structures_variant_dbs/clinvar \\
         --out datasets/af3_structures_variant_dbs_canonical/clinvar
+
+Promotion is by HARDLINK. The usual chain builds into a temporary directory and
+then promotes with `cp -alf`, which means the build directory and the live tree
+become the same inodes. That build directory is therefore an ALIAS, not a
+snapshot: deleting it frees nothing, and it would not preserve anything if the
+live tree were damaged. Do not leave it behind under a name that reads as a
+backup.
 """
 from __future__ import annotations
 

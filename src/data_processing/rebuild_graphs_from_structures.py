@@ -26,13 +26,16 @@ store adds them on read, unconditionally.
 Usage:
     python src/data_processing/rebuild_graphs_from_structures.py \\
         --structures datasets/af3_structures_canonical \\
-        --out datasets/training_eval/contact_graphs_rebuilt.h5
+        --out datasets/contact_graphs_rebuilt.h5
 
-    # verify against the migrated store before promoting
+    # verify against the live store before promoting
     python src/data_processing/rebuild_graphs_from_structures.py \\
-        --structures datasets/af3_structures_variant_dbs_canonical \\
-        --out datasets/variant_dbs/contact_graphs_rebuilt.h5 \\
-        --compare-to datasets/variant_dbs/contact_graphs.h5
+        --structures datasets/af3_structures_canonical \\
+        --out datasets/contact_graphs_rebuilt.h5 \\
+        --compare-to datasets/contact_graphs.h5
+
+There is ONE store, covering training/evaluation and variant repositories alike;
+`paths.contact_graph_store()` resolves it.
 """
 from __future__ import annotations
 

@@ -25,13 +25,16 @@ import numpy as np
 import pytest
 
 from contact_graphs import ContactGraphStore, pair_key
-from paths import DATASETS_DIR
+from paths import DATASETS_DIR, contact_graph_store
 from utils import identifiers as I
 from utils import mutations as M
 from utils.embeddings import assert_untruncated
 
-TRAIN_STORE = DATASETS_DIR / "mapped090826" / "contact_graphs.h5"
-VDB_STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+# One store, covering training/evaluation and variant repositories alike. These
+# were two separate constants, one of which pointed at datasets/mapped090826/,
+# a directory that has never existed -- so every check guarded on it silently
+# skipped.
+TRAIN_STORE = VDB_STORE = contact_graph_store()
 
 
 def _canonical_accessions_and_mutations():

@@ -14,4 +14,7 @@ is tracked in git.
 Which manuscript label corresponds to which file is tabulated in the figure index in
 [`docs/REPRODUCING_ANALYSES.md`](../docs/REPRODUCING_ANALYSES.md).
 
+`enrichment_scatter.png` is a presentation figure rather than a manuscript one, so it
+carries no figure number. It appears only when `PRESENTATION_FIGURES = True`.
+
 `ls -l` shows the targets; a broken link means its producer has not been run yet.
