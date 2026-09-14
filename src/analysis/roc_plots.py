@@ -15,6 +15,7 @@ import os
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
+from utils.legacy_guard import DATASET_SUFFIX
 from analysis.method_names import (  # noqa: E402
     _SHORT_DATASET_NAMES, METHOD_DISPLAY_NAMES, extract_method_and_dataset,
     with_baseline_variants)
@@ -160,6 +161,28 @@ def _load_canonical_rows(canonical, prefix):
     return df
 
 
+# Short display key -> (canonical dataset, rows/fold_splits prefix, class-array
+# prefix), for the three datasets the comparison figures cover.
+#
+# This was referenced in four places but defined in none -- `precompute_gcv_inputs()`
+# died on a NameError before it could write `{dataset}_SAAMBE-3D_test_classes.npy`,
+# and `load_baseline_predictions()` then skipped every SKEMPI-trained method for
+# want of that file. MutPred2 survived only because it needs no class array.
+#
+# The two prefixes differ because the class arrays are still named after the
+# SWING/combined run that first produced them; `export_cv_reference.NAMING` is the
+# source of truth and this must agree with it.
+CANONICAL_DATASETS = {
+    "sahni":                      (f"sahni_only{DATASET_SUFFIX}",
+                                   "sahni_only_train_", "sahni_only_"),
+    "sahni_fragoza":              (f"sahni_fragoza{DATASET_SUFFIX}",
+                                   "sahni_fragoza_train_", "swing_train_"),
+    "sahni_fragoza_varchamp_all": (f"sahni_fragoza_varchamp_all{DATASET_SUFFIX}",
+                                   "sahni_fragoza_varchamp_all_train_",
+                                   "combined_sahni_fragoza_varchamp_all_"),
+}
+
+
 def precompute_gcv_inputs():
     """Rebuild the positional per-dataset arrays and the ipTM GCV split pickles.
 
@@ -212,7 +235,10 @@ def precompute_gcv_inputs():
               f'confidence score')
         for class_ in (1, 2, 3):
             print('\t', int(np.sum(dataset_saambe_test_classes[dataset] == class_)))
-        np.save(f'{WORKING_DIR}/{dataset}_SAAMBE-3D_test_classes.npy',
+        # Under the FULL, suffixed dataset name -- `load_baseline_predictions`
+        # refuses anything without DATASET_SUFFIX, so a class array left over
+        # from a superseded mapping generation cannot be read back.
+        np.save(f'{WORKING_DIR}/{canonical}_SAAMBE-3D_test_classes.npy',
                 dataset_saambe_test_classes[dataset])
 
     # %% Build GCV split pkl files
@@ -432,28 +458,54 @@ BOXPLOT  = False   # False → mean curve + CI,   True → box plots of AUC/AP
 
 # Ablation variant display names and colors
 # Ablation: megascale_all (new best) vs other megascale variants + Full (old baseline)
+# Keys carry DATASET_SUFFIX because that is what the result FILENAMES carry
+# (`MutPredPPI_sahni_fragoza_mapped090826_<arm>_detailed_results.pkl`). They used
+# to omit it, so every arm was skipped as "not in ABLATION_DISPLAY_NAMES" and the
+# ablation figure came out empty -- silently, because a skip is a print.
+_ABL = f"MutPredPPI_sahni_fragoza{DATASET_SUFFIX}"
 ABLATION_DISPLAY_NAMES = {
-    'MutPredPPI_sahni_fragoza_megascale_all':             'MutPred-PPI',
-    'MutPredPPI_sahni_fragoza_megascale_freeze_diff':     'Freeze Diff',
-    'MutPredPPI_sahni_fragoza_megascale_head':            'Head Only',
-    'MutPredPPI_sahni_fragoza_megascale_all_no-gat':      'No GAT',
-    'MutPredPPI_sahni_fragoza_megascale_all_no-mut':      'No Mutation Processor',
-    'MutPredPPI_sahni_fragoza_megascale_all_wt-emb':      'WT Embedding',
-    'MutPredPPI_sahni_fragoza_scratch':                   'No Pretrain',
-    'MutPredPPI_sahni_fragoza':                           'Prior Best',
+    f'{_ABL}_megascale_all':        'MutPred-PPI',
+    # The three freeze arms are complements of each other: fix the mutation
+    # representation, fix the structural half, or fix both and train only the
+    # head. 'Freeze Both' was called 'Head Only', which described what stayed
+    # trainable rather than what was held fixed, so it did not read as the third
+    # member of the set.
+    f'{_ABL}_freeze_mut_processor': 'Freeze Mut Processor',
+    f'{_ABL}_freeze_gat':           'Freeze GAT',
+    f'{_ABL}_megascale_head':       'Freeze Both',
+    f'{_ABL}_megascale_all_no-gat': 'No GAT',
+    f'{_ABL}_megascale_all_no-mut': 'No Mutation Processor',
+    f'{_ABL}_megascale_all_wt-emb': 'WT Embedding',
+    f'{_ABL}_scratch':              'No Pretrain',
+    f'{_ABL}_prior_best':           'Prior Best',
+    f'{_ABL}_pretrain_zero_shot':   'Stability Pretrain (zero-shot)',
 }
-# Note: 'Prior Best' is the FoldX-pretrained model from the RECOMB 2024 conference version.
-# The paper caption should reference the prior version (bioRxiv / conference proceedings).
+# 'Prior Best' is the prior published model, run as a fine-tuning arm: its own
+# checkpoint and mutation-diff scaler, with the mutation representation frozen.
+#
+# It is EXCLUDED by default. Its artifacts live in
+# `archive/ablation_artifacts/prior_best/` and in `weights/v1_0/`, neither of
+# which ships in a clone, so including it by default would leave every external
+# reproducer with a figure they cannot regenerate. It is also not an ablation of
+# the current architecture but a different published model, which makes it a
+# different kind of comparison from the rest of the bars.
+#
+# Set `roc_plots.INCLUDE_PRIOR_BEST = True`, or pass `--include-prior-best` to
+# `run_roc_ablation.py`, to draw it.
+PRIOR_BEST_DISPLAY_NAME = 'Prior Best'
+INCLUDE_PRIOR_BEST = False
 
 ABLATION_COLORS = {
     'MutPred-PPI':              '#1f77b4',  # blue — publication model, same as comparison plots
-    'Freeze Diff':              '#4b83c5',
-    'Head Only':                '#8c564b',
+    'Freeze Mut Processor':     '#4b83c5',
+    'Freeze GAT':               '#7fb0da',
+    'Freeze Both':              '#8c564b',
     'No GAT':                   '#d62728',
     'No Mutation Processor':    '#ff7f0e',
     'WT Embedding':             '#2ca02c',
     'No Pretrain':              '#7f7f7f',
     'Prior Best':               '#aec7e8',  # light blue — distinguishable from MutPred-PPI
+    'Stability Pretrain (zero-shot)': '#9467bd',  # purple — not a fine-tuning arm
 }
 
 # Method name mapping (comparison mode) — only methods listed here are plotted
@@ -518,7 +570,20 @@ def extract_ablation_method_and_dataset(filename):
 from sklearn.metrics import precision_recall_curve, average_precision_score
 
 
-def compute_roc_with_variance(detailed_results, prc=False):
+# Arms that never saw a training fold, so C1/C2/C3 -- which is defined by
+# training-set membership -- carries no meaning for them. They are scored on the
+# POOLED test set and drawn identically in all three panels, the same treatment
+# MutPred2 gets in the blind-test figure.
+STRATIFICATION_INDEPENDENT_ABLATIONS = {"Stability Pretrain (zero-shot)"}
+
+
+def compute_roc_with_variance(detailed_results, prc=False, pooled=False):
+    """Per-class ROC/PR aggregates, or one pooled curve repeated across classes.
+
+    `pooled=True` concatenates the three classes within each fold before scoring,
+    giving a genuine pooled AUC rather than an average of per-class AUCs, and
+    writes that single value into all three class keys.
+    """
     key1, key2 = ('recalls', 'precisions') if prc else ('fprs', 'tprs')
     results = {
         f'class_{c}': {key1: [], key2: [], 'aucs': [], 'ns': []}
@@ -532,12 +597,21 @@ def compute_roc_with_variance(detailed_results, prc=False):
         for fold_key in iteration_data['folds']:
             fold_data = iteration_data['folds'][fold_key]
 
-            for class_num in [1, 2, 3]:
-                class_key = f'class_{class_num}'
-                class_data = fold_data[class_key]
+            if pooled:
+                groups = [(f'class_{c}',
+                           np.concatenate([np.array(fold_data[f'class_{k}']['preds'])
+                                           for k in (1, 2, 3)]),
+                           np.concatenate([np.array(fold_data[f'class_{k}']['labels'])
+                                           for k in (1, 2, 3)]))
+                          for c in (1, 2, 3)]
+            else:
+                groups = [(f'class_{c}',
+                           np.array(fold_data[f'class_{c}']['preds']),
+                           np.array(fold_data[f'class_{c}']['labels']))
+                          for c in (1, 2, 3)]
 
-                preds  = np.array(class_data['preds'])
-                labels = np.array(class_data['labels'])
+            for class_key, preds, labels in groups:
+                class_num = int(class_key[-1])
 
                 if len(preds) > 0 and len(np.unique(labels)) > 1:
                     if prc:
@@ -560,19 +634,54 @@ def compute_roc_with_variance(detailed_results, prc=False):
     return results
 
 
+# short display key -> full config name. Every value must carry DATASET_SUFFIX;
+# the assertion is the point, so that regenerating the mapping (and changing the
+# constant) turns stale names into a hard failure rather than a silent fallback.
+_FULL_DATASET_NAMES = {v: k for k, v in _SHORT_DATASET_NAMES.items()}
+assert all(v.endswith(DATASET_SUFFIX) for v in _FULL_DATASET_NAMES.values()), (
+    f"_SHORT_DATASET_NAMES has entries not carrying {DATASET_SUFFIX!r}: "
+    f"{[v for v in _FULL_DATASET_NAMES.values() if not v.endswith(DATASET_SUFFIX)]}")
+
+
+def _baseline_array(dataset, suffix):
+    """Path to a baseline array, under the CURRENT mapping's name only.
+
+    `dataset` here is the SHORT display key (`sahni_fragoza`); the fixed
+    predictors write under the full config name
+    (`sahni_fragoza_mapped090826_SAAMBE-3D_preds.npy`), so the short key is
+    translated. Only the suffixed name is ever tried: accepting the bare form too
+    would happily load an array left over from a previous mapping generation.
+
+    (`import_mutpred2_gcv_scores.py` writes the SHORT key, which is why MutPred2
+    was the one baseline that used to load while SAAMBE-3D / MutPPI / MutPPI+
+    silently vanished from the GCV figures. It is normalised on read below.)
+    """
+    stem = _FULL_DATASET_NAMES.get(dataset, dataset)
+    if not stem.endswith(DATASET_SUFFIX):
+        raise ValueError(
+            f"refusing to load a baseline array for {dataset!r}: resolved stem "
+            f"{stem!r} does not carry {DATASET_SUFFIX!r}, so it cannot be from "
+            f"the current mapping generation.")
+    return os.path.join(WORKING_DIR, f'{stem}{suffix}')
+
+
 def load_baseline_predictions(dataset, prc=False):
     """Load fixed (non-CV) predictor arrays and build per-class ROC inputs."""
     baseline_results = {}
     key1, key2 = ('recalls', 'precisions') if prc else ('fprs', 'tprs')
     auc_lbl = 'AP' if prc else 'AUC'
 
-    labels_file       = os.path.join(WORKING_DIR, f'{dataset}_mutpred2_standalone_labels.npy')
-    test_classes_file = os.path.join(WORKING_DIR, f'{dataset}_SAAMBE-3D_test_classes.npy')
+    labels_file       = _baseline_array(dataset, '_mutpred2_standalone_labels.npy')
+    test_classes_file = _baseline_array(dataset, '_SAAMBE-3D_test_classes.npy')
 
     skempi_methods = ['SAAMBE-3D', 'MutPPI', 'MutPPIPlus']  # DDMutPPI excluded entirely: 87% job-timeout rate on its public API
     for method in skempi_methods:
-        preds_file  = os.path.join(WORKING_DIR, f'{dataset}_{method}_preds.npy')
-        binary_file = os.path.join(WORKING_DIR, f'{dataset}_{method}_binary_labels.npy')
+        preds_file  = _baseline_array(dataset, f'_{method}_preds.npy')
+        # SAAMBE-3D also ships a binary classification head, and its native
+        # operating point used to be drawn as a star on the ROC. Removed: it
+        # invited reading a threshold artefact as a performance claim, and only
+        # one method had one, so the panels were not comparable.
+        # `*_binary_labels.npy` is still written by saambe3d_cv.py; nothing reads it.
         if not (os.path.exists(preds_file) and os.path.exists(labels_file)
                 and os.path.exists(test_classes_file)):
             continue
@@ -580,7 +689,6 @@ def load_baseline_predictions(dataset, prc=False):
             preds        = np.load(preds_file)
             labels       = np.load(labels_file)
             test_classes = np.load(test_classes_file)
-            bin_labels   = np.load(binary_file) if os.path.exists(binary_file) else None
 
             method_key = f'{method.replace("-", "_").lower()}_{dataset}'
             baseline_results[method_key] = {}
@@ -610,20 +718,6 @@ def load_baseline_predictions(dataset, prc=False):
 
                 entry = {key1: [v1], key2: [v2], 'aucs': [score], 'ns': [len(preds_c)]}
 
-                if bin_labels is not None and not prc:
-                    bl_c     = bin_labels[mask][valid]
-                    valid_bl = bl_c >= 0
-                    if np.any(valid_bl) and len(np.unique(bl_c[valid_bl])) >= 2:
-                        bl_v  = bl_c[valid_bl]
-                        lc_v  = labels_c[valid_bl]
-                        tp = np.sum((bl_v == 1) & (lc_v == 1))
-                        fn = np.sum((bl_v == 0) & (lc_v == 1))
-                        fp = np.sum((bl_v == 1) & (lc_v == 0))
-                        tn = np.sum((bl_v == 0) & (lc_v == 0))
-                        tpr_pt = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-                        fpr_pt = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-                        entry['binary_pt'] = (fpr_pt, tpr_pt)
-
                 baseline_results[method_key][f'class_{tc}'] = entry
                 print(f"  Loaded {method} class {tc}: {auc_lbl}={score:.4f}", flush=True)
 
@@ -631,7 +725,7 @@ def load_baseline_predictions(dataset, prc=False):
             print(f"  Could not load {method} for {dataset}: {e}")
 
     for method in ['mutpred2_standalone']:
-        preds_file = os.path.join(WORKING_DIR, f'{dataset}_{method}_preds.npy')
+        preds_file = _baseline_array(dataset, f'_{method}_preds.npy')
         if not (os.path.exists(preds_file) and os.path.exists(labels_file)):
             continue
         try:
@@ -663,8 +757,15 @@ def load_baseline_predictions(dataset, prc=False):
 
 # %% Plotting functions
 def plot_roc_with_confidence(results_dict, dataset_name, save_path=None, prc=False,
-                              ablation=False):
-    """Plot mean ROC or PR curves with 95% CI shading."""
+                              ablation=False, name_map=None):
+    """Plot mean ROC or PR curves with 95% CI shading.
+
+    `name_map` overrides the method -> display-name lookup. A caller that
+    extends the map for fixed-predictor baselines (`with_baseline_variants`)
+    must pass it here. Without it those series fall back to their raw key, so
+    the legend reads `saambe_3d_sahni_fragoza` instead of `SAAMBE-3D` -- and
+    the colour lookup is keyed on the DISPLAY name, so they all render grey.
+    """
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=SAVE_DPI)
 
     key1, key2 = ('recalls', 'precisions') if prc else ('fprs', 'tprs')
@@ -673,7 +774,8 @@ def plot_roc_with_confidence(results_dict, dataset_name, save_path=None, prc=Fal
     ylabel     = 'Precision' if prc else 'True Positive Rate'
     legend_loc = 'upper right' if prc else 'lower right'
 
-    name_map  = ABLATION_DISPLAY_NAMES if ablation else METHOD_DISPLAY_NAMES
+    if name_map is None:
+        name_map = ABLATION_DISPLAY_NAMES if ablation else METHOD_DISPLAY_NAMES
     color_map = ABLATION_COLORS        if ablation else colors
 
     for class_idx, class_num in enumerate([1, 2, 3]):
@@ -726,10 +828,6 @@ def plot_roc_with_confidence(results_dict, dataset_name, save_path=None, prc=Fal
                 linestyle = ':' if 'mutpred2' in method_name.lower() else '--'
                 lw        = 2.5 if 'mutpred2' in method_name.lower() else 2
                 ax.plot(mean_x, mean_y, color=color, lw=lw, alpha=0.8, linestyle=linestyle)
-                if not prc and 'binary_pt' in class_results:
-                    fpr_pt, tpr_pt = class_results['binary_pt']
-                    ax.scatter([fpr_pt], [tpr_pt], marker='*', s=250, color=color,
-                               zorder=6, edgecolors='black', linewidths=0.5)
                 legend_items.append(
                     (mean_auc, display_name.replace('GATMutPPI', 'MutPred-PPI'),
                      color, None, n_samples, True)
@@ -986,11 +1084,6 @@ def plot_ablation_bars(results_dict, dataset_name, save_path=None, prc=False):
         ax.grid(True, axis='y', alpha=0.3)
         ax.set_xlim(-0.6, len(ordered_methods) - 0.4)
 
-    plt.suptitle(
-        f'Ablation — {dataset_to_display_name.get(dataset_name, dataset_name)}',
-        fontsize=TITLE_FONTSIZE + 1,
-        y=1.01,
-    )
     plt.tight_layout()
 
     if save_path:
@@ -1123,9 +1216,18 @@ def main_ablation():
             print(f"  Skipping: not in ABLATION_DISPLAY_NAMES (method={method!r})")
             continue
 
+        if (ABLATION_DISPLAY_NAMES[method] == PRIOR_BEST_DISPLAY_NAME
+                and not INCLUDE_PRIOR_BEST):
+            print(f"  Skipping {PRIOR_BEST_DISPLAY_NAME}: its artifacts are not "
+                  f"distributed (pass --include-prior-best to draw it)")
+            continue
+
         try:
             detailed_results = load_detailed_results(filepath)
-            roc_results = compute_roc_with_variance(detailed_results, prc=PRC)
+            roc_results = compute_roc_with_variance(
+                detailed_results, prc=PRC,
+                pooled=ABLATION_DISPLAY_NAMES.get(method)
+                       in STRATIFICATION_INDEPENDENT_ABLATIONS)
 
             if dataset not in datasets_results:
                 datasets_results[dataset] = {}

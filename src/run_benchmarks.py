@@ -42,14 +42,11 @@ from typing import Callable
 import numpy as np
 
 from paths import GCV_RESULTS_DIR, REPO_ROOT, VARCHAMP_BLIND_TEST_DIR
-from utils.gcv_common import DATASET_CONFIGS
+from utils.gcv_common import DATASET_CONFIGS, dataset_name
 
 # The three datasets every comparison figure reads (Fig 3, S1, S7).
-GCV_DATASETS = [
-    "sahni_only_mapped090826",
-    "sahni_fragoza_mapped090826",
-    "sahni_fragoza_varchamp_all_mapped090826",
-]
+GCV_DATASETS = [dataset_name(b) for b in
+                ("sahni_only", "sahni_fragoza", "sahni_fragoza_varchamp_all")]
 VARIANT_DBS = ["gnomad", "clinvar", "cosmic", "hgmd", "neurodev", "asd"]
 
 # Fig S4 plots MutPred-PPI against its own ablations on sahni_fragoza. The
@@ -60,14 +57,17 @@ VARIANT_DBS = ["gnomad", "clinvar", "cosmic", "hgmd", "neurodev", "asd"]
 # RECOMB 2024 model, whose result stem carries no ablation suffix and which the
 # current code cannot reproduce. It has to come from the archived v1.0 results.
 ABLATIONS = [
-    "megascale_freeze_diff",     # Freeze Diff
-    "megascale_head",            # Head Only
+    "freeze_mut_processor",      # Freeze Mutation Processor
+    "freeze_gat",                # Freeze GAT
+    "megascale_head",            # Freeze Both (head-only probe)
     "megascale_all_no-gat",      # No GAT
     "megascale_all_no-mut",      # No Mutation Processor
     "megascale_all_wt-emb",      # WT Embedding
     "scratch",                   # No Pretrain
+    "prior_best",                # Prior Best (prior published model, archived)
+    "pretrain_zero_shot",        # stability pretrain, untrained on PPI
 ]
-ABLATION_DATASET = "sahni_fragoza_mapped090826"
+ABLATION_DATASET = dataset_name("sahni_fragoza")
 N_GCV = 30
 _PY = "python"
 
@@ -157,13 +157,20 @@ def blind_test_jobs() -> list[Job]:
     specs = [
         ("mutpredppi", [], "gpu", "MutPred-PPI*_c3_preds.npy"),
         ("esignet",    [], "gpu", "eSIG-Net*_c3_preds.npy"),
-        ("swing",      [], "cpu", "SWING*_c3_preds.npy"),
+        ("swing",      [], "cpu", "SWING (Sahni*_c3_preds.npy"),
+        # Upstream SWING's own configuration: one Doc2Vec fitted over train+test
+        # sequences (no labels), reused everywhere -- so it is also much cheaper
+        # than blind-test mode, which refits per fold. Reported separately
+        # because the shared corpus is a representational leak.
+        ("swing",      ["--test-pretrain"], "cpu",
+         "SWING (test pretrain*_c3_preds.npy"),
         ("saambe3d",   [], "cpu", "SAAMBE-3D*_c3_preds.npy"),
         ("mutppi",     [], "gpu", "MutPPI (*_c3_preds.npy"),
         ("mutppiplus", [], "gpu", "MutPPIPlus*_c3_preds.npy"),
     ]
     jobs = [
-        Job(f"blind_{m}", kind, [_PY, R, "--method", m, *extra],
+        Job(f"blind_{m}" + ("_test_pretrain" if extra else ""), kind,
+            [_PY, R, "--method", m, *extra],
             _glob_exists(B, pat))
         for m, extra, kind, pat in specs
     ]
@@ -173,6 +180,18 @@ def blind_test_jobs() -> list[Job]:
                 f"blind_{method}_{pred}", "cpu",
                 [_PY, R, "--method", method, "--predictor", pred],
                 _glob_exists(B, f"{method.upper()}_{pred}*_c3_preds.npy")))
+    # The supplementary training-set comparison (fig:varchamp_training_set_comparison)
+    # is MutPred-PPI trained on Sahni alone against the same model trained on
+    # Sahni+Fragoza, both scored on the same VarChAMP test set. It needs exactly one
+    # extra array -- the other half is `blind_mutpredppi` above -- so this is a single
+    # job, not a second pass over every method. Only the trained methods have a
+    # training set to vary at all; SAAMBE-3D/MutPPI/MutPPI+ are SKEMPI-pretrained and
+    # would produce identical output.
+    jobs.append(Job(
+        "blind_mutpredppi_sahni_only", "gpu",
+        [_PY, R, "--method", "mutpredppi",
+         "--train-dataset", dataset_name("sahni_only")],
+        _glob_exists(B, "MutPred-PPI (sahni,*_c3_preds.npy")))
     return jobs
 
 

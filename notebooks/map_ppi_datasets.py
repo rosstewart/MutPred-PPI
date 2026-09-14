@@ -126,9 +126,11 @@ for name, p in PATHS.items():
         raise FileNotFoundError(f"missing input '{name}': {p}\n  Expected in {tier}")
 
 # --- Dataset tags ------------------------------------------------------------
-# Every dataset tag and dataset filename carries this suffix so this mapping run is
-# never confused with files produced under earlier conventions.
-SUFFIX = "_mapped090826"
+# Every dataset tag and dataset filename carries this suffix so this mapping run
+# is never confused with files produced under earlier conventions.  It is the
+# SAME constant the rest of the codebase reads, so re-mapping is a one-line
+# change here and nothing downstream has to be told about it.
+from utils.legacy_guard import DATASET_SUFFIX as SUFFIX
 
 TAG_MAXIM = f"VarChAMP_Maxim_2026{SUFFIX}"
 TAG_LUKE = f"VarChAMP_Luke_pooled_2026{SUFFIX}"

@@ -69,16 +69,22 @@ SKEMPI_METHODS = ["SAAMBE-3D", "MutPPI", "MutPPIPlus"]  # DDMutPPI excluded enti
 # export_reconstruction_tables, which uses the dict as a membership filter).
 DISPLAY_NAMES = with_baseline_variants([DATASET])
 
-METHODS = [
-    ("MutPredPPI_sahni_fragoza_megascale_all",   "MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"),
-    ("ESigNet_sahni_fragoza",                    "ESigNet_sahni_fragoza_detailed_results.pkl"),
-    ("SWING_sahni_fragoza_test_pretrain",        "SWING_sahni_fragoza_test_pretrain_detailed_results.pkl"),
-    ("SWING_sahni_fragoza_no_test_pretrain",     "SWING_sahni_fragoza_no_test_pretrain_detailed_results.pkl"),
-    ("MINT_seq_diff_sahni_fragoza",              "MINT_seq_diff_sahni_fragoza_detailed_results.pkl"),
-    ("MINT_site_diff_sahni_fragoza",             "MINT_site_diff_sahni_fragoza_detailed_results.pkl"),
-    ("PPLM_seq_diff_sahni_fragoza",              "PPLM_seq_diff_sahni_fragoza_detailed_results.pkl"),
-    ("PPLM_site_diff_sahni_fragoza",             "PPLM_site_diff_sahni_fragoza_detailed_results.pkl"),
+# (display key, results filename). The FILENAMES carry the dataset stamp -- that
+# is how every runner names its output -- while the display keys stay short,
+# because `with_baseline_variants([DATASET])` builds them from the short name.
+# Spelling the filenames without the stamp meant none were ever found, and this
+# figure reported "No methods produced valid results" rather than failing.
+_METHOD_STEMS = [
+    ("MutPredPPI_sahni_fragoza_megascale_all", f"MutPredPPI_{CANONICAL_DATASET}_megascale_all"),
+    ("ESigNet_sahni_fragoza",                  f"ESigNet_{CANONICAL_DATASET}"),
+    ("SWING_sahni_fragoza_test_pretrain",      f"SWING_{CANONICAL_DATASET}_test_pretrain"),
+    ("SWING_sahni_fragoza_no_test_pretrain",   f"SWING_{CANONICAL_DATASET}_no_test_pretrain"),
+    ("MINT_seq_diff_sahni_fragoza",            f"MINT_seq_diff_{CANONICAL_DATASET}"),
+    ("MINT_site_diff_sahni_fragoza",           f"MINT_site_diff_{CANONICAL_DATASET}"),
+    ("PPLM_seq_diff_sahni_fragoza",            f"PPLM_seq_diff_{CANONICAL_DATASET}"),
+    ("PPLM_site_diff_sahni_fragoza",           f"PPLM_site_diff_{CANONICAL_DATASET}"),
 ]
+METHODS = [(k, f"{stem}_detailed_results.pkl") for k, stem in _METHOD_STEMS]
 
 
 def load_biclass_pairs() -> set[tuple[str, str]]:
@@ -225,8 +231,8 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[tuple[str, str]
     biclass_mask_all = np.array([c in biclass_pairs for c in complex_ids])
     n_rows = len(complex_ids)
 
-    labels_file       = os.path.join(WORKING_DIR, f"{dataset}_mutpred2_standalone_labels.npy")
-    test_classes_file = os.path.join(WORKING_DIR, f"{dataset}_SAAMBE-3D_test_classes.npy")
+    labels_file       = os.path.join(WORKING_DIR, f"{CANONICAL_DATASET}_mutpred2_standalone_labels.npy")
+    test_classes_file = os.path.join(WORKING_DIR, f"{CANONICAL_DATASET}_SAAMBE-3D_test_classes.npy")
     labels_all = load_positional_cache(labels_file, n_rows)
     test_classes_all = load_positional_cache(test_classes_file, n_rows)
     if labels_all is None or test_classes_all is None:
@@ -234,7 +240,7 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[tuple[str, str]
         return baseline_results
 
     for method in SKEMPI_METHODS:
-        preds_file = os.path.join(WORKING_DIR, f"{dataset}_{method}_preds.npy")
+        preds_file = os.path.join(WORKING_DIR, f"{CANONICAL_DATASET}_{method}_preds.npy")
         preds_all = load_positional_cache(preds_file, n_rows)
         if preds_all is None:
             print(f"  [SKIP] {method}: preds file not found", flush=True)
@@ -267,7 +273,7 @@ def filter_baseline_predictions(dataset: str, biclass_pairs: set[tuple[str, str]
               f"(C3 AUC={baseline_results[method_key]['class_3']['aucs'] or 'n/a'})",
               flush=True)
 
-    preds_file = os.path.join(WORKING_DIR, f"{dataset}_mutpred2_standalone_preds.npy")
+    preds_file = os.path.join(WORKING_DIR, f"{CANONICAL_DATASET}_mutpred2_standalone_preds.npy")
     preds_all = load_positional_cache(preds_file, n_rows)
     if preds_all is not None:
         mask     = biclass_mask_all & (labels_all >= 0)
@@ -338,6 +344,7 @@ def main() -> None:
         results_dict,
         dataset_name="sahni_fragoza (biclass pairs)",
         save_path=str(out_png),
+        name_map=DISPLAY_NAMES,   # extended with the fixed-predictor baselines
     )
     print(f"Saved → {out_png}", flush=True)
 

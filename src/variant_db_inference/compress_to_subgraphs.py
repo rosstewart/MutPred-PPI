@@ -55,15 +55,16 @@ from utils import mutations  # noqa: E402
 
 _BASE = DATA_ROOT
 STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+# All six databases, derived from the inference runner so the paths cannot drift
+# apart. Only ClinVar and COSMIC were listed here before -- gnomAD, HGMD, NDD and
+# ASD were compressed by hand or not at all, which is why three of them still
+# hold full-length embeddings instead of subgraphs.
+from variant_db_inference.run_variant_db_inference import (  # noqa: E402
+    DATASET_CONFIGS as _VDB_CONFIGS)
+
 DATASET_CONFIGS = {
-    "clinvar": {
-        "h5_in":  _BASE / "clinvar" / "prott5_embeddings.h5",
-        "h5_out": _BASE / "clinvar" / "prott5_subgraphs.h5",
-    },
-    "cosmic": {
-        "h5_in":  _BASE / "cosmic" / "prott5_embeddings.h5",
-        "h5_out": _BASE / "cosmic" / "prott5_subgraphs.h5",
-    },
+    db: {"h5_in": cfg["default_emb_h5"], "h5_out": cfg["default_subgraph_h5"]}
+    for db, cfg in _VDB_CONFIGS.items()
 }
 
 

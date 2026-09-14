@@ -59,16 +59,17 @@ _PUB = _EVAL_DIR.parent.parent                       # repo root
 from paths import DATASETS_DIR, REPO_ROOT, TRAINING_EVAL_DIR, VARCHAMP_BLIND_TEST_DIR, WEIGHTS_DIR  # noqa: E402
 from utils import mutations  # noqa: E402
 from utils.gcv_common import (dataset_config,   # noqa: E402
-    DATASET_CONFIGS, PREDICTOR_COLS, compute_blind_test_classes, load_data,
-    skempi_test_class)
+    DATASET_CHOICES, DATASET_CONFIGS, PREDICTOR_COLS, compute_blind_test_classes,
+    dataset_name, load_data, resolve_dataset, skempi_test_class)
 from utils.legacy_guard import reject_legacy  # noqa: E402
 from utils.structures import Structures  # noqa: E402
 
 # Default training set is Sahni+Fragoza (the headline Fig 4 comparison).
-# --train-dataset sahni_only_mapped090826 reproduces the S2 training-set
-# comparison (does including population variants in fine-tuning help?).
-DEFAULT_TRAIN_DATASET = "sahni_fragoza_mapped090826"
-TEST_CFG  = DATASET_CONFIGS["varchamp_all_mapped090826"]
+# --train-dataset sahni_only reproduces the S2 training-set comparison (does
+# including population variants in fine-tuning help?).
+DEFAULT_TRAIN_DATASET = dataset_name("sahni_fragoza")
+SAHNI_ONLY_DATASET    = dataset_name("sahni_only")
+TEST_CFG  = DATASET_CONFIGS[dataset_name("varchamp_all")]
 OUT_DIR   = VARCHAMP_BLIND_TEST_DIR
 METHODS   = ("mutpredppi", "esignet", "mint", "pplm", "swing",
              "saambe3d", "mutppi", "mutppiplus")
@@ -77,10 +78,47 @@ METHODS   = ("mutpredppi", "esignet", "mint", "pplm", "swing",
 _SKEMPI_METHODS = {"saambe3d", "mutppi", "mutppiplus"}
 
 
-def load_train_test(train_dataset: str = DEFAULT_TRAIN_DATASET) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The two canonical tables this blind test has always meant."""
+def drop_train_overlap(train_df: pd.DataFrame, test_df: pd.DataFrame,
+                       mode: str) -> pd.DataFrame:
+    """Remove test rows that also appear in training, at one of two strictnesses.
+
+    "triplet" drops rows whose exact (interactor, partner, mutation) was trained
+    on -- the same measurement in both sets, which is memorisation rather than
+    prediction. "variant" additionally drops rows sharing an
+    (interactor, mutation) with training, i.e. the same substitution in the same
+    protein against a different partner.
+
+    Both forms are confined to C1/C2 by construction, and exact triplets to C1
+    alone: a triplet requires both proteins to have been seen, which is the
+    definition of C1, and a shared (interactor, mutation) requires the
+    interactor to have been seen, which excludes C3. So C3 -- the number the
+    generalisation claim rests on -- is identical under all three modes.
+    """
+    if mode == "none":
+        return test_df
+    tr_trip = set(train_df.interactor + " " + train_df.partner + " " + train_df.mutation)
+    keep = ~(test_df.interactor + " " + test_df.partner + " " + test_df.mutation).isin(tr_trip)
+    if mode == "variant":
+        tr_pair = set(zip(train_df.interactor, train_df.mutation))
+        keep &= ~pd.Series(list(zip(test_df.interactor, test_df.mutation)),
+                           index=test_df.index).isin(tr_pair)
+    n_drop = int((~keep).sum())
+    print(f"  dropping {n_drop} test rows overlapping training (mode={mode}); "
+          f"{int(keep.sum())} remain", flush=True)
+    return test_df[keep].reset_index(drop=True)
+
+
+def load_train_test(train_dataset: str = DEFAULT_TRAIN_DATASET,
+                    overlap: str = "variant") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The two canonical tables this blind test has always meant.
+
+    `overlap` controls removal of training rows from the test set; see
+    `drop_train_overlap`. It is applied BEFORE C1/C2/C3 is computed, so the
+    classes and the saved arrays stay aligned with the filtered table.
+    """
     train_df = load_data(dataset_config(train_dataset))
     test_df  = load_data(TEST_CFG)
+    test_df  = drop_train_overlap(train_df, test_df, overlap)
     return train_df, test_df
 
 
@@ -264,8 +302,11 @@ def _score_cachemlp(train_df: pd.DataFrame, test_df: pd.DataFrame,
     return np.asarray(predictor.predict(test_df[PREDICTOR_COLS]), dtype=float)
 
 
+
+
 def _score_swing(train_df: pd.DataFrame, test_df: pd.DataFrame,
-                 test_pretrain: bool) -> np.ndarray:
+                 test_pretrain: bool,
+                 train_dataset: str = DEFAULT_TRAIN_DATASET) -> np.ndarray:
     from evaluation.swing_gcv import _build_swing_df, _fold_features
     from evaluation.swing_common import build_d2v, build_wt_df
     from gensim.models.doc2vec import Doc2Vec
@@ -279,20 +320,68 @@ def _score_swing(train_df: pd.DataFrame, test_df: pd.DataFrame,
             "fold indices would misalign against labels")
 
     if test_pretrain:
-        wt_train = build_wt_df(tr_swing)
-        wt_train["_oidx"] = tr_swing.index.tolist()
-        tr_swing = tr_swing.copy()
-        tr_swing["_oidx"] = tr_swing.index.tolist()
-        combined = pd.concat([tr_swing, te_swing, wt_train]).reset_index(drop=True)
-        model = build_d2v(combined)
-        # test_pretrain leaks test rows into the Doc2Vec fit -- reported as
-        # "Test Pretrain" precisely to flag that, same as GCV.
-        raise NotImplementedError(
-            "SWING --test-pretrain blind test: Doc2Vec-on-everything path not "
-            "wired up for the single train/test split yet; use the default "
-            "blind-test mode.")
+        # Upstream SWING's own configuration: Doc2Vec is fitted once over every
+        # row's SEQUENCES, train and test together, and no labels. Each row's
+        # vector is then READ BACK from `model.dv` rather than inferred -- which
+        # is what distinguishes this arm from blind-test mode, where the test
+        # documents are unseen at fit time and inferred afterwards.
+        #
+        # Labels never enter Doc2Vec; only the XGBoost head below sees them, and
+        # only for training rows. The leak is representational, not supervised,
+        # which is why it is reported as "Test Pretrain" rather than excluded.
+        # This mirrors `swing_gcv._global_features`, the GCV arm of the same name.
+        from evaluation.swing_common import (_D2V_DIM, _get_corpus, _get_kmers,
+                                              _get_window_encodings)
 
-    X_train_mut, X_train_wt, X_test = _fold_features(tr_swing, te_swing)
+        # The corpus is the training and test rows merged and deduplicated --
+        # nothing more. Doc2Vec never sees a label, so rows that CONFLICT between
+        # the two tables (same triplet, disagreeing outcome) are harmless here and
+        # must NOT be dropped: the canonical pooled table resolves those conflicts
+        # away, which would silently withhold their sequences from the corpus.
+        # Deduplication is only to avoid double-weighting an identical document.
+        corpus_src = (pd.concat([train_df, test_df])
+                      .drop_duplicates(subset=["interactor", "partner", "mutation"])
+                      .reset_index(drop=True))
+        corpus_rows = _build_swing_df(corpus_src)
+        print(f"  Doc2Vec corpus: {len(train_df)} train + {len(test_df)} test "
+              f"-> {len(corpus_src)} unique rows (sequences only, no labels)",
+              flush=True)
+
+        wt_corpus = build_wt_df(corpus_rows)
+        combined = (pd.concat([corpus_rows, wt_corpus])
+                    .sample(frac=1, random_state=1).reset_index(drop=True))
+        model = build_d2v(combined)
+        combined["Vectors"] = model.dv.vectors.tolist()
+
+        def _docs(df):
+            return [tuple(d.words) for d in
+                    _get_corpus(_get_kmers(_get_window_encodings(df)))]
+
+        # Match by Doc2Vec document rather than by row position: the corpus is a
+        # different table from train/test, so positional alignment is meaningless,
+        # and two rows can legitimately share a document.
+        vec_of = dict(zip(_docs(combined), (np.asarray(v) for v in combined["Vectors"])))
+
+        n_inferred = 0
+        def _vectors(df):
+            nonlocal n_inferred
+            out = np.empty((len(df), _D2V_DIM), dtype=float)
+            for i, d in enumerate(_docs(df)):
+                v = vec_of.get(d)
+                if v is None:
+                    v = model.infer_vector(list(d))
+                    n_inferred += 1
+                out[i] = v
+            return out
+
+        X_train_mut = _vectors(tr_swing)
+        X_train_wt  = _vectors(build_wt_df(tr_swing))
+        X_test      = _vectors(te_swing)
+        if n_inferred:
+            print(f"  {n_inferred} document(s) absent from the corpus -- inferred",
+                  flush=True)
+    else:
+        X_train_mut, X_train_wt, X_test = _fold_features(tr_swing, te_swing)
     y_train_mut = train_df["perturbed"].to_numpy().astype(float)
     X_train = np.concatenate([X_train_mut, X_train_wt])
     y_train = np.concatenate([y_train_mut, np.zeros(len(X_train_wt))])
@@ -340,14 +429,22 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cuda:1", help="MutPred-PPI/eSIG-Net only.")
     ap.add_argument("--train-dataset", default=DEFAULT_TRAIN_DATASET,
-                    choices=[d for d in DATASET_CONFIGS if d != TEST_CFG.name],
-                    help="Trained methods only. Default sahni_fragoza_mapped090826 "
-                         "(Fig 4). sahni_only_mapped090826 reproduces the S2 "
-                         "training-set comparison.")
+                    choices=[d for d in DATASET_CHOICES
+                             if resolve_dataset(d) != TEST_CFG.name],
+                    help="Trained methods only. Default sahni_fragoza (Fig 4); "
+                         "sahni_only reproduces the S2 training-set comparison.")
+    ap.add_argument("--overlap", choices=["triplet", "variant", "none"],
+                    default="variant",
+                    help="Remove test rows also present in training. 'triplet' "
+                         "(default) drops exact (interactor, partner, mutation) "
+                         "matches; 'variant' (default) also drops any "
+                         "shared (interactor, mutation); 'none' reproduces the "
+                         "unfiltered behaviour. C3 is identical under all three -- "
+                         "the filtering only ever touches C1 and C2.")
     args = ap.parse_args()
 
     print(f"Loading canonical train={args.train_dataset} / test={TEST_CFG.name}", flush=True)
-    train_df, test_df = load_train_test(args.train_dataset)
+    train_df, test_df = load_train_test(args.train_dataset, args.overlap)
     print(f"  train: {len(train_df)} rows   test: {len(test_df)} rows", flush=True)
 
     if args.method in _SKEMPI_METHODS:
@@ -359,7 +456,7 @@ def main() -> None:
             list(zip(train_df["interactor"], train_df["partner"])),
             list(zip(test_df["interactor"], test_df["partner"])))
 
-    sahni_only = args.train_dataset == "sahni_only_mapped090826"
+    sahni_only = resolve_dataset(args.train_dataset) == SAHNI_ONLY_DATASET
     train_tag = "(sahni train) " if sahni_only else "(Sahni+Fragoza train) "
     if args.method == "mutpredppi":
         scores = _score_mutpredppi(train_df, test_df, args.device, args.seed, args.train_dataset)
@@ -374,9 +471,14 @@ def main() -> None:
         label = f"{args.method.upper()}_{args.predictor}"
         description = f"{label} {train_tag}(varchamp_blind_test)"
     elif args.method == "swing":
-        scores = _score_swing(train_df, test_df, args.test_pretrain)
+        scores = _score_swing(train_df, test_df, args.test_pretrain,
+                              args.train_dataset)
         mode = "test pretrain, " if args.test_pretrain else ""
-        description = f"SWING ({mode}{train_tag.strip()}) (varchamp_blind_test)"
+        # `train_tag` already carries its own parentheses; keeping them here
+        # produced "SWING ((Sahni+Fragoza train))", which matches no key in
+        # blind_test_figures.METHOD_DISPLAY_NAMES -- so SWING silently vanished
+        # from the blind-test figure rather than erroring.
+        description = f"SWING ({mode}{train_tag.strip().strip(chr(40)+chr(41))}) (varchamp_blind_test)"
     elif args.method == "saambe3d":
         scores = _score_saambe3d(test_df)
         description = "SAAMBE-3D (Sahni+Fragoza train) (varchamp_blind_test)"

@@ -24,6 +24,17 @@ from pathlib import Path
 from paths import DATA_ROOT, REPO_ROOT
 
 # Extensions from the retired per-source pipeline (FASTA/label-file era).
+# The one live mapping generation. Every canonical dataset name ends with this,
+# and every consumer that builds a filename from a dataset should use it rather
+# than writing the literal -- so that when the mapping is regenerated, changing
+# this constant makes stale files fail to resolve instead of being picked up.
+#
+# Deliberately NOT a fallback: code that accepts both a suffixed and an
+# unsuffixed filename will silently read whichever exists, which is how stale
+# arrays get into a figure.
+DATASET_SUFFIX = "_mapped090826"
+
+
 _LEGACY_SUFFIXES = {".mat", ".pos", ".neg", ".labels", ".vt_ids"}
 
 # Filename substrings that identify a retired artifact even when the

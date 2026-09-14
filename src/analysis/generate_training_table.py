@@ -27,6 +27,7 @@ import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 from paths import DATA_ROOT, MAPPING_DIR, REPO_ROOT  # noqa: E402
+from utils.gcv_common import dataset_name  # noqa: E402
 from utils.identifiers import split_variant_id  # noqa: E402
 
 
@@ -51,15 +52,15 @@ def _load_mapped_csv(dataset: str):
             return pd.read_csv(candidate)
     raise FileNotFoundError(
         f"no mapped CSV for {dataset} under {_MAPPED_CSV_DIR}; "
-        f"run notebooks/map_ppi_datasets_090826.py then "
+        f"run notebooks/map_ppi_datasets.py then "
         f"src/data_processing/annotate_af3_coverage.py")
 
 
-_SAHNI = "sahni_only_mapped090826"
-_FRAGOZA = "fragoza_only_mapped090826"
-_VARCHAMP = "varchamp_all_mapped090826"
-_SF = "sahni_fragoza_mapped090826"
-_SFVC = "sahni_fragoza_varchamp_all_mapped090826"
+_SAHNI = dataset_name("sahni_only")
+_FRAGOZA = dataset_name("fragoza_only")
+_VARCHAMP = dataset_name("varchamp_all")
+_SF = dataset_name("sahni_fragoza")
+_SFVC = dataset_name("sahni_fragoza_varchamp_all")
 
 
 def fmt(n) -> str:

@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-_NB = Path("notebooks/map_ppi_datasets_090826.py")
+_NB = Path("notebooks/map_ppi_datasets.py")
 _AMB = Path("datasets/source_mapping/intermediate_files/ambiguous_entrez_ids.csv")
 
 # The three GeneIDs with genuinely different products, and the entry each must

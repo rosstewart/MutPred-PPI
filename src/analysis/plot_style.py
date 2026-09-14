@@ -22,7 +22,8 @@ depends on anything here.
 """
 from __future__ import annotations
 
-__all__ = ["SAVE_DPI", "FIGURE_DPI", "METHOD_COLORS", "CLASS_LABELS", "apply"]
+__all__ = ["SAVE_DPI", "FIGURE_DPI", "METHOD_COLORS", "CLASS_LABELS", "apply",
+           "demo_stamp", "DEMO_TIER_NOTICE"]
 
 # Output resolution for every saved figure. 300 dpi is the usual journal
 # minimum for line art and was already what the main figures used.
@@ -59,9 +60,9 @@ METHOD_COLORS = {
 }
 
 CLASS_LABELS = {
-    1: "C1 (both proteins seen)",
-    2: "C2 (one protein seen)",
-    3: "C3 (neither protein seen)",
+    1: "Class one",
+    2: "Class two",
+    3: "Class three",
 }
 
 
@@ -76,3 +77,21 @@ def apply(agg: bool = True) -> None:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     plt.rcParams.update(_RC)
+
+
+# Text drawn across a figure that was NOT produced by the published
+# configuration -- currently the Sahni+Fragoza demonstration tier, which exists
+# so that users without the unpublished VarChAMP measurements can still run the
+# variant-database pipeline. An unmarked figure from that tier is
+# indistinguishable from a real one, which is how results/variant_dbs/ (now
+# archived) came to sit alongside results/variant_dbs_all_data/.
+DEMO_TIER_NOTICE = ("Sahni+Fragoza demonstration model - NOT the published "
+                    "all-data numbers")
+
+
+def demo_stamp(fig, text: str = DEMO_TIER_NOTICE) -> None:
+    """Mark a figure as not-the-published-configuration. No-op if text is empty."""
+    if not text:
+        return
+    fig.text(0.5, 0.005, text, ha="center", va="bottom", fontsize=9,
+             color="#B71C1C", alpha=0.85, weight="bold")

@@ -79,7 +79,7 @@ link "$DATA_ROOT/2026/eSIG-Net"                  esignet
 echo
 
 echo "== regenerable caches (see docs/REPRODUCING_ANALYSES.md for the commands) =="
-link "$DATA_ROOT/nm_revisions"                   caches
+link "$DATA_ROOT/mutpred_ppi_data"               caches
 link "$DATA_ROOT/biogrid"                        biogrid
 echo
 

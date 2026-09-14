@@ -27,6 +27,13 @@ class GAT_mut_processor(nn.Module):
     `num_mut_res` has never been read by any implementation -- it is threaded
     through by the training loops but unused -- so the 4-argument inference form
     is equivalent, not a different model.
+
+    `mutation_idx` may be a single site (int or 0-d tensor) or a 1-d tensor of
+    sites. The latter lets several samples share one pass: because this module
+    pools nothing and reads only the mutated nodes, concatenating their graphs
+    into one disconnected graph -- with edge indices offset -- gives each node
+    exactly the neighbourhood it would have had alone. The int path below is
+    byte-for-byte the released one; see `tests/test_batched_forward.py`.
     """
 
     def __init__(self, input_dim: int, hidden_dim: int = 64, output_dim: int = 1,
@@ -55,7 +62,10 @@ class GAT_mut_processor(nn.Module):
         processed_mut_diff = self.mutation_diff_processor(mutation_site_diff)
         h = torch.relu(self.complex_gat1(x, edge_index))
         h = torch.relu(self.complex_gat2(h, edge_index))
-        features_at_mutation = h[mutation_idx:mutation_idx + 1]
+        if torch.is_tensor(mutation_idx) and mutation_idx.dim() > 0:
+            features_at_mutation = h[mutation_idx]          # batched: (B, F)
+        else:
+            features_at_mutation = h[mutation_idx:mutation_idx + 1]
         combined = torch.cat([features_at_mutation, processed_mut_diff], dim=-1)
         return self.binding_predictor(combined)
 
@@ -104,6 +114,8 @@ class GAT_mut_processor_no_mut(nn.Module):
     def forward(self, x, edge_index, mutation_idx, num_mut_res=None, mutation_site_diff=None):
         h = torch.relu(self.complex_gat1(x, edge_index))
         h = torch.relu(self.complex_gat2(h, edge_index))
+        if torch.is_tensor(mutation_idx) and mutation_idx.dim() > 0:
+            return self.binding_predictor(h[mutation_idx])
         return self.binding_predictor(h[mutation_idx:mutation_idx + 1])
 
 
@@ -132,23 +144,39 @@ def apply_freeze_strategy(model, ablation: str):
 
     | ablation                  | trainable                                        |
     |---------------------------|--------------------------------------------------|
-    | full, megascale           | mutation_diff_processor[-1], head, both GATs     |
-    | megascale_freeze_diff     | head + both GATs (mutation representation fixed) |
-    | megascale_head            | head only (linear probe)                         |
+    | full, megascale,          | mutation_diff_processor[-1], head, both GATs     |
+    | prior_best                | (only the first Linear of the diff processor is  |
+    |                           | frozen -- the prior published model's own recipe)|
+    | freeze_mut_processor      | head + both GATs (mutation representation fixed) |
+    | freeze_gat                | head + mutation processor (structure fixed)      |
+    | megascale_head            | head only -- 'Freeze Both' in the figures: the    |
+    |                           | mutation processor AND both GATs are held fixed   |
     | anything else, incl.      | everything -- no freezing                        |
     | megascale_all (default)   |                                                  |
     """
-    if ablation in ("full", "megascale"):
+    if ablation in ("full", "megascale", "prior_best"):
         for p in model.parameters():
             p.requires_grad = False
         for group in (model.mutation_diff_processor[-1], model.binding_predictor,
                       model.complex_gat1, model.complex_gat2):
             for p in group.parameters():
                 p.requires_grad = True
-    elif ablation == "megascale_freeze_diff":
+    elif ablation == "freeze_mut_processor":
+        # The whole mutation-diff processor stays fixed -- both Linears -- so the
+        # pretrained mutation representation is used exactly as learned and only
+        # the structural half plus the head adapt.
         for p in model.parameters():
             p.requires_grad = False
         for group in (model.binding_predictor, model.complex_gat1, model.complex_gat2):
+            for p in group.parameters():
+                p.requires_grad = True
+    elif ablation == "freeze_gat":
+        # The complement: both GAT layers fixed, mutation processor and head free.
+        # Together with freeze_mut_processor this brackets which half of the model
+        # the fine-tuning actually needs to move.
+        for p in model.parameters():
+            p.requires_grad = False
+        for group in (model.mutation_diff_processor, model.binding_predictor):
             for p in group.parameters():
                 p.requires_grad = True
     elif ablation == "megascale_head":

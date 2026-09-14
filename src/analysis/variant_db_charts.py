@@ -42,7 +42,20 @@ import warnings
 import numpy as np
 import matplotlib
 from analysis import edgotypes, plot_style
+from analysis import plot_style
 from analysis.plot_style import SAVE_DPI
+
+
+# Set by --demo-tier: every figure this run writes is stamped as coming from the
+# Sahni+Fragoza demonstration model rather than the published all-data model.
+_DEMO_STAMP = False
+
+
+def _save(out) -> None:
+    """Save the current figure, stamping it when running a non-published tier."""
+    if _DEMO_STAMP:
+        plot_style.demo_stamp(plt.gcf())
+    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
 plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -265,7 +278,7 @@ def plot_multi_class_histogram(base_dataset_name, datasets, data_base_dir,
     save_dir = (output_dir or os.path.join(data_base_dir, base_dataset_name, "charts"))
     os.makedirs(save_dir, exist_ok=True)
     out = os.path.join(save_dir, f"{save_name}_loss_scores.png")
-    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+    _save(out)
     plt.close()
     print(f"  Saved: {out}")
 
@@ -510,7 +523,7 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
         plt.tight_layout()
         plt.subplots_adjust(hspace=0)
         out = os.path.join(output_dir, f"{base_name}.png")
-        plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+        _save(out)
         plt.close()
         print(f"  Saved: {out}")
     else:
@@ -521,7 +534,7 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
             plt.tight_layout()
             comp_slug = component_names[pi].lower().replace("-", "_").replace(" ", "_")
             out = os.path.join(output_dir, f"{base_name}_{comp_slug}.png")
-            plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+            _save(out)
             plt.close()
             print(f"  Saved: {out}")
 
@@ -692,7 +705,7 @@ def plot_tumor_site_edgotypes(tumor_site_to_edgotypes, cosmic_label, save_dir,
               framealpha=0.9, ncol=4)
     plt.tight_layout()
     out = os.path.join(save_dir, f"cosmic_{cosmic_label}_tumor_site_edgotypes.png")
-    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+    _save(out)
     plt.close()
     print(f"  Saved: {out}")
 
@@ -775,7 +788,7 @@ def run_tumor_site_analysis(data_base_dir, output_dir, min_data_pts=20, n_permut
     ax.set_axisbelow(True)
     plt.tight_layout()
     out = os.path.join(save_dir, "permutation_histogram.png")
-    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+    _save(out)
     plt.close()
     print(f"  Saved: {out}")
 
@@ -826,7 +839,7 @@ def run_tumor_site_analysis(data_base_dir, output_dir, min_data_pts=20, n_permut
     ax.set_axisbelow(True)
     plt.tight_layout()
     out = os.path.join(save_dir, "cv_comparison.png")
-    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+    _save(out)
     plt.close()
     print(f"  Saved: {out}")
 
@@ -836,6 +849,11 @@ def run_tumor_site_analysis(data_base_dir, output_dir, min_data_pts=20, n_permut
 # ---------------------------------------------------------------------------
 
 def main(args):
+    global _DEMO_STAMP
+    _DEMO_STAMP = bool(getattr(args, "demo_tier", False))
+    if _DEMO_STAMP:
+        print("*** DEMONSTRATION TIER: every figure will be stamped as NOT the "
+              "published all-data numbers. ***", flush=True)
     os.makedirs(args.output_dir, exist_ok=True)
 
     if args.score_histograms:
@@ -944,6 +962,10 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(
         description="Generate publication charts for variant database analysis"
     )
+    p.add_argument("--demo-tier", action="store_true",
+                   help="stamp every figure as coming from the Sahni+Fragoza "
+                        "demonstration model rather than the published all-data "
+                        "model (see run_variant_db_inference.py --model-tier)")
     p.add_argument("--data-dir", required=True,
                    help="Base results directory (e.g., variant_dbs_sufficient_partners)")
     p.add_argument("--output-dir", default=None,

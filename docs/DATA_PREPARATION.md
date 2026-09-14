@@ -10,7 +10,7 @@ Everything below writes under `datasets/`, which is **not** in git (see
 pipeline hardcodes an absolute path.
 
 ```
-  source files                notebooks/map_ppi_datasets_090826.py
+  source files                notebooks/map_ppi_datasets.py
   (published + restricted)  ────────────────────────────────────►  datasets/source_mapping/
                                                                           │
                              src/data_processing/training_sets/            │
@@ -49,9 +49,9 @@ stage below degrades cleanly without them (the `sahni_only`, `fragoza_only` and
 
 ```bash
 # as a notebook (recommended -- it emits QC artifacts meant to be read)
-jupytext --to ipynb notebooks/map_ppi_datasets_090826.py && jupyter lab
+jupytext --to ipynb notebooks/map_ppi_datasets.py && jupyter lab
 # or straight through
-conda run -n ppi python notebooks/map_ppi_datasets_090826.py
+conda run -n ppi python notebooks/map_ppi_datasets.py
 ```
 
 Resolves every source identifier (accession, RefSeq, Entrez GeneID, gene symbol,
@@ -182,8 +182,8 @@ conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
 ```
 
 A 4.5 Å any-heavy-atom contact rule (`contact_graphs.DEFAULT_THRESHOLD`, the one
-definition). The store is keyed on the sorted pair of `sha256(sequence)[:16]`
-hashes, so it is independent of filenames and of chain order.
+definition). Keying and orientation are documented once, in
+[`docs/INFERENCE.md`](INFERENCE.md#the-contact-graph-store).
 
 **Rebuild this whenever the structure set grows.** A store with fewer graphs than
 the manifest has rows is stale, and every newly-folded pair silently scores NaN.

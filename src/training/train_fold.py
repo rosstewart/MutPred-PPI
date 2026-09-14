@@ -45,12 +45,22 @@ import torch.optim as optim
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
-from paths import WEIGHTS_DIR as _MODEL_WEIGHTS_DIR
+from paths import REPO_ROOT as _REPO_ROOT, WEIGHTS_DIR as _MODEL_WEIGHTS_DIR
 
 _V1_0_SCALER_PATH          = _MODEL_WEIGHTS_DIR / "v1_0" / "mutation_diff_scaler_v1_0.pkl"
 _MEGASCALE_SCALER_PATH     = _MODEL_WEIGHTS_DIR / "mutation_diff_scaler.pkl"
 _V1_0_PRETRAINED_PATH      = _MODEL_WEIGHTS_DIR / "v1_0" / "MutPred-PPI_v1_0_stability_pretrain.pt"
 _MEGASCALE_PRETRAINED_PATH = _MODEL_WEIGHTS_DIR / "MutPred-PPI_stability_pretrain.pt"
+
+# The pre-090826 model this work supersedes, kept ONLY as the Fig S4 "Prior Best"
+# ablation arm. It lives under archive/ rather than weights/ precisely so a
+# production run cannot pick it up: nothing but `--ablation prior_best` reads it.
+# Its layer names and shapes match GAT_mut_processor exactly, so all sixteen
+# tensors transfer -- complex_gat1 included, unlike the monomer stability
+# pretrains, whose first GAT is shape-filtered out.
+_PRIOR_BEST_DIR = _REPO_ROOT / "archive" / "ablation_artifacts" / "prior_best"
+_PRIOR_BEST_PRETRAINED_PATH = _PRIOR_BEST_DIR / "gnn_prott5_rasp4_scaledmutprocessor_whole_train.pt"
+_PRIOR_BEST_SCALER_PATH     = _PRIOR_BEST_DIR / "mutation_diff_scaler.pkl"
 
 # ── model ────────────────────────────────────────────────────────────────────
 # Single definition lives in src/model.py; see its docstring for why. Re-exported
@@ -81,12 +91,23 @@ def train_fold(
     es_patience: int = 5,
     n_epochs: int = 100,
     preload: bool | None = None,   # None = decide from free GPU memory
+    fuse_batch: bool = True,       # one forward per optimiser step, not per sample
 ) -> Tuple[list, list]:
     # ── reproducibility ───────────────────────────────────────────────────────
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+    if ablation == "pretrain_zero_shot":
+        # The MegaScale stability model applied to the PPI task with NO training:
+        # zero epochs, so `best_state` stays the pretrained weights and the test
+        # fold is scored by the checkpoint as shipped. It is a reference point --
+        # how much of the task the stability pretraining already solves -- not a
+        # fine-tuning arm, which is why it is reported unstratified (it never saw
+        # a training fold, so C1/C2/C3 partitions rows by a property that means
+        # nothing to it).
+        n_epochs = 0
 
     use_amp = device.type == "cuda"
     print(f"Fold {fold}  ablation={ablation}  seed={seed}  amp={use_amp}", flush=True)
@@ -138,9 +159,12 @@ def train_fold(
         # complex_gat2, binding_predictor.
         if ablation in ("full", "full_all"):
             _load_ckpt(_V1_0_PRETRAINED_PATH, model)
-        elif ablation in ("megascale", "megascale_freeze_diff", "megascale_all",
-                          "megascale_head", "megascale_all_wt-emb"):
+        elif ablation in ("megascale", "freeze_mut_processor", "freeze_gat", "megascale_all",
+                          "megascale_head", "megascale_all_wt-emb",
+                          "pretrain_zero_shot"):
             _load_ckpt(_MEGASCALE_PRETRAINED_PATH, model)
+        elif ablation == "prior_best":
+            _load_ckpt(_PRIOR_BEST_PRETRAINED_PATH, model)
         # scratch / wt-emb: random init
 
         model = model.to(device)
@@ -257,6 +281,48 @@ def train_fold(
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.3, patience=lr_patience, min_lr=1e-7)
 
+
+    # -- fused forward --------------------------------------------------------
+    # The loops below already take ONE optimiser step per `batch_size` samples
+    # (they buffer logits and stack them), so the only serial thing about them is
+    # the forward pass -- `batch_size` kernel launches on ~30-node two-hop
+    # subgraphs, where launch overhead dwarfs the arithmetic.
+    #
+    # Those graphs have different sizes, so they cannot be stacked. They can be
+    # CONCATENATED: several graphs become one disconnected graph with the edge
+    # indices offset. Message passing never crosses components and the model
+    # pools nothing -- it reads only the mutated nodes -- so every node sees
+    # exactly the neighbourhood it would have seen alone. Same loss, same
+    # gradient, same single optimiser step; far fewer launches.
+    #
+    # Exactness, and the one caveat -- dropout draws one mask per batch rather
+    # than one per sample, so a fused run matches a serial one in distribution
+    # rather than bitwise -- are pinned in `tests/test_batched_forward.py`.
+    # `fuse_batch=False` restores the per-sample path unchanged.
+
+    def _fused(g, e, d, sites, idxs):
+        """One forward over `idxs`, returning a 1-d tensor of logits."""
+        if len(idxs) == 1 or not fuse_batch:
+            return torch.stack(
+                [model(g[i].to(device, non_blocking=True),
+                       e[i].to(device, non_blocking=True),
+                       sites[k], None,
+                       d[i].to(device, non_blocking=True)).reshape(())
+                 for k, i in enumerate(idxs)])
+        xs, eis, centres, offset = [], [], [], 0
+        for k, i in enumerate(idxs):
+            x = g[i].to(device, non_blocking=True)
+            xs.append(x)
+            eis.append(e[i].to(device, non_blocking=True) + offset)
+            centres.append(sites[k] + offset)
+            offset += x.shape[0]
+        return model(torch.cat(xs, dim=0),
+                     torch.cat(eis, dim=1),
+                     torch.as_tensor(centres, dtype=torch.long, device=device),
+                     None,
+                     torch.stack([d[i].to(device, non_blocking=True).reshape(-1)
+                                  for i in idxs])).reshape(len(idxs))
+
     best_state = {k: v.clone() for k, v in model.state_dict().items()}
     best_loss  = float("inf")
     patience_ctr = 0
@@ -270,19 +336,17 @@ def train_fold(
         targets_buf: list = []
 
         for idx, i in enumerate(shuffled):
-            mut_idx = train_pos[i][0] if train_pos[i] else train_neg[i][0]
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                out = model(train_g[i].to(device, non_blocking=True),
-                            train_e[i].to(device, non_blocking=True),
-                            mut_idx, train_nm[i],
-                            train_d[i].to(device, non_blocking=True))
-            logits_buf.append(out.squeeze())
+            logits_buf.append(i)          # sample indices; the forward is deferred
             targets_buf.append(y_train_t[i])
 
             if (idx + 1) % batch_size == 0 or idx == len(shuffled) - 1:
+                sites = [train_pos[j][0] if train_pos[j] else train_neg[j][0]
+                         for j in logits_buf]
                 optimizer.zero_grad()
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    loss = loss_fn(torch.stack(logits_buf), torch.stack(targets_buf))
+                    loss = loss_fn(
+                        _fused(train_g, train_e, train_d, sites, logits_buf),
+                        torch.stack(targets_buf))
                 amp_scaler.scale(loss).backward()
                 amp_scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -300,19 +364,16 @@ def train_fold(
 
         with torch.no_grad():
             for vi, i in enumerate(range(len(val_g))):
-                mut_idx = val_pos[i][0] if val_pos[i] else val_neg[i][0]
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    out = model(val_g[i].to(device, non_blocking=True),
-                                val_e[i].to(device, non_blocking=True),
-                                mut_idx, val_nm[i],
-                                val_d[i].to(device, non_blocking=True))
-                vlogits_buf.append(out.squeeze())
+                vlogits_buf.append(i)
                 vtargets_buf.append(y_val_t[i])
 
                 if (vi + 1) % batch_size == 0 or vi == len(val_g) - 1:
+                    sites = [val_pos[j][0] if val_pos[j] else val_neg[j][0]
+                             for j in vlogits_buf]
                     with torch.amp.autocast("cuda", enabled=use_amp):
                         val_loss += loss_fn(
-                            torch.stack(vlogits_buf), torch.stack(vtargets_buf)
+                            _fused(val_g, val_e, val_d, sites, vlogits_buf),
+                            torch.stack(vtargets_buf)
                         ).item()
                     vlogits_buf, vtargets_buf = [], []
 
@@ -337,15 +398,13 @@ def train_fold(
     test_g, test_e, test_d = _graphs_edges_diffs(test_idx)
     fold_preds, fold_labels = [], []
     with torch.no_grad():
-        for i in range(len(test_g)):
-            mut_idx = test_pos[i][0] if test_pos[i] else test_neg[i][0]
+        for start in range(0, len(test_g), batch_size):
+            idxs = list(range(start, min(start + batch_size, len(test_g))))
+            sites = [test_pos[j][0] if test_pos[j] else test_neg[j][0] for j in idxs]
             with torch.amp.autocast("cuda", enabled=use_amp):
-                out = model(test_g[i].to(device, non_blocking=True),
-                            test_e[i].to(device, non_blocking=True),
-                            mut_idx, test_nmut[i],
-                            test_d[i].to(device, non_blocking=True))
-            fold_preds.append(torch.sigmoid(out).squeeze().cpu().item())
-            fold_labels.append(float(y_test[i]))
+                out = _fused(test_g, test_e, test_d, sites, idxs)
+            fold_preds.extend(torch.sigmoid(out.float()).cpu().tolist())
+            fold_labels.extend(float(y_test[j]) for j in idxs)
 
     del model, optimizer, scheduler, amp_scaler
     gc.collect()

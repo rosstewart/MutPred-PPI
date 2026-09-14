@@ -37,7 +37,14 @@ STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
 
 # Reasons a row cannot be scored. Only the first two are legitimate; the rest
 # mean a cache needs rebuilding.
-LEGITIMATE = ("no AF3 structure", "mutation does not apply")
+# A database's own inclusion rule. gnomAD is scoped to variants with an assigned
+# allele frequency (GroupMax); 8.97M of its rows have none and were NEVER meant
+# to be scored. Counting them as cache defects reported 8.9M false repairs and
+# made a 17,923-variant gap look like a months-long rebuild. ClinVar also carries
+# an `allele_frequency` column but is not scoped by it, so this is per-database.
+SCOPE_COLUMN = {"gnomad": "allele_frequency"}
+
+LEGITIMATE = ("no AF3 structure", "mutation does not apply", "outside dataset scope")
 REPAIRABLE = ("interactor embedding missing", "partner embedding missing",
               "interactor embedding stale", "partner embedding stale",
               "subgraph missing")
@@ -74,10 +81,19 @@ def audit(db: str, store_path: str = str(STORE)) -> tuple[Counter, set]:
 
     store = ContactGraphStore(store_path)
     rows_path = DATASETS_DIR / "variant_dbs" / f"{db}_rows.csv.gz"
+    scope_col = SCOPE_COLUMN.get(db)
+    if scope_col:
+        print(f"{db}: inclusion rule -- non-empty {scope_col!r}", flush=True)
     for r in vr.iter_table_rows(db, str(rows_path), stats=stats):
         stats["rows"] += 1
         i, p, m = r["interactor"], r["partner"], r["mutation"]
         iseq, pseq = r["interactor_sequence"], r["partner_sequence"]
+
+        # 0. the database's own inclusion rule -- a legitimate skip, and checked
+        #    FIRST so an out-of-scope row is never counted as a cache defect.
+        if scope_col and not str(r.get(scope_col) or "").strip():
+            stats["outside dataset scope"] += 1
+            continue
 
         # 1. structure -- a legitimate skip
         if store.get(iseq, pseq) is None:

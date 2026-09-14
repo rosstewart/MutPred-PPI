@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from utils.legacy_guard import DATASET_SUFFIX
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
@@ -56,15 +58,29 @@ class DatasetConfig:
     splits_file: str
 
 
+# The five canonical datasets, as stable BASE names. The mapping-generation
+# stamp is applied once, here, from `legacy_guard.DATASET_SUFFIX` -- so a future
+# remapping is a one-line change followed by regenerating the tables, and every
+# filename derived from a dataset name moves with it.
+DATASET_BASES: tuple[str, ...] = (
+    "sahni_fragoza_varchamp_all",
+    "sahni_fragoza",
+    "varchamp_all",
+    "sahni_only",
+    "fragoza_only",
+)
+
+
+def dataset_name(base: str) -> str:
+    """Full canonical dataset name for a base name, e.g. sahni_only -> ..._mapped090826."""
+    return base if base.endswith(DATASET_SUFFIX) else f"{base}{DATASET_SUFFIX}"
+
+
 DATASET_CONFIGS: dict[str, DatasetConfig] = {
-    name: DatasetConfig(name, f"{name}_rows.csv.gz", f"{name}_splits.csv.gz")
-    for name in (
-        "sahni_fragoza_varchamp_all_mapped090826",
-        "sahni_fragoza_mapped090826",
-        "varchamp_all_mapped090826",
-        "sahni_only_mapped090826",
-        "fragoza_only_mapped090826",
-    )
+    dataset_name(b): DatasetConfig(dataset_name(b),
+                                   f"{dataset_name(b)}_rows.csv.gz",
+                                   f"{dataset_name(b)}_splits.csv.gz")
+    for b in DATASET_BASES
 }
 
 # Short, readable aliases for the five canonical datasets.
@@ -74,13 +90,7 @@ DATASET_CONFIGS: dict[str, DatasetConfig] = {
 # meaningless to anyone typing a command. Every `--dataset` argument accepts
 # either form, so the docs can say `--dataset sahni_fragoza` and a reader never
 # has to learn what 090826 means.
-DATASET_ALIASES = {
-    "sahni_fragoza_varchamp_all": "sahni_fragoza_varchamp_all_mapped090826",
-    "sahni_fragoza":              "sahni_fragoza_mapped090826",
-    "varchamp_all":               "varchamp_all_mapped090826",
-    "sahni_only":                 "sahni_only_mapped090826",
-    "fragoza_only":               "fragoza_only_mapped090826",
-}
+DATASET_ALIASES = {b: dataset_name(b) for b in DATASET_BASES}
 
 # What `--dataset` should offer: short names first, full names still valid.
 DATASET_CHOICES = list(DATASET_ALIASES) + list(DATASET_CONFIGS)
@@ -477,8 +487,7 @@ def run_gcv(cfg, args, *, result_stem, make_predictor=None, preflight=None,
         fold_splits, test_classes = load_splits(cfg, gcv_seed)
         fold_n_test = [len(t) for _, _, t in fold_splits]
 
-        all_preds, all_labels = [], []
-        for fold, train_idx, test_idx in fold_splits:
+        def _run_fold(fold, train_idx, test_idx):
             preds = fit_predict_fold(
                 rows.iloc[train_idx].reset_index(drop=True),
                 rows.iloc[test_idx].reset_index(drop=True),
@@ -488,9 +497,30 @@ def run_gcv(cfg, args, *, result_stem, make_predictor=None, preflight=None,
             if len(preds) != len(test_idx):
                 raise ValueError(f"fold {fold}: {len(preds)} predictions for "
                                  f"{len(test_idx)} test rows")
+            print(f"  Fold {fold} done", flush=True)
+            return preds
+
+        # Folds are independent -- each trains its own model on its own split and
+        # nothing is carried between them -- so they may run concurrently. This is
+        # OFF by default (`fold_jobs=1`), which keeps the loop exactly as it was
+        # for every method; only a caller that opts in sees any difference. SWING
+        # retrains a Doc2Vec per fold in blind-test mode and is the reason this
+        # exists. The threading backend is deliberate: gensim releases the GIL in
+        # its training loop, and threads share the already-loaded frames instead
+        # of pickling them to subprocesses. Results are collected in fold order,
+        # so `all_preds` is assembled identically either way.
+        fold_jobs = int(getattr(args, "fold_jobs", 1) or 1)
+        if fold_jobs > 1:
+            from joblib import Parallel, delayed
+            fold_preds = Parallel(n_jobs=fold_jobs, backend="threading")(
+                delayed(_run_fold)(f, tr, te) for f, tr, te in fold_splits)
+        else:
+            fold_preds = [_run_fold(f, tr, te) for f, tr, te in fold_splits]
+
+        all_preds, all_labels = [], []
+        for (fold, train_idx, test_idx), preds in zip(fold_splits, fold_preds):
             all_preds.extend(preds.tolist())
             all_labels.extend(labels[test_idx].tolist())
-            print(f"  Fold {fold} done", flush=True)
 
         print(f"\nGCV seed {gcv_seed} — per-class AUROCs:", flush=True)
         micro_auc, macro_auc, fold_results = _compute_class_aucs(
@@ -583,9 +613,14 @@ def make_fold_splits(clusters: list, gcv_seed: int, n_splits: int = 10) -> list:
     """[(fold, train_idx, test_idx)] grouped so a cluster never straddles a fold."""
     from sklearn.model_selection import GroupKFold
 
+    # Labels are cast to str for the same reason as in `prepare_gcv_tables`:
+    # GroupKFold(shuffle=True) orders unique labels to assign them to folds, and
+    # string vs integer ordering ("10" < "2" but 10 > 2) yields a different --
+    # equally valid, but different -- partition from the same seed.
     kf = GroupKFold(n_splits=n_splits, shuffle=True, random_state=gcv_seed)
+    groups = [str(c) for c in clusters]
     return [(fold, tr, te) for fold, (tr, te)
-            in enumerate(kf.split(range(len(clusters)), groups=clusters))]
+            in enumerate(kf.split(range(len(groups)), groups=groups))]
 
 
 def compute_pair_test_classes(pairs: list, fold_splits: list) -> np.ndarray:

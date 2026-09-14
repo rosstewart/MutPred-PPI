@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Compute S-Table 1 (variant repository statistics) for MutPred-PPI paper.
 
-Reads actual prediction TSVs and classification source files to compute
-per-group statistics: Proteins, Pairs, Variants, Triplets, Mean Partners.
+Reads the prediction TSVs and classification source files to compute per-group
+statistics: Proteins, Pairs, Variants, Triplets, Mean Partners.
+
+Variants the model was trained on are excluded, exactly as they are for every
+enrichment figure (see analysis/training_overlap.py). The table describes the
+data the paper actually analyses, so its counts match the sample sizes printed
+on Fig 5, S8, S9 and the stability figure; reporting the unfiltered inventory
+here would put a different n next to the same group name in two places.
 
 Writes figures/variant_db_stats_table.tex as a drop-in tabular block.
 """
@@ -11,6 +17,7 @@ import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
+from analysis import training_overlap  # noqa: E402
 from utils.legacy_guard import LegacyInputError  # noqa: E402
 
 
@@ -62,7 +69,25 @@ def parse_preds(tsv_path) -> pd.DataFrame:
         raise LegacyInputError(
             f"{tsv_path} uses the retired complex_id/variant/score schema; "
             f"re-score the database rather than parsing it.")
-    return df.rename(columns={"mutation": "variant"})
+    df = df.rename(columns={"mutation": "variant"})
+    return _drop_training_overlap(df, tsv_path)
+
+
+def _drop_training_overlap(df: pd.DataFrame, tsv_path) -> pd.DataFrame:
+    """Exclude variants the model was trained on, as the figures do."""
+    known = training_overlap.training_variants_or_none()
+    if known is None:
+        print(f"  [warn] {tsv_path}: training table unavailable, so trained-on "
+              f"variants are NOT excluded -- these counts will not match the "
+              f"sample sizes on the enrichment figures", flush=True)
+        return df
+    keep = [(i, v) not in known
+            for i, v in zip(df["interactor"].astype(str), df["variant"].astype(str))]
+    n = len(df) - sum(keep)
+    if n:
+        print(f"  training-overlap filter [{tsv_path.name if hasattr(tsv_path, 'name') else tsv_path}]: "
+              f"dropped {n:,} of {len(df):,} rows ({100 * n / len(df):.2f}%)", flush=True)
+    return df.loc[keep].reset_index(drop=True)
 
 
 def stats(df: pd.DataFrame, subset=None) -> dict:
@@ -150,6 +175,7 @@ def main() -> None:
     # ── COSMIC ───────────────────────────────────────────────────────────────
     print("Processing COSMIC...", flush=True)
     cos_df = parse_preds(prediction_tsv("cosmic"))
+    # Despite the file name, the list holds one entry PER OCCURRENCE (a site repeats once per sample), so len() is the recurrence -- the number of times the variant was observed, NOT the number of distinct tissues.
     vt_to_sites = pickle.load(open(VT_TO_TUMOR_SITE, "rb"))
     onco_tsg    = pickle.load(open(ONCO_TSG_FILE, "rb"))
     onco_vts    = onco_tsg["oncogene"]

@@ -190,7 +190,9 @@ def plot_comparison(methods_data, save_name="roc_varchamp_blind_test.png"):
 def plot_training_set_comparison(methods_data, save_name="roc_varchamp_blind_test_training_comparison.png"):
     """S2: compare sahni-only vs sahni+fragoza model on VarChAMP blind test."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=FIGURE_DPI)
-    class_labels = ["C1 (both in train)", "C2 (one in train)", "C3 (neither in train)"]
+    # Panel titles name the class only; what C1/C2/C3 mean belongs in the
+    # caption, not repeated three times across the top of the figure.
+    class_labels = ["Class one", "Class two", "Class three"]
 
     for class_idx, c in enumerate([1, 2, 3]):
         ax = axes[class_idx]
@@ -236,7 +238,6 @@ def plot_training_set_comparison(methods_data, save_name="roc_varchamp_blind_tes
         ax.grid(True, alpha=0.3)
         ax.legend(legend_handles, legend_labels, loc="lower right", fontsize=9)
 
-    plt.suptitle("VarChAMP Blind Test: Training Set Comparison", fontsize=15)
     plt.tight_layout()
 
     if SAVE_PLOTS:
@@ -248,7 +249,7 @@ def plot_training_set_comparison(methods_data, save_name="roc_varchamp_blind_tes
     plt.show()
 
 
-def load_all_methods(method_list, directory):
+def load_all_methods(method_list, directory, allow_missing=False):
     label_files = glob.glob(os.path.join(directory, "*_c?_labels.npy"))
     all_methods = {extract_method_name(f) for f in label_files}
 
@@ -257,8 +258,20 @@ def load_all_methods(method_list, directory):
         if method_list else sorted(all_methods)
     )
     missing = [m for m in (method_list or []) if m not in all_methods]
+    if missing and not allow_missing:
+        # A declared method with no arrays used to print a warning and carry on,
+        # so the figure silently rendered with fewer methods than it claimed.
+        # That is how both SWING arms disappeared from the blind-test figure: a
+        # description built as "SWING ((Sahni+Fragoza train))" matched no display
+        # name, and nothing failed. A declared method is a promise; keep it.
+        raise FileNotFoundError(
+            "blind-test figure: no arrays for "
+            + ", ".join(repr(m) for m in missing)
+            + f" in {directory}.\nEither run the missing method(s), or pass "
+            "allow_missing=True if the omission is deliberate.\nFound: "
+            + ", ".join(repr(m) for m in sorted(all_methods)))
     if missing:
-        print(f"Warning: not found: {missing}")
+        print(f"Warning: proceeding without: {missing}")
 
     all_data = {}
     for method in methods_to_use:

@@ -31,6 +31,7 @@ import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
 from analysis import edgotypes  # noqa: E402
+from analysis import training_overlap  # noqa: E402
 from analysis.classify_variant_dbs import (  # noqa: E402
     group_by_variant, load_predictions as _load_predictions)
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
@@ -50,8 +51,24 @@ ANNOTATION_CSV = _PUB / "results" / "protein_class" / "protein_class_annotations
 # Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
 # variant_dbs_classified/ trees hold SF-model predictions; mixing the two
 # across panels is what this path previously did.
-CLINVAR_TSV    = _PUB / "results" / "variant_dbs_all_data" / "clinvar_mutpred_ppi_predictions.tsv"
-GNOMAD_TSV     = _PUB / "results" / "variant_dbs_all_data" / "gnomad_mutpred_ppi_predictions.tsv"
+def _prediction_tsv(db):
+    """One database's prediction TSV, in either supported layout.
+
+    Inference writes `{DATA_ROOT}/{db}/mutpred_ppi_predictions.tsv`; the
+    reproduction notebook collects them as `{db}_mutpred_ppi_predictions.tsv`.
+    Only the collected layout was spelled here, so this figure could not find its
+    input at all after a plain inference run -- the same defect that left the
+    master CSV loading zero rows. Same resolver as
+    `extract_variant_db_stats.prediction_tsv`.
+    """
+    collected = _PUB / "results" / "variant_dbs_all_data" / f"{db}_mutpred_ppi_predictions.tsv"
+    if collected.exists():
+        return collected
+    return Path(DATA_ROOT) / db / "mutpred_ppi_predictions.tsv"
+
+
+CLINVAR_TSV    = _prediction_tsv("clinvar")
+GNOMAD_TSV     = _prediction_tsv("gnomad")
 PATHOGENIC_PKL = ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"
 
 # rcParams now come from analysis.plot_style.apply(), so every figure in the
@@ -101,15 +118,31 @@ def load_annotations() -> dict[str, str]:
     return dict(zip(df["uniprot_id"], df["protein_class"]))
 
 
-def load_predictions(tsv: Path) -> dict[tuple[str, str], dict[str, float]]:
+def load_predictions(tsv: Path,
+                     drop_training: bool = True) -> dict[tuple[str, str], dict[str, float]]:
     """(uniprot, variant) -> {partner: score}, via the shared reader.
 
-    This used to parse the TSV itself, accepting only the retired three-column
-    schema and recovering the two accessions by splitting a welded `complex_id`
-    on its first underscore. Current prediction files carry interactor and
-    partner as separate columns, so that parser raised on every one of them.
+    This figure reads the raw prediction TSVs rather than the classified stratum
+    tables, so the training-overlap exclusion that `classify_variant_dbs.py`
+    applies for Fig 5/S8/S9 has to be applied here too -- otherwise the same
+    variants would be excluded from some panels of the paper and not others.
     """
-    return group_by_variant(_load_predictions(str(tsv)))
+    grouped = group_by_variant(_load_predictions(str(tsv)))
+    if not drop_training:
+        return grouped
+    known = training_overlap.training_variants_or_none()
+    if known is None:
+        print(f"  [warn] {tsv.name}: training table unavailable, so variants seen "
+              f"in training are NOT excluded -- these are not the published numbers",
+              flush=True)
+        return grouped
+    kept = {k: v for k, v in grouped.items() if k not in known}
+    dropped = len(grouped) - len(kept)
+    if dropped:
+        print(f"  training-overlap filter [{tsv.stem}]: dropped {dropped:,} of "
+              f"{len(grouped):,} variants ({100 * dropped / len(grouped):.2f}%)",
+              flush=True)
+    return kept
 
 
 def edgotypes_and_uniprots(

@@ -1,29 +1,30 @@
-# MutPred-PPI model weights
+# Model checkpoints
 
-## What is here now
+Two files are tracked in git, because the inference quickstart cannot run without them:
 
-| File | Trained on | Use |
+| File | Size | What it is |
 |---|---|---|
-| `MutPred-PPI.pt` | sahni_fragoza_varchamp_all (full training set, all data) | The published prediction model — use this to score your own variants |
-| `MutPred-PPI_stability_pretrain.pt` | MegaScale (Tsuboyama et al. 2023) | The stability-pretrained checkpoint every final model fine-tunes from |
-| `mutation_diff_scaler.pkl` | MegaScale | Required alongside every model; scales the mutation-difference features |
+| `MutPred-PPI.pt` | 1.6 MB | **the model.** Trained on all labelled interaction data, fine-tuned from the MegaScale stability pretrain. This is what `src/inference/` and `src/variant_db_inference/` load. |
+| `mutation_diff_scaler.pkl` | 25 KB | the `StandardScaler` for the mutation-difference features. Must sit beside the model — scores are meaningless without it. |
 
-`v1_0/` holds the earlier pre-MegaScale stability pretrain
-(`MutPred-PPI_v1_0_stability_pretrain.pt` + `mutation_diff_scaler_v1_0.pkl`), used
-only by the `full` / `full_all` ablations. It is local-only and not distributed.
+Everything else is distributed through Zenodo (see [`../docs/ZENODO.md`](../docs/ZENODO.md)),
+because checkpoints are generated artifacts and git is the wrong place for them:
 
-`MutPred-PPI.pt` is also produced by training the final model from scratch (see
-[`docs/TRAINING.md`](../docs/TRAINING.md)); the figure-reproduction notebook does this.
+| File | What it is |
+|---|---|
+| `MutPred-PPI_stability_pretrain.pt` | MegaScale ΔΔG pretrain. Every final model fine-tunes from it, and `run_stability_inference.py` uses it directly to predict ΔΔG. |
+| `sahni_fragoza/MutPred-PPI.pt` + `mutation_diff_scaler.pkl` | the **demonstration tier**. Selected by `run_variant_db_inference.py --model-tier sahni_fragoza` when the unpublished VarChAMP data needed to train the all-data model is absent. Its scores are not the published ones; see the reproducibility table in the [README](../README.md). |
+| `v1_0/` | the previous published model and its scaler. Used only by the "Prior Best" ablation in `run_roc_ablation.py`. |
 
-Per-fold cross-validation checkpoints (`folds/`) are written by the GCV scripts
-and are local-only.
+## `blind_test/` is an output directory
 
-## Zenodo
+`src/evaluation/run_varchamp_blind_test.py` trains a model on demand and writes it to
+`weights/blind_test/`. Those checkpoints are produced by a run, not inputs to one; they are
+not tracked and do not need to be kept.
 
-Training data and AlphaFold 3 structures are deposited separately — see
-[Data Availability](../README.md#data-availability) in the main README for the
-two DOIs. (This file previously cited the *structures* DOI as the source of
-model weights; it is not.)
+## Which model produced which number
 
-The scaler must sit in the same directory as the model, or be passed explicitly
-with `--scaler`.
+- Published variant-repository predictions (Fig 5, S8, the stability figures) — `MutPred-PPI.pt`.
+- Published ΔΔG predictions — `MutPred-PPI_stability_pretrain.pt`.
+- Cross-validation figures (Fig 3, S1, S7) — models trained per fold during the run and not retained.
+- Blind test (Fig 4, S2) — trained on demand into `blind_test/`.

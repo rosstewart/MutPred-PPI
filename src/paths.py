@@ -64,7 +64,7 @@ FIGURES_DIR = REPO_ROOT / "figures"
 SOURCE_DATA_DIR = DATASETS_DIR / "source_data"
 SOURCE_DATA_RESTRICTED_DIR = DATASETS_DIR / "source_data_restricted"
 
-# Output of notebooks/map_ppi_datasets_090826.py: the mapped-but-not-yet-split
+# Output of notebooks/map_ppi_datasets.py: the mapped-but-not-yet-split
 # CSVs, the non-deduplicated master, the QC/audit trail, and the UniProt REST
 # cache that makes a re-run offline. Env-overridable for anyone keeping this
 # tree elsewhere; the in-repo location is the real one.

@@ -77,6 +77,11 @@ def _open(path: str):
     return (gzip.open(path, "rt") if path.endswith(".gz") else open(path))
 
 
+# Sequences that appear in the canonical row tables. A structure is only usable
+# for a row if its chains ARE those sequences, so this decides tie-breaks below.
+_TABLE_SEQS: set[str] = set()
+
+
 def build_seq_map() -> dict[str, str]:
     """sequence -> accession, from the canonical tables plus the variant-DB FASTAs."""
     m: dict[str, str] = {}
@@ -87,6 +92,7 @@ def build_seq_map() -> dict[str, str]:
         for b, s in zip(df["partner"], df["partner_sequence"]):
             m.setdefault(s, str(b))
     n_tab = len(m)
+    _TABLE_SEQS.update(m)          # tables only, before the FASTA top-up
     for fa in _VDB_FASTAS:
         if not fa.exists():
             continue
@@ -261,6 +267,67 @@ def _one(f: str):
         return f, [], -1.0
 
 
+def _resolve_with_unk(seq: str, seq2acc: dict, by_len: dict) -> str | None:
+    """Accession for `seq`, tolerating positions the structure could not model.
+
+    AlphaFold3 writes a residue it cannot build as `UNK`, which maps to "X".
+    Selenoproteins are the common case: TXNRD1/TXNRD2/GPX1 carry a Sec (`U`)
+    that AF3 emits as UNK, so the structure reads `...AGCXG` where the canonical
+    sequence reads `...AGCUG`. The lengths agree; a single character does not.
+    An exact dict lookup therefore drops the whole complex, and with it every
+    variant row that needed it -- five such structures, four of them load-bearing
+    for neurodev rows, were lost this way.
+
+    So: exact match first, and only on a miss treat "X" as a wildcard against
+    canonical sequences of the SAME length. The match must be UNIQUE -- if two
+    accessions differ only where this structure is unknown, we cannot tell them
+    apart and must not guess.
+    """
+    hit = seq2acc.get(seq)
+    if hit is not None:
+        return hit
+    if "X" not in seq:
+        return None
+    found = set()
+    for cand, acc in by_len.get(len(seq), ()):
+        if all(a == "X" or a == b for a, b in zip(seq, cand)):
+            found.add(acc)
+            if len(found) > 1:
+                return None          # ambiguous -- refuse rather than guess
+    return found.pop() if len(found) == 1 else None
+
+
+# Structures reach the canonical tree from two places, and only one of them may
+# be redistributed: our own AlphaFold3 predictions, versus the EMBL-EBI ProtVar
+# download mirrored under external/protvar_pdb. The distinction decides what can
+# be deposited, so it is recorded per structure rather than inferred later.
+PROVENANCE_PROTVAR = "protvar"
+PROVENANCE_IN_HOUSE = "af3_in_house"
+
+
+def classify_provenance(prior: str | None, source: str) -> str:
+    """Provenance of one structure: an earlier verdict wins over a fresh guess.
+
+    Re-running over an already-canonical tree makes `source` self-referential,
+    so the incoming path says nothing. `prior` is that structure's verdict from
+    the manifest already in the output directory, when there is one.
+    """
+    if prior in (PROVENANCE_PROTVAR, PROVENANCE_IN_HOUSE):
+        return prior
+    return PROVENANCE_PROTVAR if "protvar" in source.lower() else PROVENANCE_IN_HOUSE
+
+
+def read_prior_provenance(manifest: Path) -> dict[str, str]:
+    """filename -> provenance from an existing manifest, if it has the column."""
+    if not manifest.exists():
+        return {}
+    with open(manifest, newline="") as fh:
+        reader = csv.DictReader(fh)
+        if "provenance" not in (reader.fieldnames or []):
+            return {}
+        return {r["filename"]: r["provenance"] for r in reader}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -274,6 +341,10 @@ def main() -> int:
 
     print("building sequence -> accession map ...", flush=True)
     seq2acc = build_seq_map()
+    # Length-bucketed view of the same map, for the UNK-tolerant fallback.
+    _by_len: dict[int, list] = {}
+    for _s, _a in seq2acc.items():
+        _by_len.setdefault(len(_s), []).append((_s, _a))
 
     _EXTS = ("*.cif", "*.pdb", "*.cif.gz", "*.pdb.gz")
     per_dir = {d: sorted(f for e in _EXTS for f in glob.glob(str(Path(d) / e)))
@@ -309,6 +380,10 @@ def main() -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    prior_provenance = read_prior_provenance(out / "manifest.csv")
+    if prior_provenance:
+        print(f"carrying provenance forward for {len(prior_provenance):,} structures",
+              flush=True)
     parsed = Parallel(n_jobs=args.n_jobs, verbose=1)(delayed(_one)(f) for f in files)
 
     # Group by canonical name first: 93% of collisions are genuinely different
@@ -323,7 +398,8 @@ def main() -> int:
             n_bad += 1
             continue
         (ca, sa), (cb, sb) = chains
-        aa, ab = seq2acc.get(sa), seq2acc.get(sb)
+        aa, ab = (_resolve_with_unk(sa, seq2acc, _by_len),
+                  _resolve_with_unk(sb, seq2acc, _by_len))
         if not aa or not ab:
             n_unres += 1
             continue
@@ -337,12 +413,28 @@ def main() -> int:
 
     rows = []
     n_tie_cif = 0
+    n_rescued = 0
     for key, cs in cand.items():
         n_clash += len(cs) - 1
         # Higher mean pLDDT wins. On an EXACT tie prefer the .cif: it is AF3's
         # native output, so a .pdb of the same score is a conversion of it at
         # best and a different run at worst.
-        best = max(cs, key=lambda c: (c[0], ".cif" in c[1]))
+        # Prefer a structure whose chains are the sequences our tables actually
+        # use, THEN by pLDDT, then .cif.
+        #
+        # Keying on the accession pair assumes one sequence per accession, which
+        # ProtVar breaks: it models a different isoform for some proteins, so a
+        # higher-pLDDT ProtVar model could displace our own AF3 structure with
+        # one whose chain is a different length. The pair still had a structure,
+        # but no longer one matching the rows -- six VarChAMP pairs silently
+        # became unscoreable that way, reported as "no structure".
+        def _usable(c):
+            return int(c[6] in _TABLE_SEQS and c[7] in _TABLE_SEQS)
+
+        best = max(cs, key=lambda c: (_usable(c), c[0], ".cif" in c[1]))
+        n_rescued += (1 if (_usable(best) and
+                            not _usable(max(cs, key=lambda c: (c[0], ".cif" in c[1]))))
+                      else 0)
         if len(cs) > 1:
             top = max(c[0] for c in cs)
             tied = [c for c in cs if c[0] == top]
@@ -370,6 +462,12 @@ def main() -> int:
                 if len(convert_errs) < 5:
                     convert_errs.append(f"{name}: {err}")
                 continue
+        # Provenance must survive re-canonicalisation. When this runs over an
+        # already-canonical tree (the usual case for a rebuild), `source` becomes
+        # a self-reference and the record of which structures came from the
+        # third-party ProtVar download rather than from our own AlphaFold3 runs
+        # is destroyed -- which is exactly what determines what may be deposited.
+        # Carry the earlier value forward when there is one.
         rows.append({"filename": name,
                      "chain_a_accession": aa, "chain_b_accession": ab,
                      "chain_a_id": ca, "chain_b_id": cb,
@@ -379,7 +477,8 @@ def main() -> int:
                      "mean_plddt": round(plddt, 2),
                      "source_format": ".cif" if ".cif" in f else ".pdb",
                      "n_candidates": len(cs),
-                     "source": f})
+                     "source": f,
+                     "provenance": classify_provenance(prior_provenance.get(name), f)})
         n_ok += 1
 
     if rows:
@@ -390,6 +489,7 @@ def main() -> int:
     print(f"\ncanonicalised {n_ok}   unresolved {n_unres}   unparseable/non-dimer "
           f"{n_bad}   clashes {n_clash}   conversion failures {n_convert_fail}")
     print(f"ties broken in favour of .cif: {n_tie_cif}")
+    print(f"pairs where a lower-pLDDT structure was preferred because its\n  sequences match the canonical tables: {n_rescued}")
     for e in convert_errs:
         print(f"   convert FAILED {e}")
     print("(clashes = two structures resolving to one pair, expected where an\n accession was remapped and both the old- and new-named file exist)")

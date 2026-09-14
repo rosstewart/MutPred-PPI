@@ -30,7 +30,9 @@
 # was built to satisfy, and `docs/REPRODUCING_ANALYSES.md` for the underlying
 # per-script commands this notebook wraps.
 #
-# AF3 structures are complete (4,497 complexes, 100% training/eval coverage).
+# AF3 structures are complete: 100,739 canonical complexes, 100% training/eval
+# coverage. 24,716 are in-house AlphaFold 3 predictions; the rest come from
+# ProtVar (see the structure step below).
 #
 # **Not reproducible here, by design:**
 # Fig 4/S2 and Table 1 need unpublished VarChAMP data, present only in
@@ -87,6 +89,7 @@ from IPython.display import Image, display
 
 sys.path.insert(0, str(REPO / "src"))
 from paths import DATA_ROOT, DATASETS_DIR, REPO_ROOT, TRAINING_EVAL_DIR, WEIGHTS_DIR, describe  # noqa: E402
+from utils.gcv_common import dataset_name  # noqa: E402
 from utils.legacy_guard import LegacyInputError, reject_legacy  # noqa: E402
 
 _ENV = {**os.environ, "MPLBACKEND": "Agg", "OPENBLAS_NUM_THREADS": "1"}
@@ -104,9 +107,9 @@ def graph_store_is_stale(store_path, manifest_path) -> bool:
     The comparison is on KEY IDENTITY, not counts. Both the store and the
     manifest are keyed by the sorted pair of `sha256(sequence)[:16]` hashes, so
     the check is exact and cheap. Counting alone is not enough and was briefly
-    wrong here: after one merge the store held 4,498 graphs against a 4,497-row
-    manifest -- numerically "fresh" while actually missing three newly folded
-    complexes and carrying four for structures that had been removed.
+    wrong here once: a store can hold the same NUMBER of graphs as the manifest
+    has rows while missing some structures and carrying others that were
+    removed.
     """
     import csv as _csv
     import h5py as _h5py
@@ -279,43 +282,45 @@ else:
 
 # %%
 _AF3_CANON = DATASETS_DIR / "af3_structures_canonical"
-_AF3_DB_CANON = DATASETS_DIR / "af3_structures_variant_dbs_canonical"
 _MAPPED = TRAINING_EVAL_DIR
+_STORE = _MAPPED / "contact_graphs.h5"
 
-run([PY, "src/data_processing/canonicalize_structures.py",
-    "--structures", str(DATASETS_DIR / "af3_structures"), "--out", str(_AF3_CANON)],
-   produces=[_AF3_CANON / "manifest.csv"], name="canonicalize_structures.py (train/eval)")
-# Variant-DB complexes come from the in-house foldings AND from ProtVar's
-# precomputed AlphaFold3 interfaces. ClinVar/COSMIC/gnomAD/HGMD draw ~3,293 of
-# their contact graphs from ProtVar alone, so leaving it out silently costs
-# those four databases roughly half their pairs. Chains are resolved by
-# SEQUENCE, so the whole ProtVar tree can be passed unfiltered; PDB input is
-# auto-detected and normalised to gzipped mmCIF. See docs/SETUP.md for the
-# download.
+# ONE canonical structure tree and ONE graph store. Training/evaluation
+# complexes and variant-repository complexes share both: graphs are keyed by
+# sequence, so a pair that appears in each is stored once. Keeping two trees
+# would mean the same complex could be folded differently on either side.
+#
+# Variant-repository complexes come from the in-house foldings AND from ProtVar's
+# precomputed AlphaFold 3 interfaces, which supply about three quarters of the
+# canonical tree (76,023 of 100,739 structures). Chains are resolved by SEQUENCE,
+# so the whole ProtVar tree can be passed unfiltered; PDB input is auto-detected
+# and normalised to gzipped mmCIF. See docs/SETUP.md for the download.
 _PROTVAR = REPO / "external" / "protvar_pdb"
-_DB_STRUCT_SOURCES = [str(DATASETS_DIR / "af3_structures_variant_dbs")]
+_STRUCT_SOURCES = [str(DATASETS_DIR / "af3_structures"),
+                   str(DATASETS_DIR / "af3_structures_variant_dbs")]
 if _PROTVAR.exists():
-    _DB_STRUCT_SOURCES.append(str(_PROTVAR))
+    _STRUCT_SOURCES.append(str(_PROTVAR))
 else:
-    print(f"[warn]    {_PROTVAR} absent -- ClinVar/COSMIC/gnomAD/HGMD will lose "
-          f"the pairs that only ProtVar covers (see docs/SETUP.md)")
+    print(f"[warn]    {_PROTVAR} absent -- the variant repositories will lose the "
+          f"pairs only ProtVar covers (see docs/SETUP.md)")
 
 run([PY, "src/data_processing/canonicalize_structures.py",
-    "--structures", *_DB_STRUCT_SOURCES, "--out", str(_AF3_DB_CANON)],
-   produces=[_AF3_DB_CANON / "manifest.csv"], name="canonicalize_structures.py (variant DBs)")
+    "--structures", *_STRUCT_SOURCES, "--out", str(_AF3_CANON)],
+   produces=[_AF3_CANON / "manifest.csv"], name="canonicalize_structures.py")
 
 run([PY, "src/data_processing/rebuild_graphs_from_structures.py",
-    "--structures", str(_AF3_CANON), "--out", str(_MAPPED / "contact_graphs.h5")],
-   produces=[_MAPPED / "contact_graphs.h5"],
-   stale=graph_store_is_stale(_MAPPED / "contact_graphs.h5", _AF3_CANON / "manifest.csv"),
-   name="rebuild_graphs_from_structures.py (train/eval)")
-run([PY, "src/data_processing/rebuild_graphs_from_structures.py",
-    "--structures", str(_AF3_DB_CANON),
-    "--out", str(DATASETS_DIR / "variant_dbs" / "contact_graphs.h5")],
-   produces=[DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"],
-   stale=graph_store_is_stale(DATASETS_DIR / "variant_dbs" / "contact_graphs.h5",
-                              _AF3_DB_CANON / "manifest.csv"),
-   name="rebuild_graphs_from_structures.py (variant DBs)")
+    "--structures", str(_AF3_CANON), "--out", str(_STORE)],
+   produces=[_STORE],
+   stale=graph_store_is_stale(_STORE, _AF3_CANON / "manifest.csv"),
+   name="rebuild_graphs_from_structures.py")
+
+# The variant-repository code resolves its own path to the store. It is the same
+# file; link rather than rebuild, so the two can never diverge.
+_VDB_STORE = DATASETS_DIR / "variant_dbs" / "contact_graphs.h5"
+if _STORE.exists() and not _VDB_STORE.exists():
+    _VDB_STORE.parent.mkdir(parents=True, exist_ok=True)
+    os.link(_STORE, _VDB_STORE)
+    print(f"[run]     linked {_VDB_STORE} -> {_STORE}")
 
 # Record which complexes AlphaFold3 actually produced. Writes an `af3_failed`
 # column into the mapping CSVs; `prepare_gcv_tables.py` then drops those rows
@@ -327,14 +332,14 @@ run([PY, "src/data_processing/annotate_af3_coverage.py"],
 
 # The GCV row/split tables. Stage 2 of the data-preparation chain: reads the
 # mapping CSVs in datasets/source_mapping/ (built by
-# notebooks/map_ppi_datasets_090826.py) and writes datasets/training_eval/.
+# notebooks/map_ppi_datasets.py) and writes datasets/training_eval/.
 # Must run BEFORE prepare_af3_inputs.py, which derives its required-pair set
 # from these tables. Moved here from repro_test/build_canonical_tables.py and
 # renamed 2026-09-10 -- the old name was ambiguous with the mapping notebook,
 # and it lived in a gitignored directory. See docs/DATA_PREPARATION.md.
 run([PY, "src/data_processing/training_sets/prepare_gcv_tables.py",
     "--n-seeds", str(N_GCV)],
-   produces=[_MAPPED / "sahni_fragoza_mapped090826_rows.csv.gz"],
+   produces=[_MAPPED / f'{dataset_name("sahni_fragoza")}_rows.csv.gz'],
    name="prepare_gcv_tables.py")
 
 # Prepares AlphaFold3 inputs for every complex not already folded (required =
@@ -450,15 +455,16 @@ run([PY, "src/analysis/fetch_protein_class_annotations.py"],
 # ## Step 3 -- Embeddings
 #
 # ProtT5 (MutPred-PPI), ESM-2 (eSIG-Net), MINT, PPLM -- one cache per dataset.
-# QUICK mode covers `sahni_fragoza_mapped090826` only (Fig 3); full mode adds
-# `sahni_only_mapped090826` (S1) and `sahni_fragoza_varchamp_all_mapped090826`
-# (S7), plus `varchamp_all_mapped090826` for the blind test. SWING needs no
-# precomputed cache -- Doc2Vec is fit per run.
+# QUICK mode covers `sahni_fragoza` only (Fig 3); full mode adds `sahni_only`
+# (S1) and `sahni_fragoza_varchamp_all` (S7), plus `varchamp_all` for the
+# blind test. SWING needs no precomputed cache -- Doc2Vec is fit per run.
 
 # %%
-_GCV_DATASETS = (["sahni_fragoza_mapped090826", "varchamp_all_mapped090826"] if QUICK
-                 else ["sahni_only_mapped090826", "sahni_fragoza_mapped090826",
-                       "sahni_fragoza_varchamp_all_mapped090826", "varchamp_all_mapped090826"])
+_GCV_BASES = (["sahni_fragoza", "varchamp_all"] if QUICK
+              else ["sahni_only", "sahni_fragoza",
+                    "sahni_fragoza_varchamp_all", "varchamp_all"])
+_GCV_DATASETS = [dataset_name(b) for b in _GCV_BASES]
+_VARCHAMP_DATASET = dataset_name("varchamp_all")
 
 for ds in _GCV_DATASETS:
     run([PY, "src/data_processing/precompute_prott5_datasets.py",
@@ -499,7 +505,7 @@ def gcv_stem(method: str, dataset: str, *, ablation: str = "") -> str:
 
 
 for ds in _GCV_DATASETS:
-    if ds == "varchamp_all_mapped090826":
+    if ds == _VARCHAMP_DATASET:
         continue  # blind-test target only, not a GCV training set
     run([PY, "src/evaluation/mutpred_ppi_gcv.py",
         "--dataset", ds, "--device", DEVICE, "--n-gcv", str(N_GCV)],
@@ -553,7 +559,7 @@ if RUN_MUTPRED2:
        produces=[_MP2_UNION_FASTA], name="export_mutpred2_inputs.py [all]")
     print(f"  Run MutPred2 off-machine on {_MP2_UNION_FASTA}, then:")
     for ds in _GCV_DATASETS:
-        if ds == "varchamp_all_mapped090826":
+        if ds == _VARCHAMP_DATASET:
             continue  # blind-test target only, imported in Step 6
         print(f"    conda run -n ppi python src/analysis/import_mutpred2_gcv_scores.py "
               f"--dataset {ds} --csv <output.csv>")
@@ -570,6 +576,15 @@ try:
 except RuntimeError as exc:
     print(f"[skip] run_roc_comparison.py: {exc}")
 
+# The ablation figure (S3) omits the "Prior Best" bar by default. That bar is
+# the previously published model rather than an ablation of this architecture,
+# and its checkpoint ships in neither the repository nor the Zenodo deposit:
+#
+#   RECOMB model (bioRxiv v2): MutPred-PPI v1.0
+#   https://github.com/rosstewart/MutPred-PPI/releases/tag/v1.0.0
+#
+# Add "--include-prior-best" below to draw it, once that release is unpacked
+# into weights/v1_0/.
 try:
     run([PY, "src/analysis/run_roc_ablation.py"], name="run_roc_ablation.py")
 except RuntimeError as exc:
@@ -601,12 +616,12 @@ show(_RESULTS_DIR / "biclass_gcv" / "roc_sahni_fragoza_biclass_with_variance.png
 # the Zenodo deposit). The unpublished-data concern moved WITH the data:
 # varchamp_all_mapped090826_rows.csv.gz carries the same unpublished VarChAMP
 # measurements, and is what every step below actually reads.
-_VARCHAMP_AVAILABLE = (_MAPPED / "varchamp_all_mapped090826_rows.csv.gz").exists()
+_VARCHAMP_ROWS = _MAPPED / f'{dataset_name("varchamp_all")}_rows.csv.gz'
+_VARCHAMP_AVAILABLE = _VARCHAMP_ROWS.exists()
 
 if not _VARCHAMP_AVAILABLE:
-    print("[skip] Step 6: datasets/training_eval/varchamp_all_mapped090826_rows.csv.gz "
-          "is absent -- Fig 4 and S2 are not independently reproducible without "
-          "unpublished VarChAMP data.")
+    print(f"[skip] Step 6: {_VARCHAMP_ROWS} is absent -- Fig 4 and S2 are not "
+          "independently reproducible without unpublished VarChAMP data.")
 else:
     _BLIND_DIR = _RESULTS_DIR / "varchamp_seqcnf_newvar_eval"
     _blind_methods = [
@@ -641,23 +656,49 @@ else:
     show(_BLIND_DIR / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png", "S2")
 
 # %% [markdown]
-# ## Step 7 -- Final all-data model and variant-repository inference
+# ## Step 7 -- Final model and variant-repository inference
 #
-# One model, `sahni_fragoza_varchamp_all_mapped090826`, no fold split.
+# The published tier trains one model on every labelled pair, with no fold
+# split, and writes to `results/variant_dbs_all_data/`.
 # `run_variant_db_inference.py::assert_all_data_model` refuses to run with
-# anything else (e.g. `weights/folds/`, the GCV fold ensemble) -- there must
-# be only one variant-DB results tree (`results/variant_dbs_all_data/`).
+# anything else, so there is only ever one published variant-DB results tree.
+#
+# **Without the unpublished VarChAMP measurements that model cannot be trained.**
+# Rather than skip the rest of the pipeline, the notebook falls back to the
+# Sahni+Fragoza model shipped in the Zenodo weights bundle. That is a
+# DEMONSTRATION: it lets you run variant-repository inference end to end and see
+# what it produces, but its scores are not the paper's. Everything it writes goes
+# to `results/variant_dbs_sahni_fragoza/` and every figure it draws is stamped,
+# so the two tiers cannot be confused.
 
 # %%
-if not _VARCHAMP_AVAILABLE:
-    print("[skip] Step 7: final all-data model needs the same unpublished "
-          "VarChAMP data as Step 6.")
-else:
-    _ALL_DATA_CKPT_RAW = WEIGHTS_DIR / "MutPred-PPI_sahni_fragoza_varchamp_all_mapped090826_megascale_all_all.pt"
+_DEMO_TIER = not _VARCHAMP_AVAILABLE
+_VDB_DIR = _RESULTS_DIR / ("variant_dbs_all_data" if _VARCHAMP_AVAILABLE
+                           else "variant_dbs_sahni_fragoza")
+_VDB_STAB_DIR = _RESULTS_DIR / "variant_dbs_stability"
+_TIER_ARGS = [] if _VARCHAMP_AVAILABLE else ["--model-tier", "sahni_fragoza"]
+
+if _DEMO_TIER:
+    _SF_CKPT = WEIGHTS_DIR / "sahni_fragoza" / "MutPred-PPI.pt"
+    if not _SF_CKPT.exists():
+        print(f"[skip] Steps 7-9: neither the unpublished VarChAMP data nor the "
+              f"Sahni+Fragoza demonstration model ({_SF_CKPT}) is present. "
+              f"The latter ships in the Zenodo weights bundle; see docs/ZENODO.md.")
+    else:
+        print("=" * 72)
+        print("DEMONSTRATION TIER: VarChAMP data absent, using the Sahni+Fragoza")
+        print("model. Results go to results/variant_dbs_sahni_fragoza/ and are")
+        print("NOT the published numbers. See the 'What you can reproduce' table")
+        print("in README.md.")
+        print("=" * 72)
+
+if _VARCHAMP_AVAILABLE:
+    _ALL_DATA_CKPT_RAW = (WEIGHTS_DIR /
+        f'MutPred-PPI_{dataset_name("sahni_fragoza_varchamp_all")}_megascale_all_all.pt')
     _ALL_DATA_CKPT = WEIGHTS_DIR / "MutPred-PPI.pt"  # the blessed name run_variant_db_inference.py and
                                                        # the public inference pipeline actually look for
     run([PY, "src/training/train_final_model.py",
-        "--dataset", "sahni_fragoza_varchamp_all_mapped090826",
+        "--dataset", dataset_name("sahni_fragoza_varchamp_all"),
         "--ablation", "megascale_all", "--save-models-dir", str(WEIGHTS_DIR),
         "--device", DEVICE, "--no-cv"],
        produces=[_ALL_DATA_CKPT_RAW], name="train_final_model.py (all-data)")
@@ -673,8 +714,11 @@ else:
         _shutil.copy2(_ALL_DATA_CKPT_RAW, _ALL_DATA_CKPT)
         print(f"[run]     promoted {_ALL_DATA_CKPT_RAW.name} -> {_ALL_DATA_CKPT}")
 
-    _VDB_DIR = _RESULTS_DIR / "variant_dbs_all_data"
-    _VDB_STAB_DIR = _RESULTS_DIR / "variant_dbs_stability"
+# %%
+# Inference itself runs in BOTH tiers -- only the model and the output tree
+# differ. Stability (ddG) is tier-independent: run_stability_inference.py loads
+# the MegaScale-pretrained model, which never saw VarChAMP.
+if _VARCHAMP_AVAILABLE or (WEIGHTS_DIR / "sahni_fragoza" / "MutPred-PPI.pt").exists():
     for db in ("clinvar", "gnomad", "cosmic", "hgmd", "neurodev", "asd"):
         rows_path = DATASETS_DIR / "variant_dbs" / f"{db}_rows.csv.gz"
         if not rows_path.exists():
@@ -682,7 +726,7 @@ else:
             continue
         cmd = [PY, "src/variant_db_inference/run_variant_db_inference.py",
               "--dataset", db, "--device", DEVICE,
-              "--out", str(_VDB_DIR / f"{db}_mutpred_ppi_predictions.tsv")]
+              "--out", str(_VDB_DIR / f"{db}_mutpred_ppi_predictions.tsv")] + _TIER_ARGS
         if QUICK:
             cmd += ["--rows", str(subsample_rows(db, DB_SUBSAMPLE))]
         try:
@@ -697,17 +741,29 @@ else:
 
 # %% [markdown]
 # ## Step 8 -- Classification and bootstrap caches
+#
+# Runs in whichever tier Step 7 used, reading and writing `_VDB_DIR`.
 
 # %%
-if _VARCHAMP_AVAILABLE:
-    run([PY, "src/analysis/classify_variant_dbs.py", "--output-dir", str(_VDB_DIR)],
+# Gate on the predictions actually existing rather than on VarChAMP: in the
+# demonstration tier they are there, just from the Sahni+Fragoza model.
+_VDB_READY = any((_VDB_DIR / f"{db}_mutpred_ppi_predictions.tsv").exists()
+                 for db in ("clinvar", "gnomad", "cosmic", "hgmd", "neurodev", "asd"))
+_DEMO_ARGS = ["--demo-tier"] if _DEMO_TIER else []
+
+if _VDB_READY:
+    run([PY, "src/analysis/classify_variant_dbs.py", "--output-dir", str(_VDB_DIR),
+        "--pred-dir", str(_VDB_DIR)],
        name="classify_variant_dbs.py")
-    run([PY, "src/analysis/make_master_variant_db_csv.py"],
-       produces=[_RESULTS_DIR / "master_variant_db_predictions.csv.gz"],
-       name="make_master_variant_db_csv.py")
+    if not _DEMO_TIER:
+        # The deposited master CSV is a published artifact; it is only built from
+        # the all-data tier.
+        run([PY, "src/analysis/make_master_variant_db_csv.py"],
+           produces=[_RESULTS_DIR / "master_variant_db_predictions.csv.gz"],
+           name="make_master_variant_db_csv.py")
     run([PY, "src/analysis/variant_db_charts.py",
         "--data-dir", str(_VDB_DIR), "--edgotype-bootstrap", "--controlled-bootstrap",
-        "--k3-only", "--n-bootstrap", str(N_BOOTSTRAP)],
+        "--k3-only", "--n-bootstrap", str(N_BOOTSTRAP)] + _DEMO_ARGS,
        produces=[_VDB_DIR / "all_bootstrap_results.pkl"], name="variant_db_charts.py [bootstrap]")
 else:
     print("[skip] Step 8: needs Step 7's variant-DB predictions.")
@@ -716,24 +772,33 @@ else:
 # ## Step 9 -- Variant-repository figures and tables (Fig 5, S8, S9, ...)
 
 # %%
-if _VARCHAMP_AVAILABLE:
-    run([PY, "src/analysis/variant_db_charts.py", "--data-dir", str(_VDB_DIR)],
+if _VDB_READY:
+    run([PY, "src/analysis/variant_db_charts.py", "--data-dir", str(_VDB_DIR)] + _DEMO_ARGS,
        name="variant_db_charts.py [Fig 5]")
-    run([PY, "src/analysis/variant_db_charts.py", "--data-dir", str(_VDB_DIR), "--controlled-k", "3"],
-       name="variant_db_charts.py [S8]")
+    # The k=3 figure (S8) is written by the --controlled-bootstrap --k3-only run
+    # in Step 8; there is no separate pass. `--controlled-k 3` is not an argument
+    # variant_db_charts.py accepts, so this call aborted the notebook.
     show(_VDB_DIR / "enrichment_bootstrap_sufficient_partners.png", "Fig 5")
     show(_VDB_DIR / "enrichment_bootstrap_sufficient_partners_k3.png", "S8")
 
-    run([PY, "src/analysis/threshold_sensitivity.py", "--n-bootstrap", str(N_BOOTSTRAP)],
+    run([PY, "src/analysis/threshold_sensitivity.py", "--n-bootstrap", str(N_BOOTSTRAP),
+        "--data-dir", str(_VDB_DIR)] + _DEMO_ARGS,
        name="threshold_sensitivity.py")
     show(_RESULTS_DIR / "robustness" / "threshold_sensitivity.png", "S9")
 
     run([PY, "src/analysis/protein_class_enrichment.py"], name="protein_class_enrichment.py")
     show(_RESULTS_DIR / "protein_class" / "pathogenic_by_class.png", "S-protclass")
 
-    run([PY, "src/analysis/stability_interaction_scatter.py", "--cosmic-min-recurrence", "32"],
+    # One figure, two panels. (A) one point per variant sample:
+    # stability-disruption enrichment (x) against PPI-disruption enrichment (y),
+    # both relative to gnomAD and both using the same statistic as Fig 5, with
+    # the binned gnomAD/COSMIC/oncogene/TSG categories drawn as progressions.
+    # (B) the per-variant density behind twelve of those samples.
+    run([PY, "src/analysis/stability_interaction_scatter.py", "--panels", "full",
+        "--data-dir", str(_VDB_DIR)] + _DEMO_ARGS,
        name="stability_interaction_scatter.py")
-    show(_RESULTS_DIR / "stability_interaction" / "scatter_per_variant_kde.png", "S-stability")
+    show(_RESULTS_DIR / "stability_interaction" / "stability_interaction_scatter.png",
+         "S-stability")
 
     try:
         run([PY, "src/analysis/combined_robustness_figure.py"], name="combined_robustness_figure.py")
@@ -750,7 +815,7 @@ if _VARCHAMP_AVAILABLE:
        produces=[REPO / "figures" / "training_data_table.tex"], name="generate_training_table.py [Table 1]")
 else:
     print("[skip] Table 1: generate_training_table.py needs the unpublished "
-          "VarChAMP measurements in varchamp_all_mapped090826_rows.csv.gz.")
+          f"VarChAMP measurements in {_VARCHAMP_ROWS.name}.")
 
 run([PY, "src/analysis/extract_variant_db_stats.py"],
    produces=[REPO / "figures" / "variant_db_stats_table.tex"], name="extract_variant_db_stats.py [Table S1]")
@@ -765,10 +830,10 @@ for tex_name, caption in (("training_data_table.tex", "Table 1"),
 # %% [markdown]
 # ## Step 9b -- Reconstruction tables
 #
-# Per-figure prediction/label tables, so every ROC and PR curve in the paper can
-# be recomputed with no training, no GPU and no access to the splits. This is a
-# deposited Zenodo artifact (`datasets/reconstruction_tables/`, ~460 MB), which
-# is why it runs here rather than by hand.
+# Flattens `results/gcv/*_detailed_results.pkl` into per-figure CSVs, so every
+# ROC and PR curve can be recomputed with no training, no GPU and no access to
+# the splits. These are a convenience, not a deposit: the pickles they are built
+# from are themselves deposited and hold the same preds and labels.
 
 # %%
 run([PY, "src/analysis/export_reconstruction_tables.py", "--figure", "all"],
@@ -776,12 +841,13 @@ run([PY, "src/analysis/export_reconstruction_tables.py", "--figure", "all"],
    name="export_reconstruction_tables.py")
 
 # %% [markdown]
-# ## Step 10 -- Manifest
+# ## Step 10 -- Manifest and figures/
 #
-# Every manuscript figure/table: expected path, whether it exists, and its
-# age. In full (non-QUICK) mode this is where you would refresh
-# `figures/*.png` symlinks if a producer's output path changed -- see
-# the per-figure comments in each step below for the current map.
+# Every manuscript figure and table: expected path, whether it exists, and its
+# age. This step also (re)builds the `figures/` symlinks from the same manifest,
+# so a producer that changes its output path cannot leave a dangling link behind.
+# Each link is named after its target, so there is exactly one name per figure;
+# the label -> file mapping is in docs/REPRODUCING_ANALYSES.md.
 
 # %%
 import datetime
@@ -794,11 +860,11 @@ _MANIFEST = [
     ("S-biclass", _RESULTS_DIR / "biclass_gcv" / "roc_sahni_fragoza_biclass_with_variance.png"),
     ("Fig 4",  _RESULTS_DIR / "varchamp_seqcnf_newvar_eval" / "roc_plots" / "roc_varchamp_blind_test.png"),
     ("S2",     _RESULTS_DIR / "varchamp_seqcnf_newvar_eval" / "roc_plots" / "roc_varchamp_blind_test_training_comparison.png"),
-    ("Fig 5",  _RESULTS_DIR / "variant_dbs_all_data" / "enrichment_bootstrap_sufficient_partners.png"),
-    ("S8",     _RESULTS_DIR / "variant_dbs_all_data" / "enrichment_bootstrap_sufficient_partners_k3.png"),
+    ("Fig 5",  _VDB_DIR / "enrichment_bootstrap_sufficient_partners.png"),
+    ("S8",     _VDB_DIR / "enrichment_bootstrap_sufficient_partners_k3.png"),
     ("S9",     _RESULTS_DIR / "robustness" / "threshold_sensitivity.png"),
     ("S-protclass", _RESULTS_DIR / "protein_class" / "pathogenic_by_class.png"),
-    ("S-stability", _RESULTS_DIR / "stability_interaction" / "scatter_per_variant_kde.png"),
+    ("S-stability", _RESULTS_DIR / "stability_interaction" / "stability_interaction_scatter.png"),
     ("S-robustness", _RESULTS_DIR / "robustness" / "combined_robustness_by_class.png"),
     ("Table 1", REPO / "figures" / "training_data_table.tex"),
     ("Table S1", REPO / "figures" / "variant_db_stats_table.tex"),
@@ -811,6 +877,33 @@ for label, path in _MANIFEST:
           ) if exists else None
     age_str = f"{age.days}d" if age else "-"
     print(f"{label:<14} {'yes' if exists else 'NO':<7} {age_str:<12} {path}")
+
+# Rebuild figures/ from the manifest. Only PNGs are linked: the .tex tables are
+# written directly into figures/ by their producers.
+_FIG_DIR = REPO / "figures"
+_FIG_DIR.mkdir(exist_ok=True)
+_wanted = {}
+for label, path in _MANIFEST:
+    if path.suffix != ".png" or not path.exists():
+        continue
+    link = _FIG_DIR / path.name
+    _wanted[link.name] = path
+    rel = os.path.relpath(path, _FIG_DIR)
+    if link.is_symlink() and os.readlink(link) == rel:
+        continue
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(rel)
+    print(f"[link]    figures/{link.name} -> {rel}")
+
+# Drop links the manifest no longer names, and any left dangling.
+for link in _FIG_DIR.glob("*.png"):
+    if link.name not in _wanted or not link.resolve().exists():
+        link.unlink()
+        print(f"[unlink]  figures/{link.name} (no longer produced)")
+
+print(f"\nfigures/ holds {len(_wanted)} figures + "
+      f"{len(list(_FIG_DIR.glob('*.tex')))} tables")
 
 print("\nDrawn by hand, not regenerated by anything in this repo:")
 print("  Fig 1 (MutPred-PPI_pipeline.png), Fig 2 (MutPred-PPI_architecture.png), "

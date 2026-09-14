@@ -1,504 +1,759 @@
 #!/usr/bin/env python3
-"""Scatter plot: max interaction disruption vs mean ΔΔG, per unique variant.
+"""Stability disruption vs interaction disruption, as a 2-D enrichment per sample.
 
-For each variant, aggregates across all tested partners:
-  - max_score : max MutPred-PPI score across partners (worst-case disruption)
-  - mean_ddg  : mean ΔΔG across partners (partner context affects GAT output slightly)
+Each variant sample (ClinVar Pathogenic, COSMIC at a given recurrence, a gnomAD
+allele-frequency bin, ...) becomes ONE point:
 
-Groups (12 panels):
-  ClinVar Pathogenic, ClinVar Benign, ClinVar VUS, HGMD, gnomAD,
-  COSMIC highly recurrent (≥32 tumor sites),
-  Oncogene / TSG (COSMIC recurrence ≥8 — too few onco/tsg variants at ≥32),
-  AR-only / AD-only disease genes for ClinVar Pathogenic and HGMD
-  (ClinGen Gene-Disease Validity MOI curations; see build_ar_ad_gene_sets.py)
+    x  stability-disruption enrichment, from mean DDG across partners per variant
+    y  PPI-disruption enrichment, from max MutPred-PPI score across partners
 
-Per-variant aggregation filters partners to exactly those listed in each group's
-subset PKL (mirrors classify_variant_dbs.py::build_arrays) so sample sizes match
-Fig 5 (variant_db_charts.py) exactly.
+Both axes use the same enrichment as Fig 5
+(`variant_db_charts.calc_enrichment`), against gnomAD as the background:
+
+    enrichment(f_obs) = (f_obs - f_gnomad) / (f_obs + f_gnomad)
+
+where `f` is the fraction of variants in the sample above the threshold (0.5 for
+both the interaction score and DDG, kcal/mol). The quadrants then separate
+mechanism: upper-left is interaction disruption WITHOUT destabilisation, lower-
+right is destabilisation without interaction loss, and lower-left is neither.
+
+Sample membership comes from the CANONICAL per-stratum tables written by
+`classify_variant_dbs.py` into `results/variant_dbs_all_data/{db}/{stratum}.csv.gz`
+(columns `uniprot,variant,partner,score,n_biogrid_partners`) -- the same tables
+Fig 5 is built from, so sample sizes agree with it by construction rather than
+being re-derived from the restricted subset pickles. Those tables already carry
+the model score, so only DDG is joined in, from the stability TSVs.
+
+Both the stratum tables and the stability TSVs are 1-BASED, so the join needs no
+base conversion; `tests/test_stability_scatter_panels.py` asserts this.
+
+Two sample sets:
+
+  --panels full      (default) every stratum classify_variant_dbs.py produces:
+                     ClinVar x6, gnomAD across its allele-frequency bins, HGMD x3,
+                     COSMIC / COSMIC-oncogene / COSMIC-TSG each across the same
+                     1-2-4-8-16-32 recurrence progression, plus NDD case/control
+                     and ASD.
+  --panels vignette  the six disease groups plus the gnomAD gradient.
+
+COSMIC and HGMD strata need `datasets/annotations_licensed/`. When it is absent
+the affected samples are skipped with a warning and the rest are drawn.
 
 Usage:
-    conda run -n ppi python src/analysis/stability_interaction_scatter.py [--cosmic-min-recurrence 32]
+    conda run -n ppi python src/analysis/stability_interaction_scatter.py
+    conda run -n ppi python src/analysis/stability_interaction_scatter.py --panels vignette
 
-Output:
-    results/stability_interaction/scatter_per_variant.png
-    results/stability_interaction/scatter_per_variant_kde.png
-    results/stability_interaction/per_variant_summary.tsv
+Output (results/stability_interaction/):
+    stability_interaction_scatter.png   the 2-D enrichment scatter
+    scatter_per_variant_kde.png         per-variant density behind each sample
+    per_variant_summary.tsv             one row per sample: fractions, enrichments, n
 """
 from __future__ import annotations
 
 import argparse
-import pickle
-from collections import defaultdict
 from pathlib import Path
 
-import matplotlib
 from analysis import plot_style
 from analysis.plot_style import SAVE_DPI
 plot_style.apply()   # shared rcParams + Agg backend
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from scipy.stats import gaussian_kde
 
-# --- repo-relative path resolution (see src/paths.py) ---
-from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
-from analysis.roc_plots import StaleCacheError  # noqa: E402
-from utils import mutations  # noqa: E402
+import matplotlib.pyplot as plt          # noqa: E402
+import numpy as np                       # noqa: E402
+import pandas as pd                      # noqa: E402
+from scipy.stats import gaussian_kde     # noqa: E402
 
+from paths import REPO_ROOT              # noqa: E402
 
-_PUB = REPO_ROOT
-_BASE = DATA_ROOT
-_HOME  = _BASE / "home"
-# Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
-# variant_dbs_classified/ trees hold SF-model predictions; mixing the two
-# across panels is what this path previously did.
-_DB    = _PUB / "results" / "variant_dbs_all_data"
-_STAB  = _PUB / "results" / "variant_dbs_stability"
-_OUT   = _PUB / "results" / "stability_interaction"
+_PUB  = REPO_ROOT
+# Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt).
+# Default is the published all-data tree. The demonstration tier writes to
+# results/variant_dbs_sahni_fragoza/ and is selected with --data-dir.
+_DB   = _PUB / "results" / "variant_dbs_all_data"
+_STAB = _PUB / "results" / "variant_dbs_stability"
+_OUT  = _PUB / "results" / "stability_interaction"
 
-ONCO_TSG_FILE = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
-AR_AD_FILE    = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
-ONCO_TSG_MIN_RECURRENCE = 8  # too few onco/tsg variants at ≥32 (139/114)
+# Strata that exist only when the licensed COSMIC/HGMD annotations are present.
+_RESTRICTED_DBS = {"cosmic", "hgmd"}
 
-SUBSET_PKLS = {
-    "ClinVar Pathogenic": (ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl", "clinvar"),
-    "ClinVar Benign":     (ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl",     "clinvar"),
-    "ClinVar VUS":        (ANNOTATIONS_DIR / "clinvar" / "vus_dirbind_variant_subset.pkl",        "clinvar"),
-    "HGMD":               (ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl",        "hgmd"),
+# A variant counts as disrupted above these. 0.5 is the MutPred-PPI operating
+# point used throughout the paper; 0.5 kcal/mol is the DDG cutoff Fig 5 uses.
+INT_THRESHOLD = 0.5
+DDG_THRESHOLD = 0.5
+
+# Enrichment is measured against gnomAD as a whole -- the population background,
+# not a curated "benign" set.
+BASELINE = ("gnomad", "gnomad")
+
+# Confidence intervals use the same resampling as Fig 5/S8/S9: a multinomial
+# draw over the observed category counts, which is equivalent to a bootstrap
+# over variants but costs O(n_bootstrap) instead of O(n * n_bootstrap).
+N_BOOTSTRAP = 100_000
+CI = (2.5, 97.5)
+RANDOM_SEED = 42
+
+# COSMIC recurrence bins, as produced by classify_variant_dbs.COSMIC_RECURRENCE_BINS.
+_RECURRENCE = ["single", "2+", "4+", "8+", "16+", "32+"]
+# gnomAD GroupMax allele-frequency bins, as produced by classify_variant_dbs.
+# These are EXCLUSIVE ranges (prev < AF <= hi), not cumulative ceilings -- which
+# is why their sizes are not monotonic in the threshold. Labelling them "AF <= x"
+# would misread the figure.
+_AF_BINS = ["1e-06", "1e-05", "0.0001", "0.001", "0.01", "0.1"]
+# The main figure's palette keys for the allele-frequency bins. Its last bin is
+# open-ended ("1e-2 < AF"), so the closed form used elsewhere misses the lookup.
+_AF_PALETTE_KEYS = ["AF \u2264 1e-6", "1e-6 < AF \u2264 1e-5", "1e-5 < AF \u2264 1e-4",
+                    "1e-4 < AF \u2264 1e-3", "1e-3 < AF \u2264 1e-2", "1e-2 < AF"]
+
+_AF_LABELS = {
+    "1e-06": "AF ≤ 1e-6",
+    "1e-05": "1e-6 < AF ≤ 1e-5",
+    "0.0001": "1e-5 < AF ≤ 1e-4",
+    "0.001": "1e-4 < AF ≤ 1e-3",
+    "0.01": "1e-3 < AF ≤ 1e-2",
+    "0.1": "1e-2 < AF ≤ 0.1",
 }
 
-# Fig 5 reference n's (variant_db_charts.py, results/variant_dbs_all_data) — for sanity check
-FIG5_REFERENCE_N = {
-    "ClinVar Pathogenic": 27843,
-    "ClinVar Benign":     14579,
-    "ClinVar VUS":        245146,
-    "HGMD":               3478,
-}
 
-# gnomAD: no subset PKL, use all variants. Colors match the canonical palette in
-# variant_db_charts.py::_get_enrich_color() for cross-figure consistency.
-GROUP_COLORS = {
-    "ClinVar Pathogenic":    "#D32F2F",
-    "ClinVar Benign":        "#1976D2",
-    "ClinVar VUS":           "#9E9E9E",
-    "HGMD":                  "#E74C3C",
-    "gnomAD":                "#2ca02c",
-    "COSMIC recurrent":      "#B71C1C",
-    "Onco":                  "#FF3D00",
-    "TSG":                   "#FF6E40",
-    "AR ClinVar Pathogenic": "#00897B",
-    "AD ClinVar Pathogenic": "#FFB300",
-    "AR HGMD":               "#00897B",
-    "AD HGMD":               "#FFB300",
-}
+# Panel B: a fixed twelve-panel reading order, chosen so the comparison runs
+# clinical -> population -> somatic -> inheritance mode, rather than following
+# the recurrence/frequency progressions panel A lays out along its x-axis.
+KDE_PANELS = [
+    ("ClinVar pathogenic",   "clinvar", "pathogenic"),
+    ("ClinVar benign",       "clinvar", "benign"),
+    ("ClinVar VUS",          "clinvar", "vus"),
+    ("HGMD",                 "hgmd",    "hgmd"),
+    ("gnomAD",               "gnomad",  "gnomad"),
+    ("COSMIC recurrent (\u226532)", "cosmic", "cosmic_32+"),
+    ("Oncogene (\u22658)",   "cosmic",  "cosmic_onco_8+"),
+    ("TSG (\u22658)",        "cosmic",  "cosmic_tsg_8+"),
+    ("ClinVar AR",           "clinvar", "ar_pathogenic"),
+    ("ClinVar AD",           "clinvar", "ad_pathogenic"),
+    ("HGMD AR",              "hgmd",    "ar_hgmd"),
+    ("HGMD AD",              "hgmd",    "ad_hgmd"),
+]
+KDE_NCOLS = 4
+
+# Panel A mirrors the main enrichment figure exactly: the same databases in the
+# same order, the same subgroup labels, the same colours. Only the two measured
+# categories differ -- there it is Quasi-Null and Edgetic, here it is PPI
+# disruption and stability disruption.
+#
+# (database, [(subgroup label, stratum file)]) in x-axis order.
+ENRICHMENT_GROUPS = [
+    ("ClinVar", "clinvar", [
+        ("Rare Benign",   "rare_benign"),
+        ("Benign",        "benign"),
+        ("Pathogenic",    "pathogenic"),
+        ("VUS",           "vus"),
+        ("Pathogenic AR", "ar_pathogenic"),
+        ("Pathogenic AD", "ad_pathogenic"),
+    ]),
+    ("COSMIC", "cosmic", [(lbl, f"cosmic_{st}") for lbl, st in
+        [("Single", "single"), ("\u22652", "2+"), ("\u22654", "4+"),
+         ("\u22658", "8+"), ("\u226516", "16+"), ("\u226532", "32+")]]),
+    ("COSMIC (Onco)", "cosmic", [(lbl, f"cosmic_onco_{st}") for lbl, st in
+        [("Single", "single"), ("\u22652", "2+"), ("\u22654", "4+"),
+         ("\u22658", "8+"), ("\u226516", "16+"), ("\u226532", "32+")]]),
+    ("COSMIC (TSG)", "cosmic", [(lbl, f"cosmic_tsg_{st}") for lbl, st in
+        [("Single", "single"), ("\u22652", "2+"), ("\u22654", "4+"),
+         ("\u22658", "8+"), ("\u226516", "16+"), ("\u226532", "32+")]]),
+    ("HGMD", "hgmd", [("HGMD", "hgmd"), ("AR", "ar_hgmd"), ("AD", "ad_hgmd")]),
+    # Labels are the MAIN FIGURE'S canonical spellings, because the shared
+    # palette is keyed on them. `_display_label` lowercases Case/Control for the
+    # tick text exactly as the main figure does -- looking the colour up with
+    # the lowercased form silently returns the default grey.
+    ("gnomAD", "gnomad", list(zip(_AF_PALETTE_KEYS,
+                                  [f"gnomad_upper_af_{b}" for b in _AF_BINS]))),
+    ("NDD", "neurodev", [("NDD Case", "ndd_case"), ("NDD Control", "ndd_control")]),
+    ("ASD", "asd", [("ASD Case", "asd")]),
+]
+
+# Colours come from the main enrichment figure, so a subgroup keeps its colour
+# between the two. `_get_enrich_color` keys oncogene/TSG separately from plain
+# COSMIC, which is why the stratum name has to be inspected rather than the db.
+# Panel C uses ONE colour scheme throughout. Colouring each density by its
+# sample invited the eye to compare hues across panels, which carries no meaning
+# here -- the comparison is of distribution SHAPE against a common pair of axes.
+KDE_CMAP = "Reds"
+KDE_LINE = "#B71C1C"
 
 
-def _check_tsv_schema(path: Path, expected_cols: set[str]) -> None:
-    """Raise StaleCacheError if the TSV still uses the old composite-id schema."""
-    with open(path) as f:
-        header = f.readline().rstrip("\n")
-    cols = set(header.split("\t"))
-    if "complex_id" in cols:
-        raise StaleCacheError(
-            f"{path.name} still uses the old `complex_id` schema. "
-            f"Regenerate it with the migrated inference scripts "
-            f"(`run_variant_db_inference.py` / `run_stability_inference.py`) "
-            f"which emit `interactor / partner / mutation / score|ddg_kcalmol`.")
-    if not expected_cols.issubset(cols):
-        raise StaleCacheError(
-            f"{path.name} header lacks expected columns {expected_cols - cols}.")
+def _get_enrich_color(db: str, stratum: str, label: str) -> str:
+    """Delegate to the main figure's palette, keyed the way it expects."""
+    from analysis.variant_db_charts import _get_enrich_color as fig5_color
+    key = ("cosmic_onco" if stratum.startswith("cosmic_onco")
+           else "cosmic_tsg" if stratum.startswith("cosmic_tsg")
+           else "gnomad_af" if stratum.startswith("gnomad_upper_af") else db)
+    return fig5_color(key, label)
 
 
-def load_tsv_grouped(pred_tsv: Path, stab_tsv: Path) -> dict[tuple[str, str], list[tuple[str, float, float]]]:
-    """Return {(interactor, variant_0b): [(partner, score, ddg), ...]} joined on explicit columns.
+def _panel_color(label: str, db: str) -> str:
+    """Retained for the panel spec; panel C is drawn in one colour scheme."""
+    return KDE_LINE
 
-    Both files must use the new explicit-column schema. Existing on-disk TSVs use
-    the old `complex_id` schema and will raise StaleCacheError until regenerated.
 
-    Internal representation uses 0-based variant strings for consistency with the
-    subset PKLs (which store 1-based variants; the conversion happens at the join in
-    aggregate_per_variant). The `uniprot` key is the interactor accession.
+# ── Data ──────────────────────────────────────────────────────────────────────
+
+def load_stability(db: str) -> pd.DataFrame | None:
+    """(interactor, partner, mutation) -> ddg_kcalmol for one database.
+
+    `mutation` is 1-based, matching the `variant` column of the stratum tables.
     """
-    if not pred_tsv.exists() or not stab_tsv.exists():
-        return {}
-
-    _check_tsv_schema(pred_tsv, {"interactor", "partner", "mutation", "score"})
-    _check_tsv_schema(stab_tsv, {"interactor", "partner", "mutation", "ddg_kcalmol"})
-
-    # Load stability: (interactor, partner, mutation_1b) -> ddg
-    stab: dict[tuple[str, str, str], float] = {}
-    stab_df = pd.read_csv(stab_tsv, sep="\t")
-    for _, row in stab_df.iterrows():
-        stab[(str(row["interactor"]), str(row["partner"]), str(row["mutation"]))] = float(row["ddg_kcalmol"])
-
-    # Group (partner, score, ddg) tuples by (interactor, variant_0b).
-    # partner identity is retained so aggregate_per_variant() can filter per-partner.
-    result: dict[tuple[str, str], list[tuple[str, float, float]]] = defaultdict(list)
-    pred_df = pd.read_csv(pred_tsv, sep="\t")
-    n_no_stab = 0
-    for _, row in pred_df.iterrows():
-        interactor = str(row["interactor"])
-        partner    = str(row["partner"])
-        mut_1b     = str(row["mutation"])
-        score      = float(row["score"])
-        ddg = stab.get((interactor, partner, mut_1b))
-        if ddg is not None:
-            var0 = mutations.to_zero_based(mut_1b)
-            result[(interactor, var0)].append((partner, score, ddg))
-        else:
-            n_no_stab += 1
-    if n_no_stab:
-        print(f"  {n_no_stab:,} pred rows had no matching stability entry (skipped)", flush=True)
-
-    return result
+    path = _STAB / f"{db}_stability_predictions.tsv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path, sep="\t", dtype={"interactor": str, "partner": str,
+                                            "mutation": str})
+    missing = {"interactor", "partner", "mutation", "ddg_kcalmol"} - set(df.columns)
+    if missing:
+        raise ValueError(f"{path.name} lacks columns {missing}; regenerate it with "
+                         f"src/variant_db_inference/run_stability_inference.py")
+    return df.rename(columns={"interactor": "uniprot", "mutation": "variant"})
 
 
-def aggregate_per_variant(
-    grouped: dict[tuple[str, str], list[tuple[str, float, float]]],
-    subset: set[tuple[str, str, str]] | None = None,
-) -> pd.DataFrame:
-    """Aggregate to per-variant: max score, mean ΔΔG, restricted to partners in `subset`.
+def load_panel(db: str, stratum: str, stability: pd.DataFrame) -> pd.DataFrame | None:
+    """Aggregate one canonical stratum table to one row per unique variant."""
+    path = _DB / db / f"{stratum}.csv.gz"
+    if not path.exists():
+        return None
+    rows = pd.read_csv(path, dtype={"uniprot": str, "variant": str, "partner": str})
 
-    subset: set of (uniprot, variant_1b, partner) — converted to 0-based variant key
-    internally. Filtering is per-(variant,partner), mirroring
-    classify_variant_dbs.py::build_arrays() — a variant qualifying via one partner
-    must not pull in scores from OTHER partners not listed in the subset.
+    merged = rows.merge(stability, on=["uniprot", "partner", "variant"], how="inner")
+    if merged.empty:
+        return merged.assign(max_score=[], mean_ddg=[])
+
+    agg = (merged.groupby(["uniprot", "variant"], sort=False)
+                 .agg(max_score=("score", "max"),
+                      mean_score=("score", "mean"),
+                      n_partners=("score", "size"),
+                      mean_ddg=("ddg_kcalmol", "mean"),
+                      max_ddg=("ddg_kcalmol", "max"))
+                 .reset_index())
+    return agg
+
+
+def sample_fractions(df: pd.DataFrame,
+                     int_threshold: float = INT_THRESHOLD,
+                     ddg_threshold: float = DDG_THRESHOLD) -> tuple[float, float, int]:
+    """(fraction PPI-disrupted, fraction destabilised, n variants) for one sample."""
+    if df is None or df.empty:
+        return 0.0, 0.0, 0
+    return (float((df["max_score"] >= int_threshold).mean()),
+            float((df["mean_ddg"] >= ddg_threshold).mean()),
+            len(df))
+
+
+def bootstrap_fractions(df: pd.DataFrame, int_threshold: float, ddg_threshold: float,
+                        n_bootstrap: int, rng) -> np.ndarray:
+    """(n_bootstrap, 2) replicates of (fraction PPI-disrupted, fraction destabilised).
+
+    Resamples the 2x2 JOINT contingency of (disrupted, destabilising) rather
+    than the two fractions independently. Both are measured on the same
+    variants and are strongly correlated -- a variant that destabilises the fold
+    often disrupts the interface too -- so independent resampling would
+    misstate the uncertainty in where a sample sits in the plane.
     """
-    if subset is not None:
-        allowed: dict[tuple[str, str], set[str]] = defaultdict(set)
-        for u, v1b, p in subset:
-            try:
-                var0 = mutations.to_zero_based(str(v1b))
-            except ValueError:
-                continue  # skip malformed entries (e.g. accession in variant field)
-            allowed[(u, var0)].add(p)
-    else:
-        allowed = None
+    if df is None or df.empty:
+        return np.zeros((n_bootstrap, 2))
+    d = (df["max_score"] >= int_threshold).to_numpy()
+    g = (df["mean_ddg"] >= ddg_threshold).to_numpy()
+    counts = np.array([np.sum(d & g), np.sum(d & ~g),
+                       np.sum(~d & g), np.sum(~d & ~g)], dtype=float)
+    total = counts.sum()
+    if total == 0:
+        return np.zeros((n_bootstrap, 2))
+    boot = rng.multinomial(int(total), counts / total, size=n_bootstrap) / total
+    return np.column_stack([boot[:, 0] + boot[:, 1],      # PPI-disrupted
+                            boot[:, 0] + boot[:, 2]])     # destabilising
 
-    rows = []
-    for (uniprot, var0), entries in grouped.items():
-        if allowed is not None:
-            allowed_partners = allowed.get((uniprot, var0))
-            if not allowed_partners:
+
+def calc_enrichment(f_obs: float, f_base: float) -> float:
+    """Same statistic as Fig 5 (`variant_db_charts.calc_enrichment`).
+
+    Bounded in [-1, 1] and symmetric in the two fractions, so a sample twice as
+    disrupted as background and one half as disrupted sit equally far from zero.
+    """
+    total = f_obs + f_base
+    return (f_obs - f_base) / total if total > 0 else 0.0
+
+
+def load_enrichment_samples(int_threshold, ddg_threshold, n_bootstrap):
+    """Fractions + bootstrap replicates for every sample, and the gnomAD baseline.
+
+    Returns (groups, skipped) where `groups` mirrors ENRICHMENT_GROUPS with each
+    subgroup carrying its observed fractions, its bootstrap replicates and n.
+    """
+    rng = np.random.default_rng(RANDOM_SEED)
+    stability: dict[str, pd.DataFrame | None] = {}
+
+    def _stab(db):
+        if db not in stability:
+            stability[db] = load_stability(db)
+            if stability[db] is None:
+                why = ("licensed annotations absent" if db in _RESTRICTED_DBS
+                       else "stability TSV absent")
+                print(f"[skip] {db}: {why}", flush=True)
+        return stability[db]
+
+    base_stab = _stab(BASELINE[0])
+    if base_stab is None:
+        raise ValueError("the gnomAD stability predictions are required as the "
+                         "enrichment background")
+    base_df = load_panel(BASELINE[0], BASELINE[1], base_stab)
+    if base_df is None or base_df.empty:
+        raise ValueError(f"the gnomAD baseline table "
+                         f"({BASELINE[0]}/{BASELINE[1]}) is empty or absent")
+    f_int_base, f_ddg_base, n_base = sample_fractions(base_df, int_threshold, ddg_threshold)
+    base_boot = bootstrap_fractions(base_df, int_threshold, ddg_threshold,
+                                    n_bootstrap, rng)
+    print(f"gnomAD baseline: n={n_base:,}  {100 * f_int_base:.2f}% PPI-disrupted  "
+          f"{100 * f_ddg_base:.2f}% destabilising", flush=True)
+    print(f"bootstrapping x {n_bootstrap:,} replicates...", flush=True)
+
+    groups, skipped = [], []
+    for display, db, subgroups in ENRICHMENT_GROUPS:
+        stab = _stab(db)
+        kept = []
+        for label, stratum in subgroups:
+            df = load_panel(db, stratum, stab) if stab is not None else None
+            if df is None or df.empty:
+                skipped.append({"group": display, "label": label, "db": db,
+                                "stratum": stratum,
+                                "reason": "stratum table absent"
+                                          if stab is not None else
+                                          "no stability predictions"})
                 continue
-            entries = [(p, s, d) for (p, s, d) in entries if p in allowed_partners]
-        if not entries:
-            continue
-        scores = [s for (_, s, _) in entries]
-        ddgs   = [d for (_, _, d) in entries]
-        rows.append({
-            "uniprot":    uniprot,
-            "variant":    var0,
-            "max_score":  max(scores),
-            "mean_score": np.mean(scores),
-            "n_partners": len(scores),
-            "mean_ddg":   np.mean(ddgs),
-            "max_ddg":    max(ddgs),
-        })
-    return pd.DataFrame(rows)
+            f_int, f_ddg, n = sample_fractions(df, int_threshold, ddg_threshold)
+            boot = bootstrap_fractions(df, int_threshold, ddg_threshold,
+                                       n_bootstrap, rng)
+            kept.append({"label": label, "db": db, "stratum": stratum, "df": df,
+                         "n": n, "f_int": f_int, "f_ddg": f_ddg, "boot": boot,
+                         "color": _get_enrich_color(db, stratum, label)})
+            print(f"  {display} / {label}: {n:,} variants", flush=True)
+        if kept:
+            groups.append({"display": display, "db": db, "subgroups": kept})
+    return groups, skipped, base_boot, (f_int_base, f_ddg_base)
 
 
-def plot_scatter(groups: dict[str, pd.DataFrame], out: Path, sample_n: int = 5000) -> None:
-    """Scatter plot with downsampling for dense groups."""
-    fig, ax = plt.subplots(figsize=(8, 6))
+# ── Plotting ──────────────────────────────────────────────────────────────────
 
+# Samples that form an ordered progression are drawn as a connected trail rather
+# than as unrelated dots: the direction of travel is the point of the figure.
+# (colour, label, head) -- `head` is which END of the declared stratum order the
+# arrow points at, because the two progressions are declared in opposite senses:
+# gnomAD bins run rarest-first, COSMIC recurrence bins run least-recurrent-first.
+# Pointing the arrow at the wrong end reverses the story the figure tells.
+_TRAILS = {
+    "gnomAD (by allele-frequency bin)": ("#9e9e9e", "common \u2192 rare", "first"),
+    "COSMIC (by recurrence)":           ("#B71C1C", "rare \u2192 recurrent", "last"),
+    "COSMIC oncogenes (by recurrence)": ("#FF6D00", "rare \u2192 recurrent", "last"),
+    "COSMIC tumour suppressors (by recurrence)": ("#FFA000", "rare \u2192 recurrent", "last"),
+}
+
+
+def _enrichment_points(drawn, int_threshold, ddg_threshold,
+                       n_bootstrap: int = N_BOOTSTRAP):
+    """One (x, y) per sample with bootstrap CIs, plus the fractions behind it."""
+    by_key = {(p["db"], p["stratum"]): p for p in drawn}
+    base = by_key.get(BASELINE)
+    if base is None:
+        raise ValueError(
+            f"the gnomAD baseline ({BASELINE[0]}/{BASELINE[1]}) is required to "
+            f"compute enrichment, and is not among the samples that loaded")
+    f_int_base, f_ddg_base, _ = sample_fractions(base["df"], int_threshold, ddg_threshold)
+
+    rng = np.random.default_rng(RANDOM_SEED)
+    # The background is resampled too, and each replicate of a sample is paired
+    # with the SAME replicate of the background -- otherwise the shared
+    # uncertainty in the background would be counted once per sample.
+    base_boot = bootstrap_fractions(base["df"], int_threshold, ddg_threshold,
+                                    n_bootstrap, rng)
+    print(f"bootstrapping {len(drawn)} samples x {n_bootstrap:,} replicates...",
+          flush=True)
+
+    out = []
+    for p in drawn:
+        f_int, f_ddg, n = sample_fractions(p["df"], int_threshold, ddg_threshold)
+        boot = bootstrap_fractions(p["df"], int_threshold, ddg_threshold,
+                                   n_bootstrap, rng)
+        # calc_enrichment elementwise; the denominator is never 0 in practice
+        # but guard anyway so an all-empty sample cannot produce a NaN band.
+        def _enr(obs, bas):
+            tot = obs + bas
+            return np.divide(obs - bas, tot, out=np.zeros_like(tot), where=tot > 0)
+        y_boot = _enr(boot[:, 0], base_boot[:, 0])
+        x_boot = _enr(boot[:, 1], base_boot[:, 1])
+        out.append({**p,
+                    "f_int": f_int, "f_ddg": f_ddg, "n": n,
+                    "x": calc_enrichment(f_ddg, f_ddg_base),
+                    "y": calc_enrichment(f_int, f_int_base),
+                    "x_lo": float(np.percentile(x_boot, CI[0])),
+                    "x_hi": float(np.percentile(x_boot, CI[1])),
+                    "y_lo": float(np.percentile(y_boot, CI[0])),
+                    "y_hi": float(np.percentile(y_boot, CI[1]))})
+    return out, (f_int_base, f_ddg_base)
+
+
+def _place_labels(ax, points, stroke, fontsize=9.5):
+    """Greedy non-overlapping label placement around a crowded scatter.
+
+    Tries eight offsets per point and keeps the first whose rendered box misses
+    every box already placed, so no label is dropped -- a collided label is
+    worse than an oddly-placed one, but a missing label is worse than both.
+    """
+    if not points:
+        return
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    candidates = [(9, 9), (-9, 9), (9, -9), (-9, -11), (13, 0),
+                  (-13, 0), (0, 13), (0, -14)]
+    placed = []
+    # Label the most extreme points first: they have the most free space and
+    # are the ones a reader looks for.
+    order = sorted(points, key=lambda p: -(p["x"] ** 2 + p["y"] ** 2))
+    for p in order:
+        best = None
+        for dx, dy in candidates:
+            ha = "left" if dx > 0 else ("right" if dx < 0 else "center")
+            va = "bottom" if dy > 0 else ("top" if dy < 0 else "center")
+            t = ax.annotate(p["label"], (p["x"], p["y"]),
+                            xytext=(dx, dy), textcoords="offset points",
+                            fontsize=fontsize, color=p["color"],
+                            fontweight="bold", ha=ha, va=va, zorder=6)
+            bb = t.get_window_extent(renderer=renderer)
+            if not any(bb.overlaps(o) for o in placed):
+                best = (t, bb)
+                break
+            t.remove()
+        if best is None:                       # every direction was taken
+            dx, dy = candidates[0]
+            t = ax.annotate(p["label"], (p["x"], p["y"]),
+                            xytext=(dx, dy), textcoords="offset points",
+                            fontsize=fontsize, color=p["color"],
+                            fontweight="bold", ha="left", va="bottom", zorder=6)
+            best = (t, t.get_window_extent(renderer=renderer))
+        best[0].set_path_effects(stroke)
+        placed.append(best[1])
+
+
+# The two categories panel A measures, in the order they are stacked. The main
+# figure stacks Quasi-Null over Edgetic; this stacks PPI over stability.
+COMPONENTS = [("Max PPI Disruption", "f_int", 0),
+              ("Stability Disruption", "f_ddg", 1)]
+
+
+def _enrichment_replicates(sub, base_boot, comp_idx):
+    """Per-replicate enrichment of one subgroup against the paired background."""
+    obs, bas = sub["boot"][:, comp_idx], base_boot[:, comp_idx]
+    tot = obs + bas
+    return np.divide(obs - bas, tot, out=np.zeros_like(tot), where=tot > 0)
+
+
+def _display_label(label: str) -> str:
+    """Tick text for a palette key -- the main figure's own transformation."""
+    return label.replace("Case", "case").replace("Control", "control")
+
+
+def _layout(groups):
+    """x positions, tick labels and group boundaries -- Fig 5's spacing."""
+    ticks, labels, bounds, x = [], [], [], 0
+    for g in groups:
+        start = x
+        for sub in g["subgroups"]:
+            ticks.append(x)
+            labels.append(f"{_display_label(sub['label'])} (n={sub['n']:,})")
+            x += 1
+        bounds.append((start, x - 0.5, g["display"]))
+        x += 1.5
+    return ticks, labels, bounds, x
+
+
+def draw_enrichment_layer(ax, groups, base_boot, comp_idx, comp_name,
+                          n_tests, layout, is_top):
+    """One layer of panel A: a bar per sample, median with 16/84 interval.
+
+    Significance marking matches the main figure: `*` survives Bonferroni
+    correction across every bar in both layers, `•` is nominally significant
+    only.
+    """
+    ticks, labels, bounds, final_x = layout
+    alpha_bonf = 0.05 / n_tests
+    xp = 0
+    for g in groups:
+        for sub in g["subgroups"]:
+            vals = _enrichment_replicates(sub, base_boot, comp_idx)
+            median = float(np.median(vals))
+            p16, p84 = np.percentile(vals, [16, 84])
+            if median >= 0:
+                sig_bonf = np.percentile(vals, 100 * alpha_bonf) > 0
+                sig_uncorr = np.percentile(vals, 5) > 0
+            else:
+                sig_bonf = np.percentile(vals, 100 * (1 - alpha_bonf)) < 0
+                sig_uncorr = np.percentile(vals, 95) < 0
+            ax.bar(xp, median, width=0.8, color=sub["color"], edgecolor="black",
+                   linewidth=1.2, alpha=0.9 if sig_bonf else 0.55)
+            ax.errorbar(xp, median, yerr=[[median - p16], [p84 - median]],
+                        fmt="none", ecolor="black", capsize=4, linewidth=2, alpha=0.7)
+            if sig_bonf or sig_uncorr:
+                y = (p84 + 0.05) if median > 0 else (p16 - 0.05)
+                ax.text(xp, y, "*" if sig_bonf else "\u2022", ha="center",
+                        va="bottom" if median > 0 else "top",
+                        fontsize=20 if sig_bonf else 12,
+                        fontweight="bold", color="black")
+            sub[f"median_{comp_idx}"] = median
+            sub[f"p16_{comp_idx}"] = float(p16)
+            sub[f"p84_{comp_idx}"] = float(p84)
+            sub[f"sig_{comp_idx}"] = "bonferroni" if sig_bonf else (
+                "nominal" if sig_uncorr else "ns")
+            xp += 1
+        xp += 1.5
+
+    # Group headings once, on the upper layer: the two layers share an x axis.
+    if is_top:
+        for start, end, name in bounds:
+            ax.text((start + end) / 2, 0.90, name,
+                    ha="center", va="bottom", fontsize=13, fontweight="bold",
+                    bbox=dict(boxstyle="round", facecolor="white", alpha=0.9,
+                              edgecolor="gray", linewidth=1.5),
+                    transform=ax.get_xaxis_transform())
+
+    ax.axhline(0, color="black", linewidth=1.5, linestyle="--", alpha=0.7)
+    ax.set_ylabel(f"{comp_name}\nEnrichment", fontsize=14, fontweight="bold")
+    ax.set_xticks(ticks)
+    ax.set_xlim(-1.5, final_x - 2 + 1.5)
+    ax.set_ylim(-1, 1.05)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.grid(axis="y", alpha=0.3, linewidth=0.8)
+    if is_top:
+        ax.set_xticklabels([])
+        ax.tick_params(axis="x", which="both", bottom=False, top=False)
+        ax.set_yticks([-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1.0])
+        ax.spines["bottom"].set_visible(False)
+    else:
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=11)
+        ax.set_yticks([-1.0, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1.0])
+        ax.spines["top"].set_visible(False)
+
+
+def _kde_limits(panels):
+    ddg = np.concatenate([p["df"]["mean_ddg"].values for p in panels])
+    return (float(np.percentile(ddg, 1)), float(np.percentile(ddg, 99))), (0.0, 1.0)
+
+
+def draw_kde_grid(fig, gs, panels, max_n: int = 20000):
+    """Panel B: per-variant density for each sample, as one flush grid.
+
+    Panels sit edge to edge with shared axes; only the outer edges carry tick
+    labels, so the grid reads as a single plot rather than twelve small ones.
+    """
+    ncols = KDE_NCOLS
+    nrows = int(np.ceil(len(panels) / ncols))
+    sub = gs.subgridspec(nrows, ncols, wspace=0.0, hspace=0.0)
+    xlim, ylim = _kde_limits(panels)
     rng = np.random.default_rng(42)
-    for label, df in groups.items():
-        if df.empty:
-            continue
-        color = GROUP_COLORS.get(label, "grey")
-        idx = rng.choice(len(df), size=min(sample_n, len(df)), replace=False)
-        sub = df.iloc[idx]
-        ax.scatter(sub["mean_ddg"], sub["max_score"],
-                   c=color, alpha=0.15, s=4, label=f"{label} (n={len(df):,})", rasterized=True)
-
-    ax.axhline(0.5, color="grey", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax.axvline(0.0, color="grey", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax.set_xlabel("Mean ΔΔG across partners (kcal/mol)\n← stabilizing | destabilizing →")
-    ax.set_ylabel("Max interaction disruption score across partners\n(MutPred-PPI, 0–1)")
-    ax.set_title("Stability vs Interaction Disruption per Variant")
-    ax.legend(fontsize=7, markerscale=4, loc="upper left", ncol=2)
-    plt.tight_layout()
-    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
-    plt.close()
-    print(f"Saved scatter → {out}")
-
-
-def plot_kde_contours(groups: dict[str, pd.DataFrame], out: Path, cosmic_min_recurrence: int,
-                       max_n: int = 20000) -> None:
-    """KDE contour plot per group — better for seeing cluster shapes."""
-    n_groups = len(groups)
-    ncols = 3
-    nrows = int(np.ceil(n_groups / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 3.2 * nrows), sharex=True, sharey=True)
-    axes_flat = axes.flatten()
-
-    items = list(groups.items())
-    rng = np.random.default_rng(42)
-
-    # Determine axis limits from all data
-    all_ddg = np.concatenate([df["mean_ddg"].values for df in groups.values() if not df.empty])
-    all_score = np.concatenate([df["max_score"].values for df in groups.values() if not df.empty])
-    xlim = (np.percentile(all_ddg, 1), np.percentile(all_ddg, 99))
-    ylim = (0, 1)
 
     xgrid = np.linspace(xlim[0], xlim[1], 100)
     ygrid = np.linspace(0, 1, 100)
     XX, YY = np.meshgrid(xgrid, ygrid)
     positions = np.vstack([XX.ravel(), YY.ravel()])
 
-    for idx, (label, df) in enumerate(items):
-        ax = axes_flat[idx]
-        color = GROUP_COLORS.get(label, "grey")
+    axes = []
+    base = None
+    for i, p in enumerate(panels):
+        r, c = divmod(i, ncols)
+        ax = fig.add_subplot(sub[r, c], sharex=base, sharey=base)
+        base = base or ax
+        axes.append(ax)
+        df = p["df"]
 
-        panel_letter = f"({chr(65 + idx)})"
-        ax.text(-0.08, 1.18, panel_letter, transform=ax.transAxes,
-                 fontsize=12, fontweight="bold", va="top")
-
-        if label == "COSMIC recurrent":
-            title = f"COSMIC recurrent (≥{cosmic_min_recurrence} tumor sites)"
-        elif label in ("Onco", "TSG"):
-            title = f"{label} (COSMIC recurrence ≥{ONCO_TSG_MIN_RECURRENCE})"
-        else:
-            title = label
-
-        if df.empty:
-            ax.set_title(f"{title}\n(no data)", fontsize=9)
-            continue
-
-        # Downsample for KDE
         n = min(max_n, len(df))
-        idx_s = rng.choice(len(df), size=n, replace=False)
-        x = df.iloc[idx_s]["mean_ddg"].values
-        y = df.iloc[idx_s]["max_score"].values
+        idx = rng.choice(len(df), size=n, replace=False)
+        x = df.iloc[idx]["mean_ddg"].values
+        y = df.iloc[idx]["max_score"].values
 
-        # KDE
-        try:
-            kernel = gaussian_kde(np.vstack([x, y]), bw_method=0.15)
-            Z = kernel(positions).reshape(XX.shape)
-            ax.contourf(XX, YY, Z, levels=12, cmap="Blues" if "gnomAD" in label or "Benign" in label else "Reds",
-                        alpha=0.7)
-            ax.contour(XX, YY, Z, levels=6, colors=color, linewidths=0.5, alpha=0.6)
-        except Exception:
-            ax.scatter(x, y, c=color, alpha=0.05, s=2, rasterized=True)
+        if n > 10:
+            try:
+                Z = gaussian_kde(np.vstack([x, y]), bw_method=0.15)(positions)
+                ax.contourf(XX, YY, Z.reshape(XX.shape), levels=12,
+                            cmap=KDE_CMAP, alpha=0.7)
+                ax.contour(XX, YY, Z.reshape(XX.shape), levels=6,
+                           colors=KDE_LINE, linewidths=0.5, alpha=0.6)
+            except Exception:                                  # noqa: BLE001
+                ax.scatter(x, y, c=KDE_LINE, alpha=0.05, s=2, rasterized=True)
+        else:
+            ax.scatter(x, y, c=KDE_LINE, alpha=0.3, s=6, rasterized=True)
 
-        ax.axhline(0.5, color="grey", linewidth=0.7, linestyle="--", alpha=0.5)
-        ax.axvline(0.0, color="grey", linewidth=0.7, linestyle="--", alpha=0.5)
-        ax.set_title(f"{title}\n(n={len(df):,} variants)", fontsize=9)
+        ax.axhline(INT_THRESHOLD, color="grey", lw=0.7, ls="--", alpha=0.5)
+        ax.axvline(0.0, color="grey", lw=0.7, ls="--", alpha=0.5)
+
+        med_ddg, med_score = df["mean_ddg"].median(), df["max_score"].median()
+        ax.axvline(med_ddg, color=KDE_LINE, lw=1.4, ls=":", alpha=0.9,
+                   label=f"median \u0394\u0394G = {med_ddg:.2f}")
+        ax.axhline(med_score, color=KDE_LINE, lw=1.4, ls="-.", alpha=0.9,
+                   label=f"median PPI disruption score = {med_score:.2f}")
+        ax.legend(fontsize=5.6, loc="upper right", framealpha=0.85,
+                  borderpad=0.25, handlelength=1.3, borderaxespad=0.2)
+
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
+        # Title inside the panel, so panels can sit flush.
+        ax.text(0.03, 0.97, f"{p['label']}\n(n={len(df):,})", transform=ax.transAxes,
+                fontsize=7.5, va="top", ha="left", fontweight="bold", color="black",
+                bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="none", alpha=0.75))
 
-        # Median crosshair
-        ax.axvline(df["mean_ddg"].median(), color=color, linewidth=1.5, linestyle=":",
-                   alpha=0.8, label=f"median ΔΔG={df['mean_ddg'].median():.2f}")
-        ax.axhline(df["max_score"].median(), color=color, linewidth=1.5, linestyle="-.",
-                   alpha=0.8, label=f"median score={df['max_score'].median():.2f}")
-        ax.legend(fontsize=6, loc="upper right")
-
-    for idx in range(len(items), len(axes_flat)):
-        axes_flat[idx].set_visible(False)
-
-    for ax in axes[-1]:
-        ax.set_xlabel("Mean ΔΔG (kcal/mol)", fontsize=9)
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Max disruption score", fontsize=9)
-
-    plt.tight_layout()
-    plt.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
-    plt.close()
-    print(f"Saved KDE → {out}")
+        # Only the outer edges of the whole grid are labelled.
+        if c != 0:
+            ax.tick_params(labelleft=False)
+        if r != nrows - 1:
+            ax.tick_params(labelbottom=False)
+        ax.tick_params(labelsize=7)
+    return axes, nrows, ncols
 
 
-def _cosmic_recurrence_set(vt_to_sites: dict[str, list[str]], min_recurrence: int) -> set[tuple[str, str]]:
-    """{(uniprot, variant_0b)} for COSMIC entries with tumor-site recurrence >= min_recurrence.
+def make_figure(groups, base_boot, kde_panels, out: Path,
+                demo_tier: bool = False) -> None:
+    """One figure: (A) the two-layer enrichment bars, (B) the density grid."""
+    from matplotlib.gridspec import GridSpec
 
-    The COSMIC recurrence dict keys are `"ACC MUT_1b"` (space-delimited, 1-based mutation).
-    Internal representation is 0-based for consistency with `load_tsv_grouped`.
-    """
-    out = set()
-    for key, sites in vt_to_sites.items():
-        if len(sites) >= min_recurrence:
-            parts = key.split(" ", 1)
-            if len(parts) == 2:
-                u, v1b = parts
-                try:
-                    var0 = mutations.to_zero_based(v1b)
-                except ValueError:
-                    continue  # skip malformed entries (e.g. delins notation)
-                out.add((u, var0))
-    return out
+    layout = _layout(groups)
+    n_samples = sum(len(g["subgroups"]) for g in groups)
+    n_tests = n_samples * len(COMPONENTS)
+    print(f"  Bonferroni n_tests = {n_tests}", flush=True)
+
+    width = max(min(18 * (layout[3] / 35.0), 18), 10)
+    fig = plt.figure(figsize=(width, 22))
+    # Two layers of panel A are flush with each other (they share an x axis);
+    # panel B needs clear air beneath A's rotated tick labels.
+    outer = GridSpec(2, 1, figure=fig, height_ratios=[1.0, 1.15], hspace=0.30)
+    gs_a = outer[0].subgridspec(2, 1, hspace=0.0)
+
+    axes_a = [fig.add_subplot(gs_a[0]), fig.add_subplot(gs_a[1])]
+    for i, ((name, _key, comp_idx), ax) in enumerate(zip(COMPONENTS, axes_a)):
+        draw_enrichment_layer(ax, groups, base_boot, comp_idx, name,
+                              n_tests, layout, is_top=(i == 0))
+
+    axes, nrows, ncols = draw_kde_grid(fig, outer[1], kde_panels)
+
+    # Panel letters share one x in FIGURE coordinates. Placing each in its own
+    # axes coordinates puts them at different absolute positions, because the
+    # enrichment layers and the density grid have different left margins.
+    fig.canvas.draw()
+    letter_x = min(ax.get_position().x0 for ax in (*axes_a, *axes)) - 0.045
+    for letter, ax in zip("ABC", (*axes_a, axes[0])):
+        fig.text(letter_x, ax.get_position().y1, f"({letter})",
+                 fontsize=20, fontweight="bold", va="bottom", ha="left")
+
+    left = axes[0].get_position().x0
+    right = axes[min(ncols, len(axes)) - 1].get_position().x1
+    bottom = axes[-1].get_position().y0
+    top = axes[0].get_position().y1
+    fig.text((left + right) / 2, bottom - 0.021,
+             "Mean \u0394\u0394G across partners (kcal/mol)",
+             ha="center", va="top", fontsize=12, fontweight="bold")
+    fig.text(left - 0.042, (bottom + top) / 2,
+             "Max PPI disruption score across partners",
+             ha="right", va="center", rotation=90, fontsize=12, fontweight="bold")
+
+    if demo_tier:
+        plot_style.demo_stamp(fig)
+    fig.savefig(out, dpi=SAVE_DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out}", flush=True)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cosmic-min-recurrence", type=int, default=32,
-                    help="Min tumor-site recurrence for 'COSMIC recurrent' group (default: 32, "
-                         "matching Fig 5's highest recurrence bin)")
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", default=None,
+                    help="classified stratum tables (default: "
+                         "results/variant_dbs_all_data)")
+    ap.add_argument("--demo-tier", action="store_true",
+                    help="stamp the figure as coming from the Sahni+Fragoza "
+                         "demonstration model (see run_variant_db_inference.py "
+                         "--model-tier)")
+    ap.add_argument("--n-bootstrap", type=int, default=N_BOOTSTRAP,
+                    help=f"bootstrap replicates for panel A (default "
+                         f"{N_BOOTSTRAP:,}, matching the main enrichment figure)")
+    ap.add_argument("--int-threshold", type=float, default=INT_THRESHOLD,
+                    help=f"MutPred-PPI score at or above which a variant counts "
+                         f"as PPI-disrupting (default {INT_THRESHOLD})")
+    ap.add_argument("--ddg-threshold", type=float, default=DDG_THRESHOLD,
+                    help=f"DDG (kcal/mol) at or above which a variant counts as "
+                         f"destabilising (default {DDG_THRESHOLD})")
     args = ap.parse_args()
 
+    if args.data_dir:
+        global _DB
+        _DB = Path(args.data_dir)
+
     _OUT.mkdir(parents=True, exist_ok=True)
+    groups, skipped, base_boot, (f_int_base, f_ddg_base) = load_enrichment_samples(
+        args.int_threshold, args.ddg_threshold, args.n_bootstrap)
 
-    # --- Load COSMIC recurrence ---
-    cosmic_rec_file = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
-    cosmic_high_rec: set[tuple[str, str]] | None = None
-    cosmic_rec8: set[tuple[str, str]] | None = None
-    if cosmic_rec_file.exists():
-        print(f"Loading COSMIC recurrence (min={args.cosmic_min_recurrence})...", flush=True)
-        with open(cosmic_rec_file, "rb") as f:
-            vt_to_sites = pickle.load(f)
-        cosmic_high_rec = _cosmic_recurrence_set(vt_to_sites, args.cosmic_min_recurrence)
-        print(f"  {len(cosmic_high_rec):,} high-recurrence COSMIC variants", flush=True)
-        cosmic_rec8 = _cosmic_recurrence_set(vt_to_sites, ONCO_TSG_MIN_RECURRENCE)
-        print(f"  {len(cosmic_rec8):,} COSMIC variants at recurrence ≥{ONCO_TSG_MIN_RECURRENCE} "
-              f"(for Onco/TSG)", flush=True)
+    if not groups:
+        print("No sample has both a stratum table and stability predictions. "
+              "Run classify_variant_dbs.py and run_stability_inference.py first.")
+        return 1
+    if skipped:
+        print(f"\n{len(skipped)} sample(s) skipped:", flush=True)
+        for s in skipped:
+            print(f"  [skip] {s['label']} ({s['db']}/{s['stratum']}): {s['reason']}")
 
-    # --- Load Onco/TSG protein-level sets ---
-    onco_uniprots: set[str] = set()
-    tsg_uniprots: set[str] = set()
-    if ONCO_TSG_FILE.exists():
-        with open(ONCO_TSG_FILE, "rb") as f:
-            onco_tsg = pickle.load(f)
-        onco_uniprots = {v.split()[0] for v in onco_tsg.get("oncogene", set())}
-        tsg_uniprots  = {v.split()[0] for v in onco_tsg.get("TSG", set())}
-        print(f"Loaded onco_tsg_dict: {len(onco_uniprots)} oncogene, "
-              f"{len(tsg_uniprots)} TSG UniProt IDs", flush=True)
-
-    # --- Load AR/AD UniProt sets ---
-    ar_uniprots: set[str] = set()
-    ad_uniprots: set[str] = set()
-    if AR_AD_FILE.exists():
-        with open(AR_AD_FILE, "rb") as f:
-            ar_ad = pickle.load(f)
-        ar_uniprots = ar_ad.get("AR", set())
-        ad_uniprots = ar_ad.get("AD", set())
-        print(f"Loaded clingen_ar_ad_uniprot_sets: {len(ar_uniprots)} AR-only, "
-              f"{len(ad_uniprots)} AD-only UniProt IDs", flush=True)
-    else:
-        print(f"[WARN] {AR_AD_FILE} not found — run build_ar_ad_gene_sets.py first; "
-              "AR/AD groups will be empty", flush=True)
-
-    # --- Load and group TSV data ---
-    db_grouped: dict[str, dict] = {}
-    for db in ["clinvar", "hgmd", "gnomad", "cosmic"]:
-        pred_tsv = _DB  / f"{db}_mutpred_ppi_predictions.tsv"
-        stab_tsv = _STAB / f"{db}_stability_predictions.tsv"
-        if not pred_tsv.exists() or not stab_tsv.exists():
-            print(f"[SKIP] {db}: missing TSV", flush=True)
+    # Panel B: a fixed reading order, independent of panel A's grouping.
+    kde_panels, kde_missing = [], []
+    stab_cache: dict[str, object] = {}
+    for label, db, stratum in KDE_PANELS:
+        if db not in stab_cache:
+            stab_cache[db] = load_stability(db)
+        stab = stab_cache[db]
+        df = load_panel(db, stratum, stab) if stab is not None else None
+        if df is None or df.empty:
+            kde_missing.append(f"{label} ({db}/{stratum})")
             continue
-        print(f"Loading {db}...", flush=True)
-        db_grouped[db] = load_tsv_grouped(pred_tsv, stab_tsv)
-        print(f"  {len(db_grouped[db]):,} unique (uniprot, variant) pairs", flush=True)
+        kde_panels.append({"label": label, "db": db, "stratum": stratum,
+                           "df": df, "color": _panel_color(label, db)})
+    if kde_missing:
+        print(f"\npanel B: {len(kde_missing)} of {len(KDE_PANELS)} samples "
+              f"unavailable: {', '.join(kde_missing)}", flush=True)
+    if not kde_panels:
+        print("panel B has no samples; cannot draw the figure.")
+        return 1
 
-    # --- Build per-group DataFrames ---
-    groups: dict[str, pd.DataFrame] = {}
-    raw_subsets: dict[str, set[tuple[str, str, str]]] = {}
+    out = _OUT / "stability_interaction_scatter.png"
+    make_figure(groups, base_boot, kde_panels, out, demo_tier=args.demo_tier)
 
-    for label, (pkl_path, db) in SUBSET_PKLS.items():
-        if db not in db_grouped:
-            continue
-        if not pkl_path.exists():
-            print(f"[SKIP] {label}: subset PKL not found", flush=True)
-            continue
-        print(f"Building {label}...", flush=True)
-        with open(pkl_path, "rb") as f:
-            subset = pickle.load(f)  # set of (uniprot, variant_1b, partner)
-        raw_subsets[label] = subset
-        groups[label] = aggregate_per_variant(db_grouped[db], subset)
-        print(f"  {len(groups[label]):,} variants", flush=True)
-
-    if "gnomad" in db_grouped:
-        print("Building gnomAD (all)...", flush=True)
-        groups["gnomAD"] = aggregate_per_variant(db_grouped["gnomad"], subset=None)
-        print(f"  {len(groups['gnomAD']):,} variants", flush=True)
-
-    if "cosmic" in db_grouped and cosmic_high_rec is not None:
-        print(f"Building COSMIC recurrent (≥{args.cosmic_min_recurrence})...", flush=True)
-        cosmic_all = aggregate_per_variant(db_grouped["cosmic"], subset=None)
-        mask = cosmic_all.apply(lambda r: (r["uniprot"], r["variant"]) in cosmic_high_rec, axis=1)
-        groups["COSMIC recurrent"] = cosmic_all[mask].reset_index(drop=True)
-        print(f"  {len(groups['COSMIC recurrent']):,} variants", flush=True)
-
-        if False and cosmic_rec8 is not None and (onco_uniprots or tsg_uniprots):
-            # Excluded from the final 6-panel figure (Pathogenic/Benign/VUS/gnomAD/HGMD/COSMIC≥32 only).
-            # Data-loading logic kept intact in case Onco/TSG panels are wanted again later.
-            print(f"Building Onco (COSMIC recurrence ≥{ONCO_TSG_MIN_RECURRENCE})...", flush=True)
-            onco_mask = cosmic_all.apply(
-                lambda r: (r["uniprot"], r["variant"]) in cosmic_rec8 and r["uniprot"] in onco_uniprots,
-                axis=1)
-            groups["Onco"] = cosmic_all[onco_mask].reset_index(drop=True)
-            print(f"  {len(groups['Onco']):,} variants", flush=True)
-
-            print(f"Building TSG (COSMIC recurrence ≥{ONCO_TSG_MIN_RECURRENCE})...", flush=True)
-            tsg_mask = cosmic_all.apply(
-                lambda r: (r["uniprot"], r["variant"]) in cosmic_rec8 and r["uniprot"] in tsg_uniprots,
-                axis=1)
-            groups["TSG"] = cosmic_all[tsg_mask].reset_index(drop=True)
-            print(f"  {len(groups['TSG']):,} variants", flush=True)
-
-    if False and (ar_uniprots or ad_uniprots):
-        # Excluded from the final 6-panel figure (Pathogenic/Benign/VUS/gnomAD/HGMD/COSMIC≥32 only).
-        # Data-loading logic kept intact in case AR/AD panels are wanted again later.
-        if "ClinVar Pathogenic" in raw_subsets and "clinvar" in db_grouped:
-            pathogenic_subset = raw_subsets["ClinVar Pathogenic"]
-            ar_path_subset = {(u, v, p) for (u, v, p) in pathogenic_subset if u in ar_uniprots}
-            ad_path_subset = {(u, v, p) for (u, v, p) in pathogenic_subset if u in ad_uniprots}
-            print("Building AR ClinVar Pathogenic...", flush=True)
-            groups["AR ClinVar Pathogenic"] = aggregate_per_variant(db_grouped["clinvar"], ar_path_subset)
-            print(f"  {len(groups['AR ClinVar Pathogenic']):,} variants", flush=True)
-            print("Building AD ClinVar Pathogenic...", flush=True)
-            groups["AD ClinVar Pathogenic"] = aggregate_per_variant(db_grouped["clinvar"], ad_path_subset)
-            print(f"  {len(groups['AD ClinVar Pathogenic']):,} variants", flush=True)
-
-        if "HGMD" in raw_subsets and "hgmd" in db_grouped:
-            hgmd_subset = raw_subsets["HGMD"]
-            ar_hgmd_subset = {(u, v, p) for (u, v, p) in hgmd_subset if u in ar_uniprots}
-            ad_hgmd_subset = {(u, v, p) for (u, v, p) in hgmd_subset if u in ad_uniprots}
-            print("Building AR HGMD...", flush=True)
-            groups["AR HGMD"] = aggregate_per_variant(db_grouped["hgmd"], ar_hgmd_subset)
-            print(f"  {len(groups['AR HGMD']):,} variants", flush=True)
-            print("Building AD HGMD...", flush=True)
-            groups["AD HGMD"] = aggregate_per_variant(db_grouped["hgmd"], ad_hgmd_subset)
-            print(f"  {len(groups['AD HGMD']):,} variants", flush=True)
-
-    # --- Sanity check against Fig 5 reference counts ---
-    print("\nSanity check vs Fig 5 (variant_db_charts.py) reference counts:")
-    for label, ref_n in FIG5_REFERENCE_N.items():
-        actual_n = len(groups.get(label, pd.DataFrame()))
-        mark = "OK" if actual_n == ref_n else "MISMATCH"
-        print(f"  [{mark}] {label}: n={actual_n:,} (Fig 5 n={ref_n:,})")
-    if args.cosmic_min_recurrence == 32 and "COSMIC recurrent" in groups:
-        ref_n = 1673
-        actual_n = len(groups["COSMIC recurrent"])
-        mark = "OK" if actual_n == ref_n else "MISMATCH"
-        print(f"  [{mark}] COSMIC recurrent (≥32): n={actual_n:,} (Fig 5 n={ref_n:,})")
-
-    # --- Summary statistics ---
-    print("\nPer-variant summary:")
+    # draw_enrichment_layer records the per-bar statistics as it draws them.
     rows = []
-    for label, df in groups.items():
-        if df.empty:
-            continue
-        rows.append({
-            "group": label,
-            "n_variants": len(df),
-            "median_max_score": df["max_score"].median(),
-            "median_mean_ddg":  df["mean_ddg"].median(),
-            "pct_score_gt05":   (df["max_score"] > 0.5).mean() * 100,
-            "pct_ddg_gt05":     (df["mean_ddg"] > 0.5).mean() * 100,
-            "pct_both":         ((df["max_score"] > 0.5) & (df["mean_ddg"] > 0.5)).mean() * 100,
-        })
-        print(f"  {label}: n={len(df):,}  "
-              f"med_score={df['max_score'].median():.3f}  "
-              f"med_ddg={df['mean_ddg'].median():.3f}")
+    for g in groups:
+        for sub in g["subgroups"]:
+            rows.append({
+                "group": g["display"], "sample": sub["label"],
+                "db": sub["db"], "stratum": sub["stratum"], "n_variants": sub["n"],
+                "pct_ppi_disrupted": 100 * sub["f_int"],
+                "pct_destabilising": 100 * sub["f_ddg"],
+                "ppi_enrichment": sub.get("median_0"),
+                "ppi_enrichment_p16": sub.get("p16_0"),
+                "ppi_enrichment_p84": sub.get("p84_0"),
+                "ppi_significance": sub.get("sig_0"),
+                "stability_enrichment": sub.get("median_1"),
+                "stability_enrichment_p16": sub.get("p16_1"),
+                "stability_enrichment_p84": sub.get("p84_1"),
+                "stability_significance": sub.get("sig_1"),
+                "status": "drawn",
+            })
+    rows += [{"group": s["group"], "sample": s["label"], "db": s["db"],
+              "stratum": s["stratum"], "n_variants": 0, "status": s["reason"]}
+             for s in skipped]
+    pd.DataFrame(rows).to_csv(_OUT / "per_variant_summary.tsv", sep="\t",
+                              index=False, float_format="%.4f")
 
-    pd.DataFrame(rows).to_csv(_OUT / "per_variant_summary.tsv", sep="\t", index=False, float_format="%.4f")
-
-    # --- Plots ---
-    print("\nGenerating scatter...", flush=True)
-    plot_scatter(groups, _OUT / "scatter_per_variant.png")
-    print("Generating KDE contours...", flush=True)
-    plot_kde_contours(groups, _OUT / "scatter_per_variant_kde.png", args.cosmic_min_recurrence)
+    n = sum(len(g["subgroups"]) for g in groups)
+    print(f"\nA: {n} samples in {len(groups)} groups   "
+          f"B: {len(kde_panels)} panels   ({len(skipped)} skipped)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

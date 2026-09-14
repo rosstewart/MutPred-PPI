@@ -58,8 +58,7 @@ import os
 import pickle
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
+from paths import EXTERNAL_DIR  # noqa: E402
 from data_processing.variant_databases.biogrid_common import (  # noqa: E402
     build_variant_triplets, clean_complexes, get_complexes_in_biogrid,
     load_biogrid,

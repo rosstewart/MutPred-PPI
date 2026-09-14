@@ -39,6 +39,7 @@ from paths import (ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT,  # noqa
                    DATASETS_DIR, VARIANT_DBS_DIR)
 VARIANT_ROWS_DIR = DATASETS_DIR / "variant_dbs"
 from analysis import edgotypes  # noqa: E402
+from analysis import training_overlap  # noqa: E402
 
 
 # ── paths ──────────────────────────────────────────────────────────────────────
@@ -105,7 +106,8 @@ GNOMAD_AF_THRESHOLDS = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1]  # upper bounds of ex
 BENIGN_AF_FILE = str(ANNOTATIONS_DIR / "benign_allele_frequencies.tsv")
 RARE_BENIGN_AF_THRESHOLD = 0.01
 
-COSMIC_TUMOR_SITE_FILE = str(ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl")  # recurrence = len(sites)
+COSMIC_TUMOR_SITE_FILE = str(ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl")
+# The file name says "site", but the list holds one entry PER OCCURRENCE (a site repeats once per sample), so len() is the recurrence -- the number of times the variant was observed, NOT the number of distinct tissues.
 COSMIC_ONCO_TSG_FILE   = str(ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl")
 COSMIC_RECURRENCE_BINS = [1, 2, 4, 8, 16, 32]  # "single" = 1; "2+" = >=2, etc.
 
@@ -210,7 +212,15 @@ def build_arrays(grouped, subset, threshold=0.5, min_partners=1,
     return pd.DataFrame(records, columns=edgotypes.COLUMNS)
 
 
+# Set from --keep-training-overlap. Every stratum table passes through
+# save_outputs(), so this is the one place the exclusion has to be applied for
+# Fig 5, S8, the threshold sweep and the stability figure to agree.
+_DROP_TRAINING_OVERLAP = True
+
+
 def save_outputs(out_dir, name, table):
+    if _DROP_TRAINING_OVERLAP:
+        table, _ = training_overlap.drop_training_variants(table, label=name)
     path = edgotypes.save_group(out_dir, name, table)
     group = edgotypes.EdgotypeGroup(name=name, table=table)
     print(f"  {name}: n={len(group)} variants, {len(table)} pairs | "
@@ -390,7 +400,7 @@ def process_cosmic(tsv_path, out_dir, threshold, min_partners):
     grouped = group_by_variant(pairs)
     all_cosmic_pairs = set(pairs.keys())
 
-    # vt_to_tumor_site: "{uniprot} {variant}" -> list of tumor sites; recurrence = len(list)
+    # vt_to_tumor_site: "{uniprot} {variant}" -> one entry PER OCCURRENCE (a site repeats once per sample), so len() is the recurrence -- the number of times the variant was observed, NOT the number of distinct tissues.
     with open(COSMIC_TUMOR_SITE_FILE, "rb") as f:
         tumor_site_dict = pickle.load(f)
     recurrence_dict = {k: len(v) for k, v in tumor_site_dict.items()}
@@ -473,7 +483,22 @@ def main():
                    help=f"Root holding {{db}}/mutpred_ppi_predictions.tsv per "
                         f"database (default: {DEFAULT_PRED_DIR}). All databases "
                         f"in one run must come from the same model.")
+    p.add_argument("--keep-training-overlap", action="store_true",
+                   help="keep variants the model was trained on. OFF by default: "
+                        "a variant seen in training (matched on (interactor, "
+                        "variant), partner ignored) has a fitted answer rather "
+                        "than a predicted one and inflates every enrichment.")
     args = p.parse_args()
+
+    global _DROP_TRAINING_OVERLAP
+    _DROP_TRAINING_OVERLAP = not args.keep_training_overlap
+    if _DROP_TRAINING_OVERLAP:
+        n = len(training_overlap.training_variants())
+        print(f"Excluding {n:,} (interactor, variant) pairs seen in "
+              f"{training_overlap.TRAINING_DATASET}", flush=True)
+    else:
+        print("*** --keep-training-overlap: training variants are NOT excluded; "
+              "these are not the published numbers. ***", flush=True)
 
     db_funcs = {
         "clinvar":   (process_clinvar,  "clinvar"),

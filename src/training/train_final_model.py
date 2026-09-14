@@ -39,7 +39,8 @@ from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
 # ── data layer: the canonical tables and the contact-graph store ─────────────
-from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATASET_CONFIGS, load_data, load_splits  # noqa: E402
+from utils.gcv_common import (dataset_arg, dataset_config, dataset_name,  # noqa: E402
+                              DATASET_CHOICES, DATASET_CONFIGS, load_data, load_splits)
 from utils.mutpred_ppi_data import build_tensors  # noqa: E402
 from training.train_fold import (  # noqa: E402
     apply_freeze_strategy,
@@ -85,7 +86,7 @@ def _build_model(ablation: str, input_dim: int, device: torch.device) -> nn.Modu
         model = GAT_mut_processor(input_dim=input_dim)
         if ablation in ("full", "full_all"):
             _load_ckpt(_V1_0_PRETRAINED_PATH, model, device)
-        elif ablation in ("megascale", "megascale_freeze_diff", "megascale_all",
+        elif ablation in ("megascale", "freeze_mut_processor", "freeze_gat", "megascale_all",
                           "megascale_head", "megascale_all_wt-emb"):
             _load_ckpt(_MEGASCALE_PRETRAINED_PATH, model, device)
         model = model.to(device)
@@ -330,7 +331,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"  {len(rows)} rows", flush=True)
 
     _MEGASCALE_ABLATIONS = {
-        "megascale", "megascale_freeze_diff", "megascale_all", "megascale_head",
+        "megascale", "freeze_mut_processor", "freeze_gat", "megascale_all", "megascale_head",
         "megascale_all_no-gat", "megascale_all_no-mut", "megascale_all_wt-emb",
     }
     prefit_scaler = None
@@ -403,7 +404,7 @@ def run(args: argparse.Namespace) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train final MutPred-PPI model and save checkpoints")
-    p.add_argument("--dataset", default="sahni_fragoza_mapped090826",
+    p.add_argument("--dataset", default=dataset_name("sahni_fragoza"),
                    type=dataset_arg, choices=list(DATASET_CONFIGS))
     p.add_argument("--device", default="")
     p.add_argument("--save-models-dir", required=True,
@@ -411,7 +412,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--ablation", default="megascale_all",
                    choices=[
                        "full", "full_all",
-                       "megascale", "megascale_freeze_diff", "megascale_all", "megascale_head",
+                       "megascale", "freeze_mut_processor", "freeze_gat", "megascale_all", "megascale_head",
                        "megascale_all_no-gat", "megascale_all_no-mut", "megascale_all_wt-emb",
                        "scratch", "no-gat", "no-mut", "wt-emb",
                    ])

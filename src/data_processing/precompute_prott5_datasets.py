@@ -33,6 +33,8 @@ from paths import DATASETS_DIR, TRAINING_EVAL_DIR  # noqa: E402
 from utils import mutations  # noqa: E402
 from utils.embeddings import (PROTT5_MODEL,  # noqa: E402
                               embed_sequences as _embed_sequences_shared, load_prott5)
+from utils.gcv_common import (dataset_arg, dataset_config,  # noqa: E402
+                              dataset_name, load_data)
 from utils.runtime import resolve_device  # noqa: E402
 
 
@@ -174,7 +176,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--dataset", type=dataset_arg,
-                   default="sahni_fragoza_varchamp_all_mapped090826",
+                   default=dataset_name("sahni_fragoza_varchamp_all"),
                    help="canonical dataset to embed; short aliases accepted "
                         "(sahni_fragoza, varchamp_all, ...)")
     p.add_argument("--out", default=None,
@@ -190,9 +192,6 @@ def main():
         df = pd.read_csv(args.csv)
         stem = Path(args.csv).stem
     else:
-        import sys as _s
-        _s.path.insert(0, str(Path(__file__).resolve().parents[1] / "evaluation"))
-        from utils.gcv_common import dataset_arg, dataset_config, load_data  # noqa: E402
         logger.info("Loading canonical dataset: %s", args.dataset)
         df = load_data(dataset_config(args.dataset))
         stem = args.dataset

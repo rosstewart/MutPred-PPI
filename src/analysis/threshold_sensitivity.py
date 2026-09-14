@@ -24,6 +24,7 @@ import pickle
 import numpy as np
 import matplotlib
 from analysis import edgotypes, plot_style
+from analysis import plot_style
 from analysis.plot_style import SAVE_DPI
 plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
@@ -34,7 +35,10 @@ from paths import REPO_ROOT  # noqa: E402
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
+# Default is the published all-data tree; --data-dir selects the
+# Sahni+Fragoza demonstration tree instead.
 DATA_DIR = f"{_PUB}/results/variant_dbs_all_data"
+_DEMO_STAMP = False
 OUT_DIR = f"{_PUB}/results/robustness"
 
 THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
@@ -169,9 +173,19 @@ def calc_enrichment(f_obs, f_ref):
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    global DATA_DIR, _DEMO_STAMP
+
     p = argparse.ArgumentParser()
     p.add_argument("--n-bootstrap", type=int, default=10_000)
+    p.add_argument("--data-dir", default=None,
+                   help=f"classified stratum tables (default: {DATA_DIR})")
+    p.add_argument("--demo-tier", action="store_true",
+                   help="stamp the figure as coming from the Sahni+Fragoza "
+                        "demonstration model")
     args = p.parse_args()
+    if args.data_dir:
+        DATA_DIR = args.data_dir
+    _DEMO_STAMP = args.demo_tier
 
     os.makedirs(OUT_DIR, exist_ok=True)
     rng = np.random.default_rng(42)
@@ -324,6 +338,8 @@ def main():
     plt.subplots_adjust(hspace=0)
 
     out_png = os.path.join(OUT_DIR, "threshold_sensitivity.png")
+    if _DEMO_STAMP:
+        plot_style.demo_stamp(plt.gcf())
     plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}")
 

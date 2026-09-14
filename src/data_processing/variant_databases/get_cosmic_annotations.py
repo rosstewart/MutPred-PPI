@@ -67,6 +67,11 @@ Outputs (--stage recurrence):
 Outputs (--stage onco-tsg):
     onco_tsg_dict.pkl                {'oncogene': {...}, 'TSG': {...}}
     proteins_with_onc_tsg.pkl        {uniprot}
+Outputs (--stage occurrences):
+    vt_to_tumor_site.pkl             {'<uniprot> <variant>': [site, ...]}
+                                     ONE ENTRY PER OCCURRENCE, so len() is the
+                                     recurrence -- NOT a set of distinct tissues
+    vt_to_occurrence_count.pkl       {'<uniprot> <variant>': n_occurrences}
 
 LICENSING: COSMIC is licensed. Only derived scores and identifier mappings are
 written; no sample-level or raw mutation records leave this script.
@@ -162,11 +167,73 @@ def accumulate(df, gene_symbol_to_uniprot, want_recurrence, want_onco_tsg,
     return recurrence_dict, {"oncogene": set(oncos), "TSG": set(tsgs)}
 
 
+def build_occurrences(genome_screens_file: str, classification_file: str,
+                      gene_symbol_to_uniprot: dict) -> dict:
+    """`{'<uniprot> <variant>': [primary_site, ...]}` -- ONE ENTRY PER OCCURRENCE.
+
+    RECURRENCE IS THE NUMBER OF OCCURRENCES OF A VARIANT, not the number of
+    distinct tissues. The list therefore repeats a site once per sample carrying
+    that variant, and `len(sites)` is the recurrence. (`P35222 S45F`: 2,884
+    entries across 17 distinct sites -> recurrence 2,884, not 17.) The list is
+    kept rather than a bare count only because the sites themselves are used for
+    tumour-type breakdowns; `--stage occurrences` also writes the plain counts.
+
+    The historical name for this file is `vt_to_tumor_site.pkl`, which describes
+    its VALUES and not the quantity read off it -- the misreading that name
+    invites is exactly why the count is spelled out here.
+
+    Built by joining COSMIC's per-sample mutation table to its phenotype
+    classification: GenomeScreensMutant gives one row per sample-variant, and
+    COSMIC_PHENOTYPE_ID resolves to PRIMARY_SITE.
+    """
+    import pandas as pd
+
+    print(f"Reading classification {classification_file} ...", flush=True)
+    cls = pd.read_csv(classification_file, sep="\t", compression="gzip",
+                      low_memory=False,
+                      usecols=["COSMIC_PHENOTYPE_ID", "PRIMARY_SITE"])
+    pheno_to_site = dict(zip(cls["COSMIC_PHENOTYPE_ID"], cls["PRIMARY_SITE"]))
+    print(f"  {len(pheno_to_site):,} phenotype -> primary site", flush=True)
+
+    print(f"Reading per-sample mutations {genome_screens_file} ...", flush=True)
+    out: dict[str, list] = {}
+    n_rows = n_kept = 0
+    for chunk in pd.read_csv(genome_screens_file, sep="\t", compression="gzip",
+                             low_memory=False, chunksize=1_000_000,
+                             usecols=["GENE_SYMBOL", "MUTATION_AA",
+                                      "COSMIC_PHENOTYPE_ID"]):
+        for gene, mut_aa, pheno in zip(chunk["GENE_SYMBOL"], chunk["MUTATION_AA"],
+                                       chunk["COSMIC_PHENOTYPE_ID"]):
+            n_rows += 1
+            if not isinstance(mut_aa, str) or "*" in mut_aa:
+                continue
+            uid = gene_symbol_to_uniprot.get(gene)
+            if not uid:
+                continue
+            # `p.A123V` -> `A123V`; positions are 1-based, as everywhere else.
+            out.setdefault(f"{uid} {mut_aa[2:]}", []).append(
+                pheno_to_site.get(pheno, "unknown"))
+            n_kept += 1
+        print(f"    {n_rows:,} rows read, {n_kept:,} occurrences kept", flush=True)
+    print(f"  {len(out):,} unique variants, {n_kept:,} total occurrences", flush=True)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", choices=("recurrence", "onco-tsg", "both"),
-                    default="both")
+    ap.add_argument("--stage",
+                    choices=("recurrence", "onco-tsg", "occurrences", "both", "all"),
+                    default="both",
+                    help="'both' = recurrence + onco-tsg (CMC only). "
+                         "'occurrences' rebuilds vt_to_tumor_site.pkl and needs "
+                         "the per-sample files. 'all' runs everything.")
+    ap.add_argument("--genome-screens-file", default=None,
+                    help="Cosmic_GenomeScreensMutant_Missense_v*.tsv.gz "
+                         "(licensed; required for --stage occurrences/all)")
+    ap.add_argument("--classification-file", default=None,
+                    help="Cosmic_Classification_v*.tsv.gz "
+                         "(licensed; required for --stage occurrences/all)")
     ap.add_argument("--cmc-file", required=True,
                     help="COSMIC CancerMutationCensus AllData TSV.gz (licensed)")
     ap.add_argument("--gene-symbol-to-uniprot", required=True,
@@ -181,8 +248,12 @@ def main() -> int:
                          "pooling them under the key ' <variant>' as the notebook did")
     args = ap.parse_args()
 
-    want_recurrence = args.stage in ("recurrence", "both")
-    want_onco_tsg = args.stage in ("onco-tsg", "both")
+    want_recurrence = args.stage in ("recurrence", "both", "all")
+    want_onco_tsg = args.stage in ("onco-tsg", "both", "all")
+    want_occurrences = args.stage in ("occurrences", "all")
+    if want_occurrences and not (args.genome_screens_file and args.classification_file):
+        ap.error("--stage occurrences/all needs --genome-screens-file and "
+                 "--classification-file")
     os.makedirs(args.output_dir, exist_ok=True)
 
     with open(args.gene_symbol_to_uniprot, "rb") as f:
@@ -222,6 +293,21 @@ def main() -> int:
         with open(os.path.join(args.output_dir,
                                "proteins_with_onc_tsg.pkl"), "wb") as f:
             pickle.dump(proteins_with_onc_tsg, f)
+
+    if want_occurrences:
+        occ = build_occurrences(args.genome_screens_file, args.classification_file,
+                                gene_symbol_to_uniprot)
+        with open(os.path.join(args.output_dir, "vt_to_tumor_site.pkl"), "wb") as f:
+            pickle.dump(occ, f)
+        # The quantity consumers actually read off the file above, stored plainly
+        # so nothing has to re-derive it with len() and call it a site count.
+        counts = {k: len(v) for k, v in occ.items()}
+        with open(os.path.join(args.output_dir,
+                               "vt_to_occurrence_count.pkl"), "wb") as f:
+            pickle.dump(counts, f)
+        top = max(counts.items(), key=lambda kv: kv[1]) if counts else ("-", 0)
+        print(f"  most recurrent variant: {top[0]} with {top[1]:,} occurrences",
+              flush=True)
 
     print(f"outputs written to {args.output_dir}", flush=True)
     return 0

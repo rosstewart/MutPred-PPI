@@ -2,7 +2,7 @@
 """Build the GCV row + split tables from the 090826 mapping CSVs.
 
 This is stage 2 of the data-preparation chain: the mapping notebook
-(`notebooks/map_ppi_datasets_090826.py`) produces the mapped dataset CSVs in
+(`notebooks/map_ppi_datasets.py`) produces the mapped dataset CSVs in
 `datasets/source_mapping/datasets/`, and this consumes them to produce the
 train/eval layer in `datasets/training_eval/` that `utils.gcv_common` reads.
 See `docs/DATA_PREPARATION.md` for the full ordered chain.
@@ -49,17 +49,27 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold
 
-from paths import MAPPING_DIR, TRAINING_EVAL_DIR, cdhit_binary
+from paths import MAPPING_DIR, TRAINING_EVAL_DIR
+# One cd-hit wrapper, one fold builder, one C1/C2/C3 rule -- all in
+# `utils.gcv_common`. Keeping private copies here is what let the group
+# labels drift to int and silently produce a different partition.
+from utils.gcv_common import (cluster_sequences, compute_pair_test_classes,
+                              dataset_name, make_fold_splits)
 
 MAPPING = MAPPING_DIR / "datasets"
 OUT = TRAINING_EVAL_DIR
 
+# Both the key and the source filename carry the mapping stamp, so both are
+# derived from `dataset_name()` rather than spelled out -- see the note on
+# DATASET_BASES in utils/gcv_common.py.  The two single-source datasets live in
+# a subdirectory; everything else sits directly under MAPPING.
+_SINGLE_SOURCE = ("sahni_only", "fragoza_only")
+
 DATASETS = {
-    "sahni_fragoza_varchamp_all_mapped090826": MAPPING / "sahni_fragoza_varchamp_all_mapped090826.csv",
-    "sahni_fragoza_mapped090826":              MAPPING / "sahni_fragoza_mapped090826.csv",
-    "varchamp_all_mapped090826":               MAPPING / "varchamp_all_mapped090826.csv",
-    "sahni_only_mapped090826":                 MAPPING / "single_source" / "sahni_only_mapped090826.csv",
-    "fragoza_only_mapped090826":               MAPPING / "single_source" / "fragoza_only_mapped090826.csv",
+    dataset_name(b): (MAPPING / "single_source" if b in _SINGLE_SOURCE else MAPPING)
+                     / f"{dataset_name(b)}.csv"
+    for b in ("sahni_fragoza_varchamp_all", "sahni_fragoza", "varchamp_all",
+              "sahni_only", "fragoza_only")
 }
 
 _RE_MUT = re.compile(r"^([A-Z])(\d+)([A-Z])$")
@@ -69,28 +79,6 @@ AF3_FAILED_COL = "af3_failed"
 ROW_COLS = ["interactor", "partner", "mutation", "position", "wt_aa", "mut_aa",
             "perturbed", "dataset", "dataset_tier",
             "fragoza_source", "source_row_id", "cluster"]
-
-
-def cluster_sequences(sequences, identity: float = 0.5) -> list:
-    """cd-hit clusters, verbatim semantics from mutpred_ppi_cv.cluster_sequences."""
-    with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".fasta") as f:
-        fasta_path = f.name
-        for i, seq in enumerate(sequences):
-            f.write(f">seq{i}\n{seq}\n")
-    out_path = fasta_path + "_clustered"
-    r = subprocess.run([cdhit_binary(), "-i", fasta_path, "-o", out_path,
-                        "-c", str(identity), "-n", "3"],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if r.returncode != 0:
-        raise RuntimeError(f"cd-hit failed ({r.returncode}):\n{r.stderr.decode()}")
-    clusters = {}
-    cid = -1
-    for line in open(out_path + ".clstr"):
-        if line.startswith(">Cluster"):
-            cid = int(line.split()[1])
-        else:
-            clusters[int(line.split(">seq")[1].split("...")[0])] = cid
-    return [clusters[i] for i in range(len(sequences))]
 
 
 def build_rows(name: str, csv: Path) -> pd.DataFrame:
@@ -153,20 +141,26 @@ def build_rows(name: str, csv: Path) -> pd.DataFrame:
 
 
 def build_splits(rows: pd.DataFrame, n_seeds: int, n_splits: int = 10) -> pd.DataFrame:
+    """seed / row_index / test_fold / test_class for every row and seed.
+
+    Delegates to `gcv_common.make_fold_splits` (which casts the group labels to
+    str -- see there for why that is load-bearing) and
+    `gcv_common.compute_pair_test_classes`, so the table this writes and the
+    splits every runner reads come from ONE implementation.
+    """
     pairs = list(zip(rows["interactor"], rows["partner"]))
-    n = len(rows)
+    clusters = rows["cluster"].tolist()
     out = []
     for seed in range(n_seeds):
-        kf = GroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-        for fold, (train_idx, test_idx) in enumerate(
-                kf.split(range(n), groups=rows["cluster"].values)):
-            seen = set()
-            for i in train_idx:
-                seen.add(pairs[i][0]); seen.add(pairs[i][1])
-            for i in test_idx:
-                a, b = pairs[i]
-                cls = 1 if (a in seen and b in seen) else (2 if (a in seen or b in seen) else 3)
-                out.append((seed, int(i), fold, cls))
+        fold_splits = sorted(make_fold_splits(clusters, seed, n_splits=n_splits),
+                             key=lambda t: t[0])
+        # concatenated in fold order, exactly as run_gcv accumulates predictions
+        flat = compute_pair_test_classes(pairs, fold_splits)
+        cursor = 0
+        for fold, _train_idx, test_idx in fold_splits:
+            for k, i in enumerate(test_idx):
+                out.append((seed, int(i), fold, int(flat[cursor + k])))
+            cursor += len(test_idx)
     return pd.DataFrame(out, columns=["seed", "row_index", "test_fold", "test_class"])
 
 

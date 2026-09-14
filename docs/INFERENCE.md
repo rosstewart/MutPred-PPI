@@ -75,13 +75,13 @@ python src/inference/01_make_contact_graphs_and_fasta.py \
 **Outputs:**
 - `working_dir/af3_graphs/contact_graphs.h5`: a `ContactGraphStore`
   ([`src/contact_graphs.py`](../src/contact_graphs.py)) — one HDF5 store for every graph,
-  content-addressed rather than filename-addressed. There are no per-complex `.mat` files any more.
+  content-addressed rather than filename-addressed.
 - `working_dir/af3_graphs/complexes.csv`: columns `complex_id, interactor, partner,
   interactor_sequence, partner_sequence`. Step 3 joins on this and looks graphs up **by
   sequence**, so it never has to split an accession out of a filename.
-- `working_dir/af3_graphs/`: per-complex `.labels`, `.labels_separated`, `.num_residues_a`
-  and `.interaction_loss_pos`/`_neg` helper files for the variant/FASTA steps
-- `working_dir/wt_and_vt.fasta`: Combined wild-type and variant sequences for ProtT5 embedding generation
+- `working_dir/af3_graphs/variants.csv`: columns `interactor, partner, mutation`, one row per
+  scored triple. Step 3 reads this rather than re-parsing the input TSV.
+- `working_dir/wt_and_vt.fasta`: wild-type and variant sequences, for ProtT5 embedding.
 
 ### The contact-graph store
 
@@ -127,11 +127,11 @@ python src/inference/02_run_mutpred-ppi_inference.py \
     (`src/inference/pipeline/inference_utils.py::write_output`)
   - `mutation` is 1-based, matching every other table in the repo.
 
-**Note on schema.** Both pipelines now emit the same four explicit columns; the
-variant-database pipeline (`src/variant_db_inference/run_variant_db_inference.py`)
-writes an identical header. The composite `complex_id` (`{interactor}_{partner}`)
-this step used to write is gone: splitting such an id back on `_` mis-assigns
-isoform and RefSeq accessions (`NP_002046_GFAP` has no unambiguous split).
+**Note on schema.** The variant-repository pipeline
+(`src/variant_db_inference/run_variant_db_inference.py`) writes an identical header, so the
+two are interchangeable. The two accessions are kept in separate columns rather than welded
+into one id: splitting `{interactor}_{partner}` back on `_` mis-assigns isoform and RefSeq
+accessions, since `NP_002046_GFAP` has no unambiguous split.
 
 ## File Formats
 
@@ -174,12 +174,6 @@ It runs steps 2 and 3 of the real pipeline and prints the predictions, then diff
 the committed `expected_output/MutPred-PPI_preds.tsv` (it does not overwrite that reference —
 it only writes it if it is missing).
 
-**This currently fails on a fresh clone.** `af3_graphs/`, `results/` and `wt_and_vt.fasta` are
-gitignored inside the example, so a clone starts from a clean working directory and hits the
-empty-`wt_and_vt.fasta` problem described above; step 3 then has no embeddings to read. Only a
-checkout that still carries a pre-existing `af3_graphs/` from before the `.mat` removal will
-complete.
-
 **Note:** the bundled AlphaFold 3 structures are subject to the AlphaFold 3 Output Terms of
 Use and are provided for non-commercial research only. See
 https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
@@ -203,9 +197,9 @@ directory, and then run steps 2 and 3 as the quickstart does.
 
 ```
 interactor	partner	mutation	score
-P40259	O43765	G137S	0.972222626209259
-O75603	Q96LI6	G63S	0.6895588040351868
-Q4ACX1	O43765	L171R	0.9620879888534546
+P40259	O43765	G137S	0.9325149655342102
+Q4ACX1	O43765	L171R	0.9441055059432983
+O75603	Q96LI6	G63S	0.5329003930091858
 ```
 
 (`run_example.sh` compares sorted, so row order does not matter.)

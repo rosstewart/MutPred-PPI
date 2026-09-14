@@ -57,7 +57,7 @@ def mapping_csvs(root: Path = MAPPING_CSV_DIR) -> list[Path]:
     """Every mapped dataset CSV, including the single_source/ variants."""
     if not root.is_dir():
         sys.exit(f"ERROR: {root} not found -- run the mapping notebook first "
-                 f"(notebooks/map_ppi_datasets_090826.py).")
+                 f"(notebooks/map_ppi_datasets.py).")
     return sorted(list(root.glob("*.csv")) + list(root.glob("*/*.csv")))
 
 

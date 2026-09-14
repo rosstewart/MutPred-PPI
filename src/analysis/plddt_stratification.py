@@ -35,13 +35,14 @@ import numpy as np
 import pandas as pd
 import matplotlib
 from analysis import plot_style
-from analysis.plot_style import SAVE_DPI
+from analysis.plot_style import CLASS_LABELS, SAVE_DPI
 plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
 from analysis.build_plddt_cache import lookup  # pair-keyed cache accessor (either chain order)
+from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
     load_canonical_rows, stratified_fold_curves)
 
@@ -54,8 +55,10 @@ CV_DIR = str(cv_reference_dir())
 # without writing into datasets/annotations/.
 PLDDT_CACHE = os.environ.get("MUTPRED_PLDDT_CACHE",
                              str(ANNOTATIONS_DIR / "plddt_pair_cache.pkl"))
-GCV_RESULTS = f"{_PUB}/results/gcv/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
-CANONICAL_DATASET = "sahni_fragoza_mapped090826"
+GCV_RESULTS = (f"{_PUB}/results/gcv/"
+               f"MutPredPPI_sahni_fragoza{DATASET_SUFFIX}_megascale_all"
+               f"_detailed_results.pkl")
+CANONICAL_DATASET = f"sahni_fragoza{DATASET_SUFFIX}"
 CANONICAL_ROWS_PATH = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
 OUT_DIR = f"{_PUB}/results/robustness"
 N_SEEDS = 30
@@ -73,7 +76,7 @@ BIN_LABELS = {"low": "Low (<70)", "medium": "Medium (70–85)", "high": "High (�
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def complex_id_pairs(dataset: str = "sahni_fragoza_mapped090826") -> dict:
+def complex_id_pairs(dataset: str = f"sahni_fragoza{DATASET_SUFFIX}") -> dict:
     """`'{interactor}-{partner}'` -> (interactor, partner), built by JOIN not split.
 
     `complex_id` welds two accessions with `-`, but `-` also introduces an isoform
@@ -193,7 +196,7 @@ def compute_curves():
                                   rows_file=CANONICAL_ROWS_PATH)
 
 
-def plot_on_axes(axes, fold_curves, all_rows_bin):
+def plot_on_axes(axes, fold_curves, all_rows_bin, show_titles: bool = True):
     """Draw the 3-panel (C1/C2/C3) pLDDT-bin ROC comparison onto pre-supplied axes.
 
     Returns summary_rows (list[str]) for the TSV output.
@@ -238,7 +241,11 @@ def plot_on_axes(axes, fold_curves, all_rows_bin):
             ax.plot(FPR_GRID, mean_tpr, color=color, lw=2, label=label)
             ax.fill_between(FPR_GRID, lo_tpr, hi_tpr, color=color, alpha=0.15)
 
-        ax.set_title(class_labels[cls], fontsize=10)
+        # In the combined figure only the top row is labelled: the C1/C2/C3
+        # columns are shared across all three panels, so repeating the
+        # titles on every row is noise.
+        if show_titles:
+            ax.set_title(class_labels[cls], fontsize=10)
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1.05)
         ax.grid(True, alpha=0.3)

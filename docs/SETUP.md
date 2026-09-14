@@ -63,16 +63,21 @@ unpublished and the AF3 tars are large), so it arrives via the Zenodo bundle:
 
 | Directory | Size | Contents |
 |---|---|---|
-| `datasets/training_eval/` | — | The canonical train/eval layer: `<dataset>_rows.csv.gz`, `<dataset>_splits.csv.gz`, `sequences.csv.gz`, and `contact_graphs.h5` (40 MB). |
-| `datasets/variant_dbs/` | — | `{clinvar,cosmic,gnomad,hgmd,neurodev}_rows.csv.gz` plus `contact_graphs.h5` (248 MB). One self-contained table per variant database. |
-| `datasets/af3_structures_canonical/` | 600 MB | 4,497 gzipped mmCIFs, one per pair, `{ACC_LO}__{ACC_HI}.cif.gz` + `manifest.csv`. |
-| `datasets/af3_structures_variant_dbs_canonical/` | 5.7 GB | 22,239 gzipped mmCIFs, same naming + `manifest.csv`. |
-| `datasets/cv_reference/` | 355 MB | Canonical row orderings, cd-hit clusters, fold splits, per-seed test classes, label tables. Replaces the external `cv_splits/` the code used to read. |
-| `datasets/annotations/` | 258 MB | Allele frequencies, ClinVar variant subsets, pLDDT/Pfam caches, ID maps, ClinGen MOI, SWING label files. |
-| `datasets/annotations_licensed/` | 143 MB | COSMIC and HGMD derived summaries. **Not in the Zenodo deposit** — licence-restricted. Analyses that need them report a clear message and skip when absent. |
-| `datasets/esignet_supplements/` | 916 MB | The two ESM-2 supplement caches the eSIG-Net blind test reads. |
-| `datasets/reconstruction_tables/` | 460 MB | Per-figure prediction/label tables — regenerate every curve with no training. |
-| `datasets/af3_structures*.tar` | 6.8 GB | AlphaFold 3 complexes. Extract on demand. |
+| `datasets/training_eval/` | 6.7 MB + store | The canonical train/eval layer: `<dataset>_rows.csv.gz`, `<dataset>_splits.csv.gz`, `sequences.csv.gz`, `aliases.csv`, and `contact_graphs.h5`. |
+| `datasets/variant_dbs/` | 53 MB + store | `{clinvar,gnomad,neurodev,asd}_rows.csv.gz` (plus `cosmic`/`hgmd` if you hold those licences) and `contact_graphs.h5`. One self-contained table per variant repository. |
+| `datasets/af3_structures_canonical/` | 12.6 GB | 100,739 gzipped mmCIFs, one per pair, `{ACC_LO}__{ACC_HI}.cif.gz`, plus `manifest.csv` (17 MB). Only the 24,716 in-house structures (5.2 GB) are deposited; the rest come from ProtVar — see [ZENODO.md](ZENODO.md). |
+| `datasets/cv_reference/` | 135 MB | Canonical row orderings, cd-hit clusters, fold splits, per-seed test classes, label tables. **The one artifact that cannot be regenerated** — the pooled datasets cannot reproduce their splits without it. |
+| `datasets/annotations/` | 269 MB | Allele frequencies, ClinVar variant subsets, pLDDT/Pfam caches, ID maps, ClinGen modes of inheritance, SWING label files. |
+| `datasets/annotations_licensed/` | 143 MB | COSMIC and HGMD derived summaries. **Not deposited** — licence-restricted. Analyses that need them print a clear message and skip when absent. |
+| `datasets/esignet_supplements/` | 916 MB | The two ESM-2 supplement caches the eSIG-Net blind test reads. VarChAMP-derived, so not deposited. |
+| `datasets/af3_structures*.tar` | 7.1 GB | AlphaFold 3 complexes, `af3_structures.tar` (600 MB) and `af3_structures_variant_dbs.tar` (6.6 GB). **Extract both** — the variant-repository figures need the second. |
+
+### One contact-graph store, three names
+
+`datasets/training_eval/contact_graphs.h5`, `datasets/variant_dbs/contact_graphs.h5` and
+`datasets/af3_structures_canonical/contact_graphs_v4.h5` are the **same 966 MB file**
+containing all 100,739 graphs — hard links, not three stores. The deposit ships one copy;
+make the others links or copies.
 
 **2. Symlinked — large, machine-local, or third-party.**
 Anything too big to ship, unpublishable, or belonging to someone else is reached through
@@ -109,7 +114,7 @@ These are model output caches. Deleting them costs compute, not information:
 | `esm2_residue_embeddings*.pkl` | 28 / 40 GB | eSIG-Net's own precompute step |
 | `{clinvar,gnomad,cosmic}/prott5_subgraphs.h5` | 122–164 GB | `precompute_prott5.py` then `compress_to_subgraphs.py` |
 | `megascale_preprocessed/` | 97 GB | `src/training/preprocess_stability_data.py` |
-| `contact_graphs.h5` (either tier) | 39 MB / 248 MB | `src/data_processing/rebuild_graphs_from_structures.py --structures <canonical dir> --out <h5>` |
+| `contact_graphs.h5` | 966 MB | `src/data_processing/rebuild_graphs_from_structures.py --structures <canonical dir> --out <h5>` |
 | `datasets/annotations/plddt_cache.pkl` | small | `src/analysis/build_plddt_cache.py` (AlphaFold DB monomers) |
 | `datasets/annotations/confidence_scores.pkl` | small | `src/analysis/build_confidence_cache.py` (AF3 `*_summary_confidences.json`) |
 

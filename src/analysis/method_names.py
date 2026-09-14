@@ -25,14 +25,17 @@ caller can flag them instead of silently plotting them alongside fresh results
 """
 import os
 
-from utils.legacy_guard import reject_legacy_dataset_name, LegacyInputError
+from utils.legacy_guard import DATASET_SUFFIX, reject_legacy_dataset_name, LegacyInputError
 
 # Full `DATASET_CONFIGS` key -> short display key. Order matters: the
 # compound name must be checked before its `sahni_fragoza` prefix matches.
+# full canonical name -> short display key. Keyed off DATASET_SUFFIX so a future
+# remapping does not leave these three literals pointing at retired tables.
+# Note `sahni_only` displays as `sahni`, so this is not a mechanical suffix strip.
 _SHORT_DATASET_NAMES = {
-    "sahni_fragoza_varchamp_all_mapped090826": "sahni_fragoza_varchamp_all",
-    "sahni_fragoza_mapped090826":              "sahni_fragoza",
-    "sahni_only_mapped090826":                 "sahni",
+    f"sahni_fragoza_varchamp_all{DATASET_SUFFIX}": "sahni_fragoza_varchamp_all",
+    f"sahni_fragoza{DATASET_SUFFIX}":              "sahni_fragoza",
+    f"sahni_only{DATASET_SUFFIX}":                 "sahni",
 }
 
 METHOD_DISPLAY_NAMES = {

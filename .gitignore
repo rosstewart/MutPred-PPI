@@ -3,59 +3,52 @@
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
 *.egg-info/
-.ipynb_checkpoints/
 .pytest_cache/
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-# Everything under datasets/ arrives via the Zenodo bundle or is built locally
-# (see docs/SETUP.md and docs/DATA_PREPARATION.md). VarChAMP is unpublished and
-# the AF3 structure archives are multi-GB, so none of it is git-tracked.
+# Everything under datasets/ arrives via the Zenodo deposit or is built locally.
+# See docs/SETUP.md and docs/ZENODO.md.
 datasets/
 data/
 data_caches/
 datasets_unpublished/
 logs/
+tmp_af3_missing/
 
 # Symlinks to large machine-local trees (scripts/link_external.sh).
 external/
 
-# Upstream checkouts of the comparison methods -- one directory, one
-# convention. Clone each repository yourself; see docs/REPRODUCING_ANALYSES.md.
+# Upstream checkouts of the comparison methods. Clone each repository
+# yourself; see docs/REPRODUCING_ANALYSES.md.
 external_methods/
 
 # ── Generated output ──────────────────────────────────────────────────────────
-# results/       full runs      results_quick/  QUICK-mode runs (the shipped
-#                                               default in reproduce_all_figures)
+# results/ holds full runs; results_quick/ holds the notebook's QUICK mode.
 /results/
 /results_quick/
 figures/*.png
-figures/brca1/
-figures/brca1_extra/
+figures/*.tex
 brca1/
 brca1_extra/
 
 # ── Model weights ─────────────────────────────────────────────────────────────
-# weights/ holds every checkpoint; only the small tracked ones are in git.
-weights/folds/
-weights/v1_0/
-weights/*.pt
-!weights/MutPred-PPI_stability_pretrain.pt
+# Checkpoints are distributed via Zenodo. Only the two files that variant-DB
+# inference loads are tracked, so a clone can run the inference quickstart.
+weights/**/*.pt
+weights/**/*.pkl
+!weights/MutPred-PPI.pt
+!weights/mutation_diff_scaler.pkl
 
 # ── Superseded content, kept on disk for provenance ───────────────────────────
 archive/
 
 # ── Scratch ───────────────────────────────────────────────────────────────────
 repro_test/
-tests/_scratch/
 *.tar.gz
 *.log
 
 # ── Manuscript sources and internal working notes ─────────────────────────────
-# These track the paper and our own process (what has been deposited, which
-# figure is current, how each comparator was run). A reader of the repository
-# has no use for them.
 main*.tex
 supplement*.tex
 ANALYSIS_STATUS.md
@@ -64,8 +57,3 @@ ZENODO_CHECKLIST.md
 docs/ZENODO_MANIFEST.md
 docs/METHOD_PROVENANCE.md
 docs/FIGURE_INVENTORY.md
-
-# Ad hoc run scripts at the repo root. Root-anchored on purpose: unanchored,
-# this also swallowed src/inference/example/run_example.sh, the file the
-# quickstart tells the reader to run.
-/run_*.sh

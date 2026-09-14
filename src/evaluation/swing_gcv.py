@@ -114,7 +114,7 @@ def _fold_features(train_df: pd.DataFrame, test_df: pd.DataFrame):
 
 
 def run(dataset: str, test_pretrain: bool, outdir: Path,
-        resume: bool = True) -> None:
+        resume: bool = True, fold_jobs: int = 1) -> None:
     cfg = dataset_config(dataset)
     print(f"dataset={dataset}  mode="
           f"{'test-pretrain (leaky)' if test_pretrain else 'blind test'}", flush=True)
@@ -174,7 +174,8 @@ def run(dataset: str, test_pretrain: bool, outdir: Path,
 
     code = "_test_pretrain" if test_pretrain else "_no_test_pretrain"
 
-    _args = argparse.Namespace(n_gcv=N_SEEDS, outdir=str(outdir), resume=resume)
+    _args = argparse.Namespace(n_gcv=N_SEEDS, outdir=str(outdir), resume=resume,
+                              fold_jobs=fold_jobs)
     run_gcv(cfg, _args,
             result_stem=f"SWING_{dataset}{code}",
             fit_predict_fold=_fit_predict_fold)
@@ -189,12 +190,18 @@ def main() -> None:
                          "Leaks test information; reported only as the 'Test Pretrain' variant.")
     ap.add_argument("--outdir", default=str(GCV_RESULTS_DIR))
     ap.add_argument(
+        "--fold-jobs", type=int, default=1,
+        help="Run this many folds concurrently (default: 1, sequential). Folds "
+             "are independent -- each retrains Doc2Vec on its own split -- so "
+             "this is a scheduling change, not a modelling one. Blind-test mode "
+             "retrains per fold and is the slow path this exists for.")
+    ap.add_argument(
         "--resume", action=argparse.BooleanOptionalAction, default=True,
         help="Resume from an existing checkpoint, continuing after the last "
              "completed GCV seed (default: True).",
     )
     args = ap.parse_args()
-    run(args.dataset, args.test_pretrain, Path(args.outdir), args.resume)
+    run(args.dataset, args.test_pretrain, Path(args.outdir), args.resume, args.fold_jobs)
 
 
 if __name__ == "__main__":

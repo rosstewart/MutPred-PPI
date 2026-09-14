@@ -1,10 +1,84 @@
 # Reproducing Every Figure and Table
 
-Cross-validation benchmarking, the VarChAMP blind test, variant-repository inference/classification/
-charts, and supplementary analyses. For training the model from scratch, see
-[`docs/TRAINING.md`](TRAINING.md). Pre-computed prediction/label tables that reconstruct every figure's curves without rerunning
-anything are in `datasets/reconstruction_tables/`. `datasets/` is gitignored and delivered via the
-Zenodo bundle -- see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md).
+Cross-validation benchmarking, the VarChAMP blind test, variant-repository
+inference/classification/charts, and supplementary analyses. For training the model from
+scratch, see [`docs/TRAINING.md`](TRAINING.md). `datasets/` and `results/` are gitignored and
+come from the Zenodo deposit -- see [`docs/ZENODO.md`](ZENODO.md).
+
+Every ROC and PR curve can be recomputed without rerunning anything from
+`results/gcv/*_detailed_results.pkl`, which store the raw predictions and labels per seed,
+fold and test class. For flat CSVs instead of pickles:
+`python src/analysis/export_reconstruction_tables.py --figure all`.
+
+## Figure index
+
+Figure files under `figures/` are symlinks into `results/`, so a figure is "present" only when
+its target exists; `ls -l figures/` shows the targets.
+
+| Label | Output | Produced by | Needs |
+|---|---|---|---|
+| Table 1 | `training_data_table.tex` | `analysis/generate_training_table.py` | mapped source CSVs | 
+| Fig 3 | `roc_sahni_fragoza_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza`, all methods |
+| Fig 4 | `roc_varchamp_blind_test.png` | `analysis/blind_test_figures.py` | VarChAMP blind test |
+| Fig 5 | `enrichment_bootstrap_sufficient_partners.png` | `analysis/variant_db_charts.py --edgotype-bootstrap` | all six repositories classified |
+| Table S1 | `variant_db_stats_table.tex` | `analysis/extract_variant_db_stats.py` | all six repositories |
+| S1 | `roc_sahni_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_only` |
+| S2 | `roc_varchamp_blind_test_training_comparison.png` | `analysis/blind_test_figures.py` | blind test, both training sets |
+| S3 | `ablation_bar_sahni_fragoza_with_variance.png` | `analysis/run_roc_ablation.py` | GCV ablations, `sahni_fragoza` |
+| S7 | `roc_sahni_fragoza_varchamp_all_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza_varchamp_all` |
+| S8 | `enrichment_bootstrap_sufficient_partners_k3.png` | `analysis/variant_db_charts.py --controlled-bootstrap --k3-only` | all six repositories classified |
+| S9 | `threshold_sensitivity.png` | `analysis/threshold_sensitivity.py` | all six repositories classified |
+| S-biclass | `roc_sahni_fragoza_biclass_with_variance.png` | `analysis/biclass_sf_gcv.py` | GCV, `sahni_fragoza` |
+| S-protclass | `pathogenic_by_class.png` | `analysis/protein_class_enrichment.py` | ClinVar + gnomAD predictions, GO annotations |
+| S-robustness | `combined_robustness_by_class.png` | `analysis/combined_robustness_figure.py` | interface / pLDDT / protein-class stratifications |
+| S-stability | `stability_interaction_scatter.png` | `analysis/stability_interaction_scatter.py` | interaction + stability predictions |
+
+These labels are the ones `notebooks/reproduce_all_figures.py` prints, so the notebook's
+output and this table agree.
+
+Figures 1 and 2 (pipeline and architecture schematics) and the CDC42 example panel are
+hand-drawn or rendered in ChimeraX; nothing in this repository regenerates them.
+
+## Excluding variants the model was trained on
+
+Every figure that measures **enrichment over a variant repository** — Fig 5, S8, S9,
+S-protclass and the stability figure — excludes variants the model was trained on, and so
+does **Table S1**, which describes those same groups. A
+variant in the training set has a fitted score rather than a predicted one, and the
+disease sets overlap training far more than the gnomAD background does, so leaving them
+in inflates precisely the contrast being measured.
+
+Overlap is matched on **(interactor, variant), ignoring the partner**: a variant seen
+against any partner during training has had its mutation representation fitted, and the
+model reads the same mutated-site features whichever partner it is scored against.
+Matching the full triple instead would keep those rows.
+
+The definition lives in `src/analysis/training_overlap.py` and is applied in one place
+per input path — `classify_variant_dbs.py` for the stratum tables that Fig 5/S8/S9 and
+the stability figure read, and `protein_class_enrichment.py` and
+`extract_variant_db_stats.py`, which read the raw prediction TSVs. Table S1's variant
+counts therefore match the sample sizes printed on the figures; `pytest tests/ --run-data`
+asserts that they do. Pass `--keep-training-overlap` to `classify_variant_dbs.py` to
+reproduce the unfiltered view; those are not the published numbers.
+
+The deposited master tables are **annotated rather than filtered**: a `training_overlap`
+boolean column marks the affected rows, so either view can be reproduced from the
+deposit without needing the training set, which is not redistributable.
+
+## Verification utilities
+
+Standalone checks over the built artifacts. None writes a figure or table; they exist so a
+rebuilt structure set, graph store or cross-validation run can be shown to satisfy the
+invariants the analysis code assumes.
+
+| Command | Checks |
+|---|---|
+| `python src/variant_db_inference/audit_caches.py` | every variant has an embedding, a contact graph and a prediction, or a stated reason why not |
+| `python src/verification/check_structure_superset.py --new <dir> --live <dir>` | a rebuilt structure set still covers every pair the live one did |
+| `python src/verification/verify_structure_chains.py --dataset sahni_fragoza` | the chain handed to each structure-based comparator really holds the mutated protein |
+| `python src/verification/check_gcv_consistency.py` | per-seed AUCs of a run in progress sit within the spread of the earlier seeds |
+
+`pytest tests/ --run-data` asserts the same properties non-interactively.
 
 **One command runs everything below in order:** `notebooks/reproduce_all_figures.py`
 (jupytext percent format -- `jupytext --to notebook` for a `.ipynb`, or run it directly as a
@@ -40,7 +114,7 @@ the tables all agree, so nothing converts between conventions. Node indices (`mu
 There is no `--data-root`: the tables locate themselves.
 
 The five live datasets (short names are the canonical `--dataset` values; the full
-`*_mapped090826` form is also accepted):
+full stamped form (`sahni_fragoza_mapped090826`, and so on) is also accepted):
 
 | `--dataset` | rows |
 |---|---|
@@ -67,12 +141,8 @@ Graphs are not files on disk any more. Each tier has one HDF5 `ContactGraphStore
 | `datasets/training_eval/contact_graphs.h5` | GCV, blind test, final training |
 | `datasets/variant_dbs/contact_graphs.h5` | variant-database inference |
 
-Keys are the sorted pair of `sha256(chain_sequence)[:16]`, so a pair of sequences has one key no
-matter which accessions or chain order produced it. `load_dense(interactor=..., partner=...)` and
-`load_edge_index(interactor=..., partner=...)` are keyword-only, take **sequences**, and hand back
-the graph already oriented so that the interactor occupies nodes `[0, len(interactor))`. Self-loops
-are added on read and cannot be disabled. Because orientation is resolved on read, a filename
-never determines which protein is the interactor.
+Both names refer to the same file. Keying, accessors and orientation are documented once, in
+[`docs/INFERENCE.md`](INFERENCE.md#the-contact-graph-store); the short version is that graphs are looked up by sequence, never by filename.
 
 Rebuild a store from the canonical structures:
 
@@ -85,8 +155,9 @@ conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
 
 ### AF3 structures
 
-`datasets/af3_structures_canonical/` (4,497 pairs) and
-`datasets/af3_structures_variant_dbs_canonical/` (22,239 pairs) hold one gzipped mmCIF per pair:
+`datasets/af3_structures_canonical/` holds one gzipped mmCIF per pair, 100,739 in total —
+training/evaluation complexes and variant-repository complexes were merged into this single
+tree:
 
 ```
 {ACC_LO}__{ACC_HI}.cif.gz        e.g.  O14787-2__Q13207.cif.gz
@@ -117,10 +188,14 @@ Variant-database complexes come from two places, and both are needed:
    ln -s $PWD/pdb external/protvar_pdb
    ```
 
-ClinVar, COSMIC, gnomAD and HGMD draw most of their partner structures from
-ProtVar: about 3,293 of their contact graphs have no in-house structure at all.
-neurodev and asd need none of it. Omitting ProtVar therefore silently costs those
-four databases roughly 40-50% of their pairs.
+ClinVar, COSMIC, gnomAD and HGMD draw most of their partner structures from ProtVar:
+**76,023 of the 100,739 canonical structures (75.5%) come from it**, against 24,716 folded
+in-house. The `provenance` column of `datasets/af3_structures_canonical/manifest.csv` records
+which is which for every structure. neurodev and asd need none of it.
+
+Omitting ProtVar does not affect the figures if you use the deposited contact-graph store,
+which already contains all 100,739 graphs — it matters only when rebuilding the store from
+structures.
 
 `canonicalize_structures.py` resolves every chain by SEQUENCE against the
 canonical tables, so a structure whose chains are unknown is skipped -- the whole
@@ -159,7 +234,9 @@ from a copy inside this repository. Clone them into `external_methods/`
 
 ```bash
 mkdir -p external_methods
-git clone http://compbio.clemson.edu/SAAMBE-3D/      external_methods/saambe3d
+# SAAMBE-3D: download and unpack the archive from
+#   http://compbio.clemson.edu/SAAMBE-3D/   (a project page, not a git remote)
+# into external_methods/saambe3d/
 git clone https://github.com/VarunUllanat/mint       external_methods/mint
 git clone https://github.com/ChengfeiYan/PPLM        external_methods/PPLM
 git clone https://github.com/Liu-Jing/eSIG-Net       external_methods/esignet
@@ -179,7 +256,7 @@ rather than an `ImportError` from inside a `sys.path` insert.
 
 | Method | Directory | Additional files it needs |
 |---|---|---|
-| SAAMBE-3D | `saambe3d/` | Ships its own SKEMPI-trained `*_v01.model` boosters. Requires `prody` (not in the `ppi` env). `saambe3d_cv.py` auto-detects the `py311_saambe3d` conda env beside your Miniconda installation; override with `SAAMBE3D_PYTHON=/path/to/python`. |
+| SAAMBE-3D | `saambe3d/` | Ships its own SKEMPI-trained `*_v01.model` boosters. Requires `prody` (not in the `ppi` env). It therefore needs its own interpreter: set `SAAMBE3D_PYTHON=/path/to/python` to an environment that has `prody` installed. (`saambe3d_cv.py` also looks for a `py311_saambe3d` conda env next to your Miniconda install, which is a convenience, not a requirement.) |
 | MINT | `mint/` | `mint.ckpt` and `esm2_t33_650M_UR50D.json` from the MINT release page. |
 | PPLM | `PPLM/` | `weights/pplm_t33_650M.pt` from the PPLM release page. |
 | eSIG-Net | `esignet/` | Uses `backbones/sdnn/sdnn_model.py` from the checkout. Publishes no feature-extraction code, so ours is reconstructed and validated -- see `src/evaluation/predictors/validate_esignet_features.py`. |
@@ -190,9 +267,8 @@ rather than an `ImportError` from inside a `sys.path` insert.
 Only SWING is implemented in this repository. Nothing under `src/` is
 third-party source.
 
-Which figure comes from which command is tabulated in
-[`MANUSCRIPT_FIGURES.md`](MANUSCRIPT_FIGURES.md), one row per label in
-`main_091026.tex` and `supplement_091026.tex`.
+Which figure comes from which command is tabulated in the
+[figure index](#figure-index) at the top of this document.
 
 ## Running a whole suite
 
@@ -210,12 +286,13 @@ It skips jobs whose outputs are already complete, so an interrupted run is
 resumed by re-issuing the same command. Jobs are split into a CPU pool
 (`--jobs`, default 12) and a GPU pool (one job per id in `--gpus`).
 
-`--threads` caps BLAS/OpenMP threads per job and defaults to 1. The libraries
-otherwise start one thread per core, and on a many-core host a single small MLP
-fit spends most of its wall time in OpenMP barriers — measured on 72 cores, one
-fit took 394 s at 72 threads and 113 s at 1. Note that thread count is not
-numerically neutral: OpenBLAS partitions reductions by team size, which moves GCV
-AUCs in the 4th decimal, so keep one value for a whole suite rather than mixing.
+`--threads` caps BLAS/OpenMP threads per job and defaults to 1. The libraries otherwise start
+one thread per core, and on a many-core host a single small MLP fit spends most of its wall
+time in OpenMP barriers — raising the thread count can make a fit several times *slower*.
+
+Thread count is also not numerically neutral: OpenBLAS partitions reductions by team size,
+which moves cross-validation AUCs in the 4th decimal. Use one value for a whole suite rather
+than mixing.
 
 ## Grouped Cross-Validation (Fig 3, S1)
 
@@ -241,16 +318,14 @@ for pred in seq_diff site_diff; do
   conda run -n ppi python src/evaluation/mint_cv.py --dataset $DS --predictor $pred
   conda run -n ppi python src/evaluation/pplm_cv.py --dataset $DS --predictor $pred
 done
-# Pretrained (SKEMPI), not retrained -- SAAMBE-3D was already canonical;
-# MutPPI/MutPPI+ are migrated in from an external, unversioned script.
+# Pretrained on SKEMPI, not retrained here (see the stratification note below).
 conda run -n ppi python src/evaluation/saambe3d_cv.py --dataset $DS --outdir results/gcv/
 conda run -n ppi python src/evaluation/mutppi_cv.py   --dataset $DS --model 0 --outdir results/gcv/  # MutPPI
 conda run -n ppi python src/evaluation/mutppi_cv.py   --dataset $DS --model 1 --outdir results/gcv/  # MutPPI+
 ```
 
-DDMutPPI is not benchmarked at all (excluded outright: an 87% job-timeout rate on its
-public API made a complete scoring run unattainable), not
-merely dropped from these commands.
+DDMut-PPI is not benchmarked at all; see the comparator table above. It was excluded
+outright, not merely dropped from these commands.
 
 Embedding caches must be precomputed first. All caches are keyed on the **1-based** mutation
 exactly as the tables store it:
@@ -280,7 +355,7 @@ VarChAMP data is unpublished IGVF consortium data — cross-reference [data.igvf
 Train on `sahni_fragoza`, predict on all of `varchamp_all` — the two canonical datasets,
 nothing else. The trainable methods are retrained here rather than loading a checkpoint, so
 the blind test always reflects the current tables.
-DDMutPPI is excluded outright (not evaluated at all: 87% job-timeout rate on its public API).
+DDMut-PPI is excluded; see the comparator table above.
 
 ```bash
 conda run -n ppi python src/evaluation/run_varchamp_blind_test.py --method mutpredppi
@@ -301,23 +376,44 @@ conda run -n ppi python src/analysis/import_mutpred2_varchamp_scores.py --csv /p
 conda run -n ppi python src/analysis/blind_test_figures.py
 ```
 
-`--method swing --test-pretrain` (the leaky Doc2Vec-on-everything variant) is not yet wired
-up for this single train/test split — it raises `NotImplementedError` with an explanation;
-use the default blind-test mode. SAAMBE-3D/MutPPI/MutPPI+ are pretrained on SKEMPI, not
+`--method swing --test-pretrain` fits Doc2Vec over the merged train+test corpus, which is
+SWING's own default configuration; the plain `--method swing` arm fits it on the training
+rows only. Both are reported. SAAMBE-3D/MutPPI/MutPPI+ are pretrained on SKEMPI, not
 retrained here, and are classed by SKEMPI training-protein overlap
 (`utils.gcv_common.skempi_test_class`), not Sahni+Fragoza overlap — same rule as their GCV
 stratification.
 
-## Variant Database Inference (Fig 5–7)
+## Variant Repository Inference (Fig 5, S8, S9)
+
+Scored with the single all-data model (`weights/MutPred-PPI.pt`);
+`assert_all_data_model` refuses to start with anything else, so there is only ever one
+published results tree.
+
+**Without the unpublished VarChAMP data** that model cannot be trained. Pass
+`--model-tier sahni_fragoza` to use the demonstration model from the Zenodo weights bundle
+instead. It writes to `results/variant_dbs_sahni_fragoza/` and to
+`{db}_mutpred_ppi_predictions_sahni_fragoza.tsv`, never over the published tree, and the
+figure scripts take `--demo-tier` to stamp their output accordingly. Its scores are **not**
+the published numbers. `notebooks/reproduce_all_figures.py` selects this automatically when
+the VarChAMP table is missing.
+
+ΔΔG predictions are unaffected: `run_stability_inference.py` uses the MegaScale-pretrained
+stability model, which never saw VarChAMP.
 
 The script auto-detects a compact subgraph H5 (preferred, ~120-165 GB) or falls
 back to a full ProtT5 embeddings H5. If neither is present, build the subgraph H5:
 
+Per-database caches live under `$MUTPRED_DATA_ROOT/<db>/`, which defaults to the directory
+*above* the repository (`python -c "from paths import describe; describe()"` prints the
+resolved value). Substitute your own path for `$DB` below.
+
 ```bash
+DB="$MUTPRED_DATA_ROOT/gnomad"          # or wherever you keep the per-database caches
+
 # Step 1 (once): precompute per-protein embeddings (~100-170 GB):
 nohup conda run -n ppi python src/variant_db_inference/precompute_prott5.py \
-    --fasta /gnomad/gnomad_interaction_loss_wt_and_vt.fasta \
-    --out /gnomad/prott5_embeddings.h5 \
+    --fasta "$DB/gnomad_interaction_loss_wt_and_vt.fasta" \
+    --out   "$DB/prott5_embeddings.h5" \
     --device cuda:0 > precompute_gnomad.log 2>&1 &
 
 # Step 2 (once, optional but recommended): compress to 2-hop subgraphs (~120-165 GB):
@@ -422,11 +518,11 @@ conda run -n ppi python src/analysis/variant_db_charts.py \
 
 Output:
 - `enrichment_bootstrap_sufficient_partners.png` → **Fig 5** (ClinVar row includes Rare Benign/Benign/Pathogenic/VUS/Pathogenic AR/Pathogenic AD; HGMD row includes HGMD/AR/AD)
-- `enrichment_bootstrap_sufficient_partners_k3.png` → **S4** (same grouping, partner-controlled)
+- `enrichment_bootstrap_sufficient_partners_k3.png` → **S8** (same grouping, partner-controlled)
 
 ### Gene inheritance-mode (AR/AD) mapping
 
-Required once, before Fig 5/S4/S-stability:
+Required once, before Fig 5/S8/S-stability:
 
 ```bash
 conda run -n ppi python src/analysis/build_ar_ad_gene_sets.py
@@ -490,18 +586,29 @@ importing it executes both the ROC generation and the separate ipTM analysis.
 Use the wrappers:
 
 ```bash
-conda run -n ppi python src/analysis/run_roc_comparison.py   # Fig 3, S1, S3, S-new
-conda run -n ppi python src/analysis/run_roc_ablation.py     # S-abl
+conda run -n ppi python src/analysis/run_roc_comparison.py   # Fig 3, S1, S7
+conda run -n ppi python src/analysis/run_roc_ablation.py     # S3
 ```
 
-## Ablation figure (S-abl)
+## Ablation figure (S3)
 
 ```bash
 conda run -n ppi python src/analysis/run_roc_ablation.py
 ```
 
-The `full`/`full_all` ablation ("Prior Best" bar) uses `weights/v1_0/MutPred-PPI_v1_0_stability_pretrain.pt`,
-a pre-MegaScale (FoldX/RaSP-based) checkpoint kept for this one comparison; all other ablations use
-`weights/MutPred-PPI_stability_pretrain.pt`. If `weights/v1_0/` is unavailable, skip `full`/`full_all`.
+The **"Prior Best" bar is omitted by default.** It is the previously published model rather
+than an ablation of the current architecture, and its checkpoint is distributed separately:
 
-Output: `results/gcv/roc_plots_with_variance/ablation_bar_sahni_fragoza_with_variance.png` → **S-abl**
+> RECOMB model (bioRxiv v2): MutPred-PPI v1.0 —
+> <https://github.com/rosstewart/MutPred-PPI/releases/tag/v1.0.0>
+
+Unpack that release into `weights/v1_0/` and pass `--include-prior-best` to draw it:
+
+```bash
+conda run -n ppi python src/analysis/run_roc_ablation.py --include-prior-best
+```
+
+Every other ablation arm uses `weights/MutPred-PPI_stability_pretrain.pt`, which is in the
+Zenodo weights bundle.
+
+Output: `results/gcv/roc_plots_with_variance/ablation_bar_sahni_fragoza_with_variance.png` → **S3**

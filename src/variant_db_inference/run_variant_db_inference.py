@@ -52,6 +52,32 @@ _THIS_DIR = Path(__file__).resolve().parent
 _MODELS_DIR = _THIS_DIR.parent.parent / "weights"
 _SCALER_PATH = _MODELS_DIR / "mutation_diff_scaler.pkl"
 
+# Which trained model scores a variant repository.
+#
+# `all_data` is the published tier and the default: one model, trained on every
+# labelled pair we have, writing to results/variant_dbs_all_data/.
+#
+# `sahni_fragoza` exists only so that someone WITHOUT the unpublished VarChAMP
+# measurements can still run this pipeline and see what it produces. It is a
+# demonstration, not a reproduction: its numbers are not the paper's, and it
+# writes to a SEPARATE tree so the two can never be mixed. Mixing them is not
+# hypothetical -- results/variant_dbs/ (now archived) was produced exactly that
+# way, and stability_interaction_scatter.py had to be taught which tree to read.
+MODEL_TIERS = {
+    "all_data":      {"dir": _MODELS_DIR,                     "suffix": ""},
+    "sahni_fragoza": {"dir": _MODELS_DIR / "sahni_fragoza",
+                      "suffix": "_sahni_fragoza"},
+}
+DEFAULT_MODEL_TIER = "all_data"
+
+
+def resolve_model_tier(tier: str, models_dir: str | None) -> tuple[Path, str]:
+    """(models directory, output-filename suffix) for a tier."""
+    if models_dir:                      # explicit path wins, and carries no suffix
+        return Path(models_dir), MODEL_TIERS[tier]["suffix"]
+    spec = MODEL_TIERS[tier]
+    return Path(spec["dir"]), spec["suffix"]
+
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
 from inference.pipeline.model_loader import get_models, model_predict, model_predict_subgraph  # noqa: E402
 from paths import DATA_ROOT, DATASETS_DIR  # noqa: E402
@@ -363,10 +389,13 @@ def assert_all_data_model(models_dir: str) -> None:
     primary = Path(models_dir) / "MutPred-PPI.pt"
     if not primary.is_file():
         raise FileNotFoundError(
-            f"{primary} not found. Variant-database inference must use the single "
-            f"all-data model (trained on sahni_fragoza_varchamp_all_mapped090826), "
-            f"never a fold ensemble or any other checkpoint set -- point --models-dir "
-            f"at the directory containing MutPred-PPI.pt (default: weights/)."
+            f"{primary} not found. Variant-database inference uses the single "
+            f"all-data model, never a fold ensemble or any other checkpoint set "
+            f"-- point --models-dir at the directory containing MutPred-PPI.pt "
+            f"(default: {_MODELS_DIR}). Without the unpublished VarChAMP data "
+            f"that model cannot be trained; pass --model-tier sahni_fragoza to "
+            f"run the demonstration tier instead (its scores are NOT the "
+            f"published numbers and are written to a separate tree)."
         )
 
 
@@ -393,8 +422,22 @@ def main(args: argparse.Namespace) -> None:
               f"--db {args.dataset}", file=sys.stderr)
         sys.exit(1)
 
-    models_dir = str(args.models_dir or _MODELS_DIR)
-    assert_all_data_model(models_dir)
+    tier_dir, tier_suffix = resolve_model_tier(args.model_tier, args.models_dir)
+    models_dir = str(tier_dir)
+    if args.model_tier == "all_data":
+        assert_all_data_model(models_dir)
+    else:
+        if not (tier_dir / "MutPred-PPI.pt").is_file():
+            print(f"ERROR: {tier_dir / 'MutPred-PPI.pt'} not found. The "
+                  f"sahni_fragoza tier ships in the Zenodo weights bundle.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print("*** DEMONSTRATION TIER: scoring with the Sahni+Fragoza model. ***\n"
+              "*** These are NOT the published numbers.                      ***",
+              flush=True)
+        if tier_suffix and not args.out:
+            out_path = str(Path(out_path).with_name(
+                Path(out_path).name.replace(".tsv", f"{tier_suffix}.tsv")))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     run_inference(
@@ -423,6 +466,11 @@ if __name__ == "__main__":
                    help="Path to compact 2-hop subgraph H5 (preferred; auto-detected per dataset)")
     p.add_argument("--out",
                    help="Output TSV path (default: dataset-specific path under /data)")
+    p.add_argument("--model-tier", choices=sorted(MODEL_TIERS),
+                   default=DEFAULT_MODEL_TIER,
+                   help="all_data (default, published) or sahni_fragoza (a "
+                        "demonstration tier for users without the unpublished "
+                        "VarChAMP data; writes to a separate output path)")
     p.add_argument("--models-dir", default=None,
                    help=f"Directory containing .pt model files and scaler (default: {_MODELS_DIR})")
     p.add_argument("--device", default="",

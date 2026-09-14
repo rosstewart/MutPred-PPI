@@ -11,8 +11,8 @@ to run it ships inside this directory — nothing outside the repo, and no VarCh
 ## What it does
 
 Runs the real 3-file pipeline described in `docs/INFERENCE.md`, steps 2-3
-(step 1, `00_make_af3_json_input.py`, is skipped because structures are already
-provided — see "Where the inputs came from" below):
+(step 1, `00_make_af3_json_input.py`, is skipped because the three structures
+are already provided in `af3_models/`):
 
 1. `src/inference/01_make_contact_graphs_and_fasta.py` — builds residue contact
    graphs from the 3 mmCIF structures in `af3_models/`, using the variant list in
@@ -38,18 +38,6 @@ provided — see "Where the inputs came from" below):
   normally, so the 3 needed structures were extracted and converted here once so this
   example is self-contained and doesn't require a Zenodo download).
 
-### Where the inputs came from
-
-The 3 protein pairs/variants were taken from the Sahni+Fragoza training data
-(`Q4ACX1 L171R O43765`, `O75603 G63S Q96LI6`, `P40259 G137S O43765`), chosen because
-matching AlphaFold3 structures already exist in `datasets/af3_structures/`. Two of the
-three are still present in the current canonical table
-(`datasets/training_eval/sahni_fragoza_mapped090826_rows.csv.gz`, rows 501 and 1944);
-`Q4ACX1` was dropped by the 2026-09-08 accession remapping. The example is a
-self-contained format/plumbing demo -- its inputs ship inside this directory and it
-does not read any dataset -- so this does not affect whether it runs. The
-wild-type residue at each mutation position was verified against the structure
-sequence before inclusion (all 3 match exactly).
 
 ## How to run it
 
@@ -63,7 +51,9 @@ bash src/inference/example/run_example.sh --device cpu
 This regenerates (into this directory, untracked so the repo stays clean):
 - `af3_graphs/` — contact graphs + derived FASTA/label files (Step 2 output)
 - `wt_and_vt.fasta` — combined WT/variant sequences for ProtT5 (Step 2 output)
-- `results/MutPred-PPI_preds.tsv` — final predictions (Step 3 output), also copied to
+The reference in `expected_output/` is **compared against, never overwritten**: it is the
+only drift detector this example has. If your scores differ, the script says so and exits
+non-zero.
   `expected_output/MutPred-PPI_preds.tsv`
 
 ## Expected output
@@ -74,9 +64,9 @@ that the variant disrupts the interaction. `mutation` is 1-based.
 
 ```
 interactor	partner	mutation	score
-P40259	O43765	G137S	0.972222626209259
-O75603	Q96LI6	G63S	0.6895588040351868
-Q4ACX1	O43765	L171R	0.9620879888534546
+P40259	O43765	G137S	0.9325149655342102
+Q4ACX1	O43765	L171R	0.9441055059432983
+O75603	Q96LI6	G63S	0.5329003930091858
 ```
 
 (Row order may vary run-to-run — the pipeline processes complexes via `glob`, whose

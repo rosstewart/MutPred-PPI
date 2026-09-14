@@ -9,14 +9,14 @@ Covers stability pretraining and PPI fine-tuning. For inference with the pre-tra
 
 From Zenodo (see [`docs/DATA_SOURCES.md`](DATA_SOURCES.md) for links):
 - Model weights: `weights/`
-- Training data: `datasets/training_eval/sahni_fragoza_mapped090826_rows.csv.gz`,
-  `datasets/training_eval/sahni_only_mapped090826_rows.csv.gz` (and the other three
+- Training data: `datasets/training_eval/<dataset>_rows.csv.gz` for each of the five
+  canonical datasets (`sahni_fragoza`, `sahni_only`, and the other three
   canonical datasets; see `utils.gcv_common.DATASET_CONFIGS`). These are produced by
   `src/data_processing/training_sets/prepare_gcv_tables.py` -- see
   [`docs/DATA_PREPARATION.md`](DATA_PREPARATION.md).
 - AF3 structures: `datasets/af3_structures.tar`, which extracts to `datasets/af3_structures/`.
   The canonicalized, one-structure-per-pair tree the graph builder reads is
-  `datasets/af3_structures_canonical/` (4,497 gzipped mmCIFs + `manifest.csv`).
+  `datasets/af3_structures_canonical/` (100,739 gzipped mmCIFs + `manifest.csv`).
 
 ## Model weights
 
@@ -67,20 +67,18 @@ conda run -n ppi python src/training/pretrain_stability.py \
 
 ## Training Data Preparation
 
-Contact graphs live in one HDF5 `ContactGraphStore`
-([`src/contact_graphs.py`](../src/contact_graphs.py)) per data tier, not in per-complex `.mat`
-files:
+Contact graphs live in a single HDF5 `ContactGraphStore`
+([`src/contact_graphs.py`](../src/contact_graphs.py)), keyed by sequence rather than by
+filename, and reached under two names:
 
 | Store | Used by |
 |---|---|
 | `datasets/training_eval/contact_graphs.h5` | training and evaluation |
 | `datasets/variant_dbs/contact_graphs.h5` | variant-database inference |
 
-Entries are keyed on the sorted pair of `sha256(chain_sequence)[:16]`, so identity comes from
-sequence content rather than from a filename, and `load_dense(interactor=..., partner=...)` /
-`load_edge_index(interactor=..., partner=...)` (keyword-only, sequences not accessions) return
-the graph already oriented to the requested interactor, with self-loops added. See
-[`docs/INFERENCE.md`](INFERENCE.md#the-contact-graph-store).
+Entries are keyed by sequence content rather than by filename, and the accessors take
+sequences and return the graph already oriented to the requested interactor. The store's
+keying, accessors and orientation rules are documented once, in [`docs/INFERENCE.md`](INFERENCE.md#the-contact-graph-store).
 
 Rebuild the training/eval store from the canonical structures:
 
@@ -91,13 +89,9 @@ conda run -n ppi python src/data_processing/rebuild_graphs_from_structures.py \
 ```
 
 `--compare-to <existing.h5>` reports per-key differences instead of silently replacing them.
-Deriving graphs from the canonicalized one-structure-per-pair tree is what removed the arbitrary
-choice the old `.mat` migration had to make.
 
 `src/inference/01_make_contact_graphs_and_fasta.py` builds a store for *your own* structures in
-the standalone inference pipeline; it is not the path used for the training data. It also has a
-known defect that empties `wt_and_vt.fasta` — see the [Full Example Workflow](INFERENCE.md#full-example-workflow)
-note in `docs/INFERENCE.md`.
+the standalone inference pipeline; it is not the path used for the training data.
 
 `src/training/train_fold.py` holds the single training loop (`train_fold`) shared by
 `src/evaluation/mutpred_ppi_gcv.py` and `src/training/train_final_model.py`, so the CV numbers
@@ -123,7 +117,7 @@ conda run -n ppi python src/training/train_final_model.py \
 ```
 
 `--save-models-dir` is required. `--dataset` accepts the short names above or the
-full `*_mapped090826` forms.
+full stamped filenames on disk.
 
 VarChAMP training data is unpublished IGVF consortium data — cross-reference
 [data.igvf.org](https://data.igvf.org). It is required only for the second command above; the

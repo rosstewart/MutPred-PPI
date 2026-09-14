@@ -35,15 +35,18 @@ from utils.gcv_common import dataset_arg, dataset_config, DATASET_CHOICES, DATAS
 from utils.runtime import resolve_device  # noqa: E402
 from utils.mutpred_ppi_data import build_tensors  # noqa: E402
 from training.train_fold import (  # noqa: E402
-    _MEGASCALE_SCALER_PATH, _V1_0_SCALER_PATH, train_fold)
+    _MEGASCALE_SCALER_PATH, _PRIOR_BEST_SCALER_PATH, _V1_0_SCALER_PATH,
+    train_fold)
 
 # Which pretrained scaler an ablation uses. Mirrors mutpred_ppi_cv.run(): the
 # mutation-diff scaler is fitted once during pretraining and reused, so the
 # scaled diffs are identical every fold and every seed. Only `scratch` refits
 # per fold, which train_fold does itself.
 _MEGASCALE_ABLATIONS = {
-    "megascale", "megascale_freeze_diff", "megascale_all", "megascale_head",
+    "megascale", "freeze_mut_processor", "freeze_gat", "megascale_all",
+    "megascale_head",
     "megascale_all_no-gat", "megascale_all_no-mut", "megascale_all_wt-emb",
+    "pretrain_zero_shot",
 }
 from paths import GCV_RESULTS_DIR  # noqa: E402
 
@@ -72,7 +75,12 @@ def run(args: argparse.Namespace) -> None:
 
     # Pre-scale the mutation diffs once, exactly as mutpred_ppi_cv.run() does.
     # For every ablation but `scratch`, train_fold expects them already scaled.
-    if args.ablation in _MEGASCALE_ABLATIONS:
+    if args.ablation == "prior_best":
+        # The prior model's own scaler, not the MegaScale one -- its
+        # mutation_diff_processor was fitted against these statistics, so pairing
+        # it with a different scaler would misrepresent the arm it stands for.
+        prefit_scaler = joblib.load(_PRIOR_BEST_SCALER_PATH)
+    elif args.ablation in _MEGASCALE_ABLATIONS:
         prefit_scaler = joblib.load(_MEGASCALE_SCALER_PATH)
     elif args.ablation != "scratch":
         prefit_scaler = joblib.load(_V1_0_SCALER_PATH)
@@ -94,6 +102,7 @@ def run(args: argparse.Namespace) -> None:
             dense["seq_lengths"], device,
             ablation=args.ablation, seed=fold_seed,
             precomputed_diffs=precomputed_diffs,
+            fuse_batch=args.fuse_batch,
         )
         # train_fold returns predictions in the order of `te`, which is test_idx.
         return np.asarray(preds, dtype=float)
@@ -111,10 +120,11 @@ def _parse_args() -> argparse.Namespace:
     # fails at parse time rather than silently reproducing `megascale_all`.
     p.add_argument("--ablation", default="megascale_all",
                    choices=["full", "full_all",
-                            "megascale", "megascale_freeze_diff", "megascale_all",
+                            "megascale", "freeze_mut_processor", "freeze_gat", "megascale_all",
                             "megascale_head", "megascale_all_no-gat",
                             "megascale_all_no-mut", "megascale_all_wt-emb",
-                            "scratch", "no-gat", "no-mut", "wt-emb"])
+                            "scratch", "no-gat", "no-mut", "wt-emb",
+                            "prior_best", "pretrain_zero_shot"])
     p.add_argument("--device", default="cuda:0")
     # 0, not 42: the published commands pass no --seed, and fold_seed derives
     # from it, so a different default silently reseeds every fold.
@@ -127,6 +137,15 @@ def _parse_args() -> argparse.Namespace:
              "site (default: True). Exact for this model -- it reads one node "
              "after two GAT layers and pools nothing -- and ~30x smaller than "
              "the full complex. --no-two-hop restores whole-complex behaviour.")
+    p.add_argument(
+        "--fuse-batch", action=argparse.BooleanOptionalAction, default=True,
+        help="Run one forward per optimiser step instead of one per sample "
+             "(default: True). The loop already steps once per batch; this only "
+             "fuses the forwards, by concatenating the batch's graphs into one "
+             "disconnected graph. Same loss and gradient, ~5x faster. Dropout "
+             "draws one mask per batch rather than per sample, so a fused run "
+             "matches a serial one in distribution, not bitwise -- which is "
+             "already true of any two GPU runs. --no-fuse-batch reverts.")
     p.add_argument(
         "--resume", action=argparse.BooleanOptionalAction, default=True,
         help="Resume from an existing checkpoint, continuing after the last "

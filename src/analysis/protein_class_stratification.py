@@ -33,12 +33,13 @@ import numpy as np
 import pandas as pd
 import matplotlib
 from analysis import plot_style
-from analysis.plot_style import SAVE_DPI
+from analysis.plot_style import CLASS_LABELS, SAVE_DPI
 plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
 from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
+from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
     load_canonical_rows, stratified_fold_curves)
 from utils.identifiers import bare_accession  # noqa: E402
@@ -49,8 +50,10 @@ _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
 PFAM_CACHE = str(ANNOTATIONS_DIR / "pfam_domains_cache.pkl")
-GCV_RESULTS = f"{_PUB}/results/gcv/MutPredPPI_sahni_fragoza_megascale_all_detailed_results.pkl"
-CANONICAL_DATASET = "sahni_fragoza_mapped090826"
+GCV_RESULTS = (f"{_PUB}/results/gcv/"
+               f"MutPredPPI_sahni_fragoza{DATASET_SUFFIX}_megascale_all"
+               f"_detailed_results.pkl")
+CANONICAL_DATASET = f"sahni_fragoza{DATASET_SUFFIX}"
 # Canonical row ordering: row_index indexes the fold splits and test classes.
 ROWS_FILE = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
 OUT_DIR   = f"{_PUB}/results/robustness"
@@ -124,7 +127,7 @@ def compute_curves():
                                   n_seeds=N_SEEDS, rows_file=ROWS_FILE)
 
 
-def plot_on_axes(axes, fold_curves, all_rows_by_grp):
+def plot_on_axes(axes, fold_curves, all_rows_by_grp, show_titles: bool = True):
     """Draw the 3-panel (C1/C2/C3) single-vs-multi-domain ROC comparison onto
     pre-supplied axes. Returns summary_rows (list[str]) for the TSV output.
     """
@@ -164,7 +167,11 @@ def plot_on_axes(axes, fold_curves, all_rows_by_grp):
             ax.plot(FPR_GRID, mean_tpr, color=color, lw=2, label=label)
             ax.fill_between(FPR_GRID, lo_tpr, hi_tpr, color=color, alpha=0.15)
 
-        ax.set_title(class_labels[cls], fontsize=10)
+        # In the combined figure only the top row is labelled: the C1/C2/C3
+        # columns are shared across all three panels, so repeating the
+        # titles on every row is noise.
+        if show_titles:
+            ax.set_title(class_labels[cls], fontsize=10)
         ax.set_xlim(0, 1); ax.set_ylim(0, 1.05)
         ax.grid(True, alpha=0.3)
         ax.set_xlabel("False Positive Rate", fontsize=10)

@@ -1,168 +1,174 @@
 # MutPred-PPI
 
-Official repository for "Predicting interaction-specific protein–protein interaction perturbations by missense variants with MutPred-PPI", published in RECOMB 2026.
+Predicting interaction-specific protein–protein interaction perturbations by missense
+variants.
 
-## Paper Links
+MutPred-PPI scores how likely a missense variant is to disrupt a *specific* protein–protein
+interaction. It combines a graph attention network over the predicted structure of the
+complex with ProtT5 sequence embeddings, and returns one probability per
+(protein, partner, variant) triple: 1 means the interaction is likely disrupted, 0 that it is
+likely preserved.
 
-- **RECOMB 2026 Proceedings**  
-  https://recomb.org/proceedings/proceedings/2030-2026/2026/
+This repository contains the model, the full analysis pipeline behind the paper, and a
+runnable inference example.
 
-- **PDF link**  
-  https://doi.org/10.64898/2025.12.20.695738
-
-## Overview
-
-MutPred-PPI is a deep learning framework that predicts whether missense mutations disrupt protein-protein interactions. It combines structural information from protein complexes with sequence embeddings from protein language models to achieve high-accuracy predictions.
-
-**Key Features:**
-- Graph neural networks with attention mechanisms for structural analysis
-- ProtT5 protein language model embeddings for sequence representation
-- Binary classification: probabilistic score ranging from 0-1, where 1 indicates high probability of interaction disruption and 0 indicates preserved interaction
-- Parallel processing support for large-scale analysis
+- **Paper** — Predicting interaction-specific protein–protein interaction perturbations by
+  missense variants with MutPred-PPI, RECOMB 2026.
+  [doi:10.64898/2025.12.20.695738](https://doi.org/10.64898/2025.12.20.695738)
+- **Proceedings** — [RECOMB 2026](https://recomb.org/proceedings/proceedings/2030-2026/2026/)
+- **Data** — deposited on Zenodo; see [`docs/ZENODO.md`](docs/ZENODO.md)
 
 ## Installation
 
 ```bash
-# Clone repository
 git clone https://github.com/rosstewart/mutpred-ppi.git
 cd mutpred-ppi
 
-# Create conda environment
-# Named `ppi` because every command in docs/ uses `conda run -n ppi`.
 conda create -n ppi python=3.10 -y
 conda activate ppi
-
-# Install sentencepiece (required for ProtT5)
 conda install sentencepiece -c conda-forge -y
 
-# Install dependencies. requirements.txt pins the exact published environment,
-# including torch==2.5.1 -- so install it FIRST if you need a specific CUDA
-# build, or requirements.txt will pull the default PyPI wheel over the top.
+# requirements.txt pins the exact published environment, including torch==2.5.1.
+# Install torch FIRST if you need a particular CUDA build, or the pinned PyPI
+# wheel will be installed over the top of it:
 #   CUDA 12.1:  pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 #   CPU only:   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
-# Install this repo as a package.
-# `pyproject.toml` makes src/ the package root, so modules import as
-# `training.train_fold`, `utils.gcv_common`, `contact_graphs`, ... Scripts
-# outside src/inference/ will not import without this.
+# Install the repository as a package. pyproject.toml makes src/ the package
+# root, so modules import as `training.train_fold`, `utils.gcv_common`,
+# `contact_graphs`, and so on. Scripts will not import without this.
 pip install -e .
 ```
 
-`requirements.txt` pins the exact environment the published results were produced in.
-Cross-validation
-additionally needs `cd-hit`, which supplies the clustering groups:
+Cross-validation additionally needs `cd-hit`, which supplies the sequence-identity clusters
+used for grouping:
 
 ```bash
 conda install -c bioconda cd-hit -y
 ```
 
-See [`docs/SETUP.md`](docs/SETUP.md) for where the code expects data to live.
-
-### System Requirements
-
-- Python 3.10 or higher (`pyproject.toml` requires it)
-- CUDA-capable GPU (recommended for faster inference)
-- 16GB+ RAM recommended
-- ~15 GB disk space for the Zenodo data bundle; the inference quickstart needs no download (structures are bundled)
-
-
-## Quick Start
+Check the install:
 
 ```bash
-# Step 1: Prepare AlphaFold3 inputs (if using AlphaFold3)
+python -m pytest tests/ -q
+```
+
+**Requirements:** Python 3.10+, 16 GB RAM. A CUDA GPU is recommended for inference and
+required in practice for training.
+
+## Quick start
+
+A complete worked example ships with the repository — three protein pairs, three variants,
+bundled structures, and the model weights. No download needed:
+
+```bash
+bash src/inference/example/run_example.sh --device cpu
+```
+
+It runs the real three-step pipeline and compares its output against a committed reference,
+so it doubles as an installation check. A few minutes on CPU, well under one on GPU.
+
+To score your own variants:
+
+```bash
+# 1. Prepare AlphaFold 3 inputs for each complex (skip if you already have structures)
 python src/inference/00_make_af3_json_input.py proteins.fasta variants.tsv af3_inputs/
 
-# Step 2: Obtain protein complex structures (see docs/INFERENCE.md)
+# 2. Fold them (AlphaFold Server or a local AlphaFold 3 install)
 
-# Step 3: Generate contact graphs
+# 3. Build contact graphs from the structures
 python src/inference/01_make_contact_graphs_and_fasta.py working_dir/ mmcif_dir/ variants.tsv
 
-# Step 4: Run predictions
+# 4. Score
 python src/inference/02_run_mutpred-ppi_inference.py working_dir/
 ```
 
-For a small, ready-to-run example (no data download required), see
-[`src/inference/example/`](src/inference/example/).
+Input and output formats, and a full worked example, are in
+[`docs/INFERENCE.md`](docs/INFERENCE.md).
 
-## Data Availability
+## Reproducing the paper
 
-Pre-trained model weights, Sahni+Fragoza training data (post-AF3 structure filtering, as used in Fig 3 GCV), and AF3 complex structures are available on Zenodo:
-- **Models + training data**: https://doi.org/10.5281/zenodo.17645488
-- **AF3 structures**: https://doi.org/10.5281/zenodo.18701748
+Download the analysis layer from Zenodo ([`docs/ZENODO.md`](docs/ZENODO.md)), then:
 
-VarChAMP data was unpublished IGVF consortium data at time of release and is excluded. COSMIC and HGMD require licensed access and are not distributed. gnomAD and ClinVar data must be downloaded from their respective public portals. Full source/version details: [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md).
-
-## Further Documentation
-
-This README covers installation and a minimal inference example. For everything else, see [`docs/`](docs/):
-
-- **[docs/SETUP.md](docs/SETUP.md)** — where the code looks for data, the three data tiers, environment variables
-- **[docs/DATA_PREPARATION.md](docs/DATA_PREPARATION.md)** — the ordered chain from published source files to canonical tables, structures and contact graphs
-- **[docs/INFERENCE.md](docs/INFERENCE.md)** — detailed inference usage, file formats, full worked example, troubleshooting
-- **[docs/TRAINING.md](docs/TRAINING.md)** — stability pretraining + model training from scratch
-- **[notebooks/reproduce_all_figures.py](notebooks/reproduce_all_figures.py)** — one runnable, cached, resumable script/notebook (jupytext percent format) that regenerates every figure and table end to end, from the Zenodo bundle.
-  **It ships with `QUICK = True`**, which finishes in hours instead of days but uses 1 cross-validation seed instead of 30 and subsampled variant databases, writing to `results_quick/`. Those are *not* the paper's numbers. Set `QUICK = False` (line 48) to reproduce the published results into `results/`.
-- **[docs/REPRODUCING_ANALYSES.md](docs/REPRODUCING_ANALYSES.md)** — every figure/table in the paper (GCV benchmarking, VarChAMP blind test, variant-repository inference and enrichment analyses, supplementary figures), with exact commands
-- **[docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)** — where every dataset comes from and licensing notes
-- **[docs/MANUSCRIPT_FIGURES.md](docs/MANUSCRIPT_FIGURES.md)** — every figure and table in the paper, the command that produces it, and what it depends on
-
-## Project Structure
-
-```
-MutPred-PPI/
-├── src/
-│   ├── paths.py             # single point of path resolution — no absolute paths anywhere else
-│   ├── model.py             # the one GAT_mut_processor definition
-│   ├── contact_graphs.py    # ContactGraphStore: the HDF5 contact-graph store, keyed by sequence
-│   ├── ids.py               # accession / variant-id parsing
-│   ├── utils/               # shared layers: gcv_common, structures, mutpred_ppi_data
-│   ├── inference/           # public 3-step inference pipeline
-│   │   └── example/         # runnable end-to-end inference quickstart
-│   ├── training/            # stability pretraining, train_fold, final-model fitting
-│   ├── evaluation/          # cross-validation benchmarking + comparator methods
-│   ├── data_processing/     # dataset, structure and graph preparation
-│   │   └── training_sets/   # prepare_gcv_tables.py -> the GCV data layer
-│   ├── variant_db_inference/# large-scale variant-DB scoring + canonical DB tables
-│   └── analysis/            # figure/table generation + paper analyses
-├── scripts/
-│   └── link_external.sh     # builds external/ (see docs/SETUP.md)
-├── notebooks/               # runnable jupytext notebooks (mapping, figure reproduction)
-├── tests/                   # pytest test suite (run with: conda run -n ppi python -m pytest tests/ -q)
-├── docs/                    # setup, inference, training, reproduction, provenance
-├── weights/                 # model checkpoints
-├── figures/                 # generated LaTeX tables (PNGs are gitignored)
-├── archive/                 # superseded scripts and dataset references, kept for provenance
-├── LICENSE
-└── README.md
-
-Not in git — created locally or delivered via Zenodo (see docs/SETUP.md):
-  datasets/        Zenodo bundle + locally built data:
-                     source_data/, source_data_restricted/  raw inputs
-                     source_mapping/                        mapping outputs
-                     training_eval/                         GCV tables, graphs, caches
-                     variant_dbs/, af3_structures*/         repositories, structures
-  external/        symlinks to large machine-local data
-  results/         generated by the evaluation scripts
-  results_quick/   generated by the notebook's QUICK mode
-  data_caches/     optional dataset caches (regenerable)
+```bash
+python notebooks/reproduce_all_figures.py
 ```
 
+One resumable script (jupytext percent format, so it opens as a notebook) that regenerates
+every figure and table in order, skipping work whose output is already present.
 
-Model weights and training data are distributed via Zenodo (see [Data Availability](#data-availability) above).
+It ships with **`QUICK = True`** (line 50), which finishes in hours rather than days by using
+1 cross-validation seed instead of 30 and subsampled variant repositories, writing to
+`results_quick/`. **Those are not the paper's numbers.** Set `QUICK = False` to reproduce the
+published results into `results/`.
 
-## License
+### What you can reproduce
 
-This software is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Two datasets are not ours to redistribute. Their effect is uneven, so it is worth being
+explicit:
 
-**Important Note:** While MutPred-PPI itself is open source, users must comply with the licensing terms of any structural data they use as input:
-- **AlphaFold3 structures**: Subject to [AlphaFold3 Output Terms of Use](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md) (non-commercial only)
-- **PDB structures**: Check individual structure licenses
-- **Other sources**: Comply with respective terms
+| | With the Zenodo deposit | Also with a COSMIC + HGMD licence | Not reproducible |
+|---|---|---|---|
+| **Figures** | Fig 3, Fig 5, S1, S3, S7, S8, S9, and the protein-class, stability, robustness and bi-class supplements | the COSMIC and HGMD panels within Fig 5, S8 and the stability figures | **Fig 4, S2, Table 1** |
+| **Why** | — | COSMIC v101 and HGMD Professional 2025 require a licence | depend on VarChAMP interaction measurements, unpublished IGVF consortium data at time of release |
+
+The VarChAMP restriction also means the published all-data model cannot be retrained. So the
+deposit includes a **Sahni+Fragoza demonstration model**: the notebook falls back to it
+automatically, letting you run the entire variant-repository pipeline end to end and see what
+it produces. Its scores are not the published ones — it writes to a separate results tree and
+stamps every figure it draws.
+
+Full source and licence details for every dataset: [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md).
+
+## Documentation
+
+| | |
+|---|---|
+| [`docs/ZENODO.md`](docs/ZENODO.md) | what is deposited, what is not, and how to unpack it |
+| [`docs/SETUP.md`](docs/SETUP.md) | where the code expects data to live; environment variables |
+| [`docs/INFERENCE.md`](docs/INFERENCE.md) | the three-step pipeline in detail; file formats; troubleshooting |
+| [`docs/TRAINING.md`](docs/TRAINING.md) | stability pretraining and model fitting from scratch |
+| [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) | provenance, versions and licensing for every dataset |
+| [`docs/DATA_PREPARATION.md`](docs/DATA_PREPARATION.md) | rebuilding the datasets from the original source files |
+| [`docs/REPRODUCING_ANALYSES.md`](docs/REPRODUCING_ANALYSES.md) | every figure and table, with the command that produces it |
+
+## Repository layout
+
+```
+src/
+  paths.py              single point of path resolution
+  model.py              the GAT_mut_processor definition
+  contact_graphs.py     the HDF5 contact-graph store, keyed by sequence
+  ids.py                accession and variant-id parsing
+  utils/                shared data layer (gcv_common, structures, mutations)
+  inference/            the public three-step pipeline
+    example/            runnable quickstart
+  training/             stability pretraining, per-fold and final-model fitting
+  evaluation/           cross-validation, blind test, comparator methods
+  data_processing/      dataset, structure and graph preparation
+  variant_db_inference/ large-scale variant-repository scoring
+  analysis/             figures, tables and paper analyses
+  verification/         standalone consistency checks over the built artifacts
+notebooks/              mapping and figure-reproduction notebooks (jupytext)
+tests/                  pytest suite
+docs/                   setup, inference, training, reproduction, deposit
+figures/                generated figures and tables (output only)
+weights/                model checkpoints
+```
+
+Created locally or downloaded from Zenodo, and not in git: `datasets/`, `results/`,
+`external/`, `external_methods/`. See [`docs/SETUP.md`](docs/SETUP.md).
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+Structural inputs carry their own terms. AlphaFold 3 predictions are subject to the
+[AlphaFold 3 output terms of use](https://github.com/google-deepmind/alphafold3/blob/main/OUTPUT_TERMS_OF_USE.md)
+(non-commercial only); check the licence of any other structure source you use.
 
 ## Citation
-
-If you use MutPred-PPI in your research, please cite:
 
 ```bibtex
 @inproceedings{stewart2026mutpred-ppi,
@@ -170,12 +176,11 @@ If you use MutPred-PPI in your research, please cite:
   author={Stewart, Ross and Laval, Florent and Coppin, Georges and Spirohn-Fitzgerald, Kerstin and Tixhon, Maxime and Hao, Tong and Calderwood, Michael A and Mort, Matthew and Cooper, David N and Vidal, Marc and Radivojac, Predrag},
   booktitle={Proceedings of the 30th Annual International Conference on Research in Computational Molecular Biology (RECOMB)},
   year={2026},
-  note={Also available as bioRxiv preprint (2025.12.20.695738)},
   doi={10.64898/2025.12.20.695738}
 }
 ```
 
 ## Contact
 
-- **Issues**: Please open an issue on GitHub for bug reports or feature requests
-- **Email**: stewart.ro@northeastern.edu
+Bug reports and questions: please open a GitHub issue.
+Correspondence: stewart.ro@northeastern.edu

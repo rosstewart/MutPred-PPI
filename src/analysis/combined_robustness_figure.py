@@ -27,7 +27,6 @@ from analysis import plddt_stratification as ps
 from analysis import protein_class_stratification as pc
 
 OUT_DIR = ia.OUT_DIR
-ROW_LABELS = ["Interface vs. non-interface", "AF3 pLDDT confidence", "Single- vs. multi-domain"]
 
 
 def main():
@@ -54,11 +53,6 @@ def main():
         axes[row_idx, 0].text(
             -0.28, 1.12, f"({chr(65 + row_idx)})", transform=axes[row_idx, 0].transAxes,
             fontsize=16, fontweight="bold", va="top", ha="right",
-        )
-        # Row-level label above the middle panel
-        axes[row_idx, 1].text(
-            0.5, 1.18, ROW_LABELS[row_idx], transform=axes[row_idx, 1].transAxes,
-            fontsize=12, fontweight="bold", ha="center", va="bottom",
         )
 
     plt.tight_layout()
