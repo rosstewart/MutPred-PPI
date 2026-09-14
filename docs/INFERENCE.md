@@ -1,6 +1,11 @@
-# Running Inference at Scale
+# Running inference
 
-This covers the public 3-step inference pipeline (`src/inference/`) for scoring your own variant/partner sets. For a minimal working example, see the [Quick Start](../README.md#quick-start) in the main README.
+The 3-step pipeline in `src/inference/`, for scoring your own variants. A minimal worked
+example is in the [quick start](../README.md#quick-start).
+
+For a handful of variants, the [web server](https://mutpred.mutdb.org/mutpredppi) does the
+same thing without an install: upload structures and a list of missense variants and it
+returns the scores. Use this pipeline for large sets, or when you want the intermediates.
 
 ## Step 1: Prepare AlphaFold3 Input Files (Optional)
 

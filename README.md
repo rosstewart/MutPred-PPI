@@ -6,9 +6,13 @@ structure of the complex with ProtT5 sequence embeddings, and returns one probab
 (protein, variant, partner) triple: 1 means the interaction is likely disrupted, 0 that it
 is likely preserved.
 
+- **Web server**: <https://mutpred.mutdb.org/mutpredppi>
 - **Paper**: [doi:10.64898/2025.12.20.695738](https://doi.org/10.64898/2025.12.20.695738),
   RECOMB 2026 ([proceedings](https://recomb.org/proceedings/proceedings/2030-2026/2026/))
 - **Data**: see [`docs/DATA.md`](docs/DATA.md) <!-- DOI: pending -->
+
+Upload structures and a list of missense variants to the web server to score them without
+installing anything. Install locally for large variant sets, or to retrain.
 
 ## Installation
 
@@ -37,6 +41,9 @@ conda install -c bioconda cd-hit -y
 Python 3.10 or later, 16 GB RAM, and a CUDA GPU for anything beyond the example.
 
 ## Quick start
+
+To score a small number of variants, use the
+[web server](https://mutpred.mutdb.org/mutpredppi) instead of installing anything.
 
 We include an end-to-end inference example with precomputed structures. No download needed:
 
