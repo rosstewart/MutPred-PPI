@@ -173,7 +173,7 @@ Structural inputs carry their own terms. AlphaFold 3 predictions are subject to 
 ```bibtex
 @inproceedings{stewart2026mutpred-ppi,
   title={Predicting interaction-specific protein--protein interaction perturbations by missense variants with MutPred-PPI},
-  author={Stewart, Ross and Laval, Florent and Coppin, Georges and Spirohn-Fitzgerald, Kerstin and Tixhon, Maxime and Hao, Tong and Calderwood, Michael A and Mort, Matthew and Cooper, David N and Vidal, Marc and Radivojac, Predrag},
+  author={Stewart, Ross and Laval, Florent and Coppin, Georges and Spirohn-Fitzgerald, Kerstin and Tixhon, Maxime and Hao, Tong and Lambourne, Luke and Calderwood, Michael A and Mort, Matthew and Cooper, David N and Vidal, Marc and Radivojac, Predrag},
   booktitle={Proceedings of the 30th Annual International Conference on Research in Computational Molecular Biology (RECOMB)},
   year={2026},
   doi={10.64898/2025.12.20.695738}
