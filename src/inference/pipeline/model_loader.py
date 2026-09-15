@@ -4,10 +4,17 @@ import numpy as np
 from pathlib import Path
 
 # Single definition lives in src/model.py; see its docstring for why.
-from model import MutPred_PPI  # noqa: E402,F401
+from model import MutPred_PPI, MutPred_PPI_v1  # noqa: E402,F401
 
 INPUT_DIM = 1024
 CANONICAL_CHECKPOINT = "MutPred-PPI.pt"
+
+# The published v1.0 checkpoints, by their released names. Enumerated rather than
+# globbed, for the same reason `get_models` no longer globs: the set that makes up the
+# published ensemble is a fact about the release, not something to infer from a directory
+# listing. A partial ensemble changes scores silently, so a missing member is an error.
+LEGACY_V1_CHECKPOINTS = tuple(
+    f"MutPred-PPI_sahni_fragoza_varchamp_cava_{i}.pt" for i in range(10))
 
 
 def load_model(checkpoint_path, device):
@@ -21,6 +28,35 @@ def load_model(checkpoint_path, device):
         torch.load(str(checkpoint_path), weights_only=True, map_location=device))
     model.eval()
     return model
+
+
+def load_legacy_v1_ensemble(model_dir, device):
+    """Load the 10-checkpoint v1.0 ensemble -- RECOMB 2026 / bioRxiv v1-v2.
+
+    Separate from `get_models` and opted into explicitly (step 02's `--arch v1.0`) rather
+    than sniffed from the directory, so the current generation keeps its property of
+    never guessing which checkpoint it is scoring with.
+
+    The surrounding pipeline is shared with the current model and gives bit-identical
+    results to the retired v1.0 code tree; only the architecture and weights differ.
+    """
+    model_dir = Path(model_dir)
+    missing = [n for n in LEGACY_V1_CHECKPOINTS if not (model_dir / n).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Incomplete v1.0 ensemble in {model_dir}: missing {len(missing)} of "
+            f"{len(LEGACY_V1_CHECKPOINTS)} checkpoints ({', '.join(missing[:3])}"
+            f"{'...' if len(missing) > 3 else ''}). All ten are required -- a partial "
+            f"ensemble changes every score without failing.")
+
+    models = []
+    for name in LEGACY_V1_CHECKPOINTS:
+        model = MutPred_PPI_v1(input_dim=INPUT_DIM).to(device)
+        model.load_state_dict(
+            torch.load(str(model_dir / name), weights_only=True, map_location=device))
+        model.eval()
+        models.append(model)
+    return models
 
 
 def get_models(model_dir, device):

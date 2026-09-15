@@ -68,25 +68,62 @@ python src/inference/01_make_contact_graphs_and_fasta.py \
     <working_dir> \
     <mmcif_dir> \
     <variants_file> \
-    [n_jobs]
+    [n_jobs] \
+    [--numbering auto|sequential|structure]
 ```
 
 **Arguments:**
 - `working_dir`: Output directory for graphs and sequences
 - `mmcif_dir`: Directory containing structure files (.cif or .mmcif)
-- `variants_file`: Same TSV file from Step 1
+- `variants_file`: Same TSV file from Step 1 (3 or 5 columns -- see below)
 - `n_jobs`: Number of parallel jobs (default: `-1`, i.e. all cores). Large protein complexes may take several minutes to process.
+- `--numbering`: how variant positions are read (default `auto` -- see
+  [Variant position numbering](#variant-position-numbering)).
+
+### Selecting chains
+
+The variants TSV takes **three or five** tab-separated columns:
+
+```
+O00548	A653T	P46531                 # 3 columns: chains auto-detected
+RUNX1	R80G	CBFB	A	B          # 5 columns: interactor chain A, partner B
+OTHER	V12A	PARTNER	C	D          # a batch may mix layouts per complex
+```
+
+Three columns requires the file to contain **exactly two** protein chains. Name the pair
+explicitly for anything else -- a structure holding several copies of the complex, or
+protein plus DNA, ligands or waters. The first chain is the one your variants apply to, so
+**order matters**. The pair must be the same on every row for a given complex.
+
+### Variant position numbering
+
+- **`sequential`** -- counted from the first residue present in the file, which is
+  position 1 whatever the file calls it. AlphaFold3 models are in this form.
+- **`structure`** -- the residue numbers written in the file, which need not start at 1
+  and may skip positions. Experimental PDB entries are often in this form.
+
+The two are identical when numbering starts at 1 without gaps. `--numbering auto` (the
+default) uses whichever resolves *every* variant of a complex to a residue matching its
+wild-type letter, and on failure reports what went wrong under each convention plus the
+chain's residue range. The resolved convention is recorded per complex in `complexes.csv`.
 
 **Outputs:**
 - `working_dir/af3_graphs/contact_graphs.h5`: a `ContactGraphStore`
   ([`src/contact_graphs.py`](../src/contact_graphs.py)), one HDF5 store for every graph
   content-addressed rather than filename-addressed.
 - `working_dir/af3_graphs/complexes.csv`: columns `complex_id, interactor, partner,
-  interactor_sequence, partner_sequence`. Step 3 joins on this and looks graphs up **by
-  sequence**, so it never has to split an accession out of a filename.
-- `working_dir/af3_graphs/variants.csv`: columns `interactor, partner, mutation`, one row per
-  scored triple. Step 3 reads this rather than re-parsing the input TSV.
+  interactor_sequence, partner_sequence, interactor_chain, partner_chain, numbering`.
+  Step 3 joins on this and looks graphs up **by sequence**, so it never has to split an
+  accession out of a filename. The chain columns are empty when chains were auto-detected.
+- `working_dir/af3_graphs/variants.csv`: columns `interactor, partner, mutation,
+  mutation_input`, one row per scored triple. `mutation` is the sequential position;
+  `mutation_input` is the variant as you wrote it, and is what the final table reports.
 - `working_dir/wt_and_vt.fasta`: wild-type and variant sequences, for ProtT5 embedding.
+  Variant headers are `>{accession} {mutation}`.
+
+Positions are **1-based** everywhere: inputs, these intermediates, and the results table.
+Run Step 2 and Step 3 from the same release -- a working directory left over from an older
+version is not readable by the current Step 3.
 
 ### The contact-graph store
 
@@ -119,24 +156,43 @@ Predict interaction disruption for all variants:
 ```bash
 python src/inference/02_run_mutpred-ppi_inference.py \
     <working_dir> \
-    [--device DEVICE]
+    [--device DEVICE] \
+    [--models-dir PATH] \
+    [--arch current|v1.0]
 ```
 
 **Arguments:**
 - `working_dir`: Directory from Step 2 containing graphs and FASTA
 - `--device`: Compute device (default: cuda:0, use 'cpu' if no GPU available)
+- `--models-dir`: directory holding the checkpoint(s) and that generation's
+  `mutation_diff_scaler.pkl` (default: `weights/`)
+- `--arch`: model generation (default `current`) -- see
+  [Scoring the published v1.0 model](#scoring-the-published-v10-model)
 
 **Output:**
 - `working_dir/results/MutPred-PPI_preds.tsv`: Prediction scores for each input variant
   - Tab-separated, with headers: `interactor`, `partner`, `mutation`, `score`
     (`src/inference/pipeline/inference_utils.py::write_output`)
-  - `mutation` is 1-based, matching every other table in the repo.
+  - `mutation` is reported in the **same numbering you supplied** -- give structure
+    residue numbers and you get them back.
 
-**Note on schema.** The variant-repository pipeline
-(`src/variant_db_inference/run_variant_db_inference.py`) writes an identical header, so the
-two are interchangeable. The two accessions are kept in separate columns rather than welded
-into one id: splitting `{interactor}_{partner}` back on `_` mis-assigns isoform and RefSeq
-accessions, since `NP_002046_GFAP` has no unambiguous split.
+### Scoring the published v1.0 model
+
+`--arch v1.0` scores the published RECOMB 2026 / bioRxiv v1-v2 ensemble:
+
+```bash
+python src/inference/02_run_mutpred-ppi_inference.py \
+    <working_dir> --device cpu \
+    --models-dir /path/to/v1.0/weights --arch v1.0
+```
+
+`--models-dir` must contain all ten released
+`MutPred-PPI_sahni_fragoza_varchamp_cava_{0..9}.pt` checkpoints **and** that release's own
+`mutation_diff_scaler.pkl`. Each model generation has its own scaler; the files are the
+same size but not the same content, and pairing the wrong one shifts every score without
+reporting an error.
+
+Scores from v1.0 and the current model are **not comparable** and should not be pooled.
 
 ## File Formats
 

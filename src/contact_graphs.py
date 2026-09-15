@@ -250,6 +250,68 @@ def contact_graph_from_structure(path, threshold: float = DEFAULT_THRESHOLD,
     return seq_a, seq_b, edges_from_dense(G)
 
 
+def chain_resnums(path, chains: tuple[str, ...] | None = None):
+    """Per-chain author residue numbers, in the same order as the sequences.
+
+    `contact_graph_from_structure` returns sequences whose positions are SEQUENTIAL --
+    index 0 is the first polymer residue present, whatever the file numbers it. That is
+    fine for AF3 models, which start at 1, but an experimental entry may start anywhere
+    (the RUNX1 chain of 1H9D starts at 54) or have gaps, so a caller that wants to accept
+    variants written in the file's own numbering needs the mapping back.
+
+    Returns `{chain_id: [resnum, ...]}` where the list is positionally aligned with that
+    chain's sequence: `resnums[i]` is the author number of sequence position `i`.
+
+    This is deliberately a separate function rather than a fourth element on
+    `contact_graph_from_structure`'s return: that tuple is unpacked positionally by
+    several callers and by the tests, so widening it would break them.
+
+    Selection and filtering MUST match `contact_graph_from_structure` exactly -- same
+    `chains` semantics, same `_is_polymer_residue` gate -- or the mapping silently
+    desynchronizes from the sequence the graph was built on. Returns None on the same
+    conditions it does (missing file, absent requested chain, not exactly two chains
+    when `chains` is None).
+    """
+    import gzip
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    from Bio.PDB import MMCIFParser, PDBParser
+
+    path = Path(path)
+    if not path.exists():
+        return None
+    opener = gzip.open if path.name.endswith(".gz") else open
+    parser = MMCIFParser(QUIET=True) if ".cif" in path.name else PDBParser(QUIET=True)
+    with opener(path, "rt") as fh:
+        model = parser.get_structure("x", fh)[0]
+
+    if chains is None:
+        raw_chains = list(model)
+        keep_empty = False
+    else:
+        raw_chains = []
+        for chain_id in chains:
+            try:
+                raw_chains.append(model[chain_id])
+            except KeyError:
+                return None
+        keep_empty = True
+
+    out = {}
+    for chain in raw_chains:
+        nums = [r.get_id()[1] for r in chain if _is_polymer_residue(r)]
+        if nums or keep_empty:
+            out[chain.id] = nums
+
+    if chains is None:
+        if len(out) != 2:
+            return None
+    elif len(out) != len(chains):
+        return None
+    return out
+
+
 def edges_from_dense(G: np.ndarray) -> np.ndarray:
     """(2, nnz) int32 upper-triangle edge list from a symmetric adjacency."""
     iu, ju = np.nonzero(np.triu(np.asarray(G) != 0, k=1))
