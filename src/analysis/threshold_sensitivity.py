@@ -30,16 +30,16 @@ plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import REPO_ROOT  # noqa: E402
+from paths import REPO_ROOT, ROBUSTNESS_DIR, VARIANT_DBS_DIR  # noqa: E402
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _PUB = str(REPO_ROOT)
 # Default is the published all-data tree; --data-dir selects the
 # Sahni+Fragoza demonstration tree instead.
-DATA_DIR = f"{_PUB}/results/variant_dbs_all_data"
+DATA_DIR = str(VARIANT_DBS_DIR)
 _DEMO_STAMP = False
-OUT_DIR = f"{_PUB}/results/robustness"
+OUT_DIR = str(ROBUSTNESS_DIR)
 
 THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 # Color scheme: higher t = more stringent disruption threshold (disease mechanism).

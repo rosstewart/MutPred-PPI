@@ -29,7 +29,7 @@ import pandas as pd
 from sklearn.metrics import roc_curve, auc
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import REPO_ROOT, cv_reference_dir
+from paths import BICLASS_GCV_DIR, GCV_RESULTS_DIR, REPO_ROOT, cv_reference_dir  # noqa: E402
 
 _PUB = REPO_ROOT
 # `cv_reference_dir()`, NOT `paths.CV_DIR`. The two are not interchangeable:
@@ -50,8 +50,8 @@ from utils.gcv_common import (
 
 
 CANONICAL_DATASET = "sahni_fragoza_mapped090826"
-PKL_DIR      = _PUB / "results" / "gcv"
-OUT_DIR      = _PUB / "results" / "biclass_gcv"
+PKL_DIR      = GCV_RESULTS_DIR
+OUT_DIR      = BICLASS_GCV_DIR
 
 DATASET = "sahni_fragoza"
 N_SEEDS = 30

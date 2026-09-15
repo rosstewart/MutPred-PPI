@@ -40,7 +40,7 @@ plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
+from paths import ANNOTATIONS_DIR, DATA_ROOT, GCV_RESULTS_DIR, REPO_ROOT, ROBUSTNESS_DIR, cv_reference_dir  # noqa: E402
 from analysis.build_plddt_cache import lookup  # pair-keyed cache accessor (either chain order)
 from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
@@ -55,12 +55,12 @@ CV_DIR = str(cv_reference_dir())
 # without writing into datasets/annotations/.
 PLDDT_CACHE = os.environ.get("MUTPRED_PLDDT_CACHE",
                              str(ANNOTATIONS_DIR / "plddt_pair_cache.pkl"))
-GCV_RESULTS = (f"{_PUB}/results/gcv/"
+GCV_RESULTS = (f"{GCV_RESULTS_DIR}/"
                f"MutPredPPI_sahni_fragoza{DATASET_SUFFIX}_megascale_all"
                f"_detailed_results.pkl")
 CANONICAL_DATASET = f"sahni_fragoza{DATASET_SUFFIX}"
 CANONICAL_ROWS_PATH = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
-OUT_DIR = f"{_PUB}/results/robustness"
+OUT_DIR = str(ROBUSTNESS_DIR)
 N_SEEDS = 30
 MIN_N = 5  # matches roc_plots.py spirit: just require both label classes per fold
 from analysis.gcv_curves import FPR_GRID, N_SEM_DIVISOR  # noqa: E402  (single definition)

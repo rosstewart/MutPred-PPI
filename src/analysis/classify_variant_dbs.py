@@ -493,9 +493,17 @@ def main():
     global _DROP_TRAINING_OVERLAP
     _DROP_TRAINING_OVERLAP = not args.keep_training_overlap
     if _DROP_TRAINING_OVERLAP:
-        n = len(training_overlap.training_variants())
-        print(f"Excluding {n:,} (interactor, variant) pairs seen in "
-              f"{training_overlap.TRAINING_DATASET}", flush=True)
+        # `_or_none`: the training table carries unpublished VarChAMP data and
+        # is not deposited. Its absence must not take the whole step down --
+        # overlap_mask warns loudly and passes everything through instead.
+        known = training_overlap.training_variants_or_none()
+        if known is None:
+            print(f"[warn] {training_overlap.TRAINING_DATASET} is absent; the "
+                  f"training-overlap exclusion cannot be applied (see the "
+                  f"banner below)", flush=True)
+        else:
+            print(f"Excluding {len(known):,} (interactor, variant) pairs seen in "
+                  f"{training_overlap.TRAINING_DATASET}", flush=True)
     else:
         print("*** --keep-training-overlap: training variants are NOT excluded; "
               "these are not the published numbers. ***", flush=True)

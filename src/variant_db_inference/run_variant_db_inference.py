@@ -38,6 +38,7 @@ files as input.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from collections import Counter
 from pathlib import Path
@@ -69,6 +70,33 @@ MODEL_TIERS = {
                       "suffix": "_sahni_fragoza"},
 }
 DEFAULT_MODEL_TIER = "all_data"
+
+# Which checkpoint is which, by content. `assert_all_data_model` used to check
+# only that a file NAMED MutPred-PPI.pt existed in --models-dir, and three
+# directories now contain a file with that name: weights/ (all-data),
+# weights/sahni_fragoza/ (the demonstration tier) and weights/blind_test/
+# (whatever the blind test trained last). A mistyped --models-dir therefore
+# passed the guard and scored every repository with the wrong model, silently --
+# which is how the archived results/variant_dbs/ tree came to exist.
+#
+# Retraining changes ALL_DATA_SHA256. Updating it should be a deliberate edit,
+# not something that drifts.
+ALL_DATA_SHA256 = "57de45d7f91261bf15245b71d2424bea95aa20d126f4fd6a162da77d9fe5fe85"
+
+KNOWN_OTHER_MODELS = {
+    "02a742056c11075b5f75282a992345c8a3460e6fd59459255807a8b38b343da9":
+        "the Sahni+Fragoza demonstration model (weights/sahni_fragoza/)",
+    "dab98d0bf2e1a705d25c884352c974825f4a2984bd29ba3bb358d5844dd4ef24":
+        "the Sahni-only blind-test model (weights/blind_test/)",
+}
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def resolve_model_tier(tier: str, models_dir: str | None) -> tuple[Path, str]:
@@ -397,6 +425,23 @@ def assert_all_data_model(models_dir: str) -> None:
             f"run the demonstration tier instead (its scores are NOT the "
             f"published numbers and are written to a separate tree)."
         )
+
+    # Identity, not presence. Several directories hold a file with this name.
+    digest = _sha256(primary)
+    if digest == ALL_DATA_SHA256:
+        return
+    if digest in KNOWN_OTHER_MODELS:
+        raise ValueError(
+            f"{primary} is {KNOWN_OTHER_MODELS[digest]}, not the all-data model. "
+            f"Scoring a variant repository with it would produce a results tree "
+            f"indistinguishable from the published one. Point --models-dir at "
+            f"{_MODELS_DIR}, or pass --model-tier sahni_fragoza to run the "
+            f"demonstration tier deliberately (it writes to its own tree and "
+            f"marks its figures)."
+        )
+    print(f"[warn] {primary} is not the published all-data checkpoint "
+          f"(sha256 {digest[:16]}...). Continuing on the assumption that this is "
+          f"a retrain; its scores will not match the paper.", file=sys.stderr)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

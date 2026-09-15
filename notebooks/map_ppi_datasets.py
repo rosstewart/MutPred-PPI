@@ -116,13 +116,30 @@ PATHS = {
     "fragoza_hgmd": RAW_SF / "fragoza_hgmd.csv",
 }
 _RESTRICTED = {"maxim", "luke", "flo_vc1p", "flo_cava"}
+
+# Exactly which supplementary table each published file is, so a missing one is
+# actionable at the point of failure rather than after a hunt through the docs.
+_PUBLISHED_SOURCE = {
+    "sahni": ("Table S3A of Sahni et al., Cell 2015;161(3):647-660, "
+              "doi:10.1016/j.cell.2015.04.013"),
+    "fragoza_exac": ("Supplementary Data 2 (ExAC variants) of Fragoza et al., "
+                     "Nat Commun 10, 4141 (2019), doi:10.1038/s41467-019-11959-3"),
+    "fragoza_cosmic": ("Supplementary Data 3 (COSMIC somatic mutations) of "
+                       "Fragoza et al., Nat Commun 10, 4141 (2019), "
+                       "doi:10.1038/s41467-019-11959-3"),
+    "fragoza_hgmd": ("Supplementary Data 4 (HGMD disease-associated mutations) "
+                     "of Fragoza et al., Nat Commun 10, 4141 (2019), "
+                     "doi:10.1038/s41467-019-11959-3"),
+}
+
 for name, p in PATHS.items():
     if not p.exists():
-        tier = ("datasets/source_data_restricted/ (unpublished IGVF/VarChAMP data, "
-                "not redistributable -- see docs/DATA_PREPARATION.md)"
-                if name in _RESTRICTED else
-                "datasets/source_data/ (published; download from the original "
-                "publication -- see docs/DATA_PREPARATION.md)")
+        if name in _RESTRICTED:
+            tier = ("datasets/source_data_restricted/ (unpublished IGVF/VarChAMP "
+                    "data, not redistributable -- see docs/DATA_PREPARATION.md)")
+        else:
+            tier = (f"datasets/source_data/ -- download it from "
+                    f"{_PUBLISHED_SOURCE[name]}")
         raise FileNotFoundError(f"missing input '{name}': {p}\n  Expected in {tier}")
 
 # --- Dataset tags ------------------------------------------------------------

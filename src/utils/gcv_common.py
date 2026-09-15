@@ -189,6 +189,17 @@ def assert_gcv_pkl_fresh(detailed_results: dict, canonical_dataset: str, *,
     """
     n_canonical = len(load_data(DATASET_CONFIGS[canonical_dataset]))
     n_total, key = _gcv_row_count(detailed_results)
+
+    # A pkl that declares a partial fold count was written by a `--n-folds` run
+    # and covers a fraction of the table by construction. Accept it loudly: the
+    # numbers it produces are a smoke test, not a result.
+    n_folds = detailed_results.get("n_folds")
+    if n_folds is not None and n_total < n_canonical:
+        print(f"[warn] {pkl_name}: SMOKE-TEST artifact -- {n_folds} of 10 folds, "
+              f"{n_total} of {n_canonical} rows. Any number derived from it is "
+              f"not comparable to a published run.")
+        return
+
     if n_total != n_canonical:
         raise StaleCacheError(
             f"{pkl_name}: one seed's total `{key}` count ({n_total}) does not "
@@ -276,9 +287,27 @@ def union_rows_across_datasets() -> pd.DataFrame:
     queries) must union the raw tables themselves rather than trust the
     pooled one alone -- see `prepare_af3_inputs.py`'s module docstring for the
     verification that this matters.
+
+    Datasets whose row table is absent are skipped rather than raising. The two
+    VarChAMP-derived tables are not redistributable, so a reader working from
+    the Zenodo deposit has three of the five; the union of those three is the
+    correct answer for them, and the alternative is a `FileNotFoundError` that
+    takes down every caller.
     """
-    return pd.concat([load_data(cfg) for cfg in DATASET_CONFIGS.values()],
-                     ignore_index=True)
+    frames, missing = [], []
+    for name, cfg in DATASET_CONFIGS.items():
+        try:
+            frames.append(load_data(cfg))
+        except FileNotFoundError:
+            missing.append(name)
+    if missing:
+        print(f"[note] union_rows_across_datasets: skipping {len(missing)} "
+              f"dataset(s) with no row table ({', '.join(missing)})")
+    if not frames:
+        raise FileNotFoundError(
+            "no canonical row tables found in datasets/training_eval/ -- "
+            "unpack the Zenodo datasets archive (see docs/DATA.md)")
+    return pd.concat(frames, ignore_index=True)
 
 
 def add_mutated_sequence(rows: pd.DataFrame) -> pd.DataFrame:
@@ -315,12 +344,18 @@ def add_mutated_sequence(rows: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def load_splits(cfg: DatasetConfig, seed: int):
+def load_splits(cfg: DatasetConfig, seed: int, n_folds: int | None = None):
     """(fold_splits, test_classes) for one GCV seed.
 
     fold_splits is [(fold, train_idx, test_idx), ...]; test_classes is the flat
     C1/C2/C3 array concatenated in fold order, matching how predictions and
     labels are accumulated in run_gcv.
+
+    `n_folds` keeps only the first n folds, for smoke tests. Each fold's train
+    set is the complement of its own test set, so a kept fold is identical to
+    what it would have been in the full run; the result is a subset of the
+    folds, not a re-partition. It is still not a published number -- the
+    reported AUC is then over a tenth of the data.
     """
     sp = pd.read_csv(TABLES / cfg.splits_file)
     sp = sp[sp["seed"] == seed]
@@ -333,6 +368,9 @@ def load_splits(cfg: DatasetConfig, seed: int):
         train_idx = np.setdiff1d(np.arange(n), test_idx, assume_unique=False)
         fold_splits.append((int(fold), train_idx, test_idx))
         classes.append(g["test_class"].to_numpy())
+    if n_folds is not None and n_folds < len(fold_splits):
+        fold_splits = fold_splits[:n_folds]
+        classes = classes[:n_folds]
     return fold_splits, np.concatenate(classes)
 
 
@@ -482,9 +520,14 @@ def run_gcv(cfg, args, *, result_stem, make_predictor=None, preflight=None,
         print(f"{result_stem}: all {args.n_gcv} seeds already complete.", flush=True)
         return
 
+    _n_folds = getattr(args, "n_folds", None)
     for gcv_seed in range(start_gcv, args.n_gcv):
         print(f"\n{'='*60}\nGCV seed {gcv_seed}/{args.n_gcv - 1}", flush=True)
-        fold_splits, test_classes = load_splits(cfg, gcv_seed)
+        fold_splits, test_classes = load_splits(cfg, gcv_seed, n_folds=_n_folds)
+        if _n_folds is not None:
+            print(f"  SMOKE TEST: {len(fold_splits)} of 10 folds -- the AUCs "
+                  f"below are over a fraction of the data and are not "
+                  f"comparable to a published run", flush=True)
         fold_n_test = [len(t) for _, _, t in fold_splits]
 
         def _run_fold(fold, train_idx, test_idx):
@@ -531,6 +574,13 @@ def run_gcv(cfg, args, *, result_stem, make_predictor=None, preflight=None,
 
         micro_aucs.append(micro_auc)
         macro_aucs.append(macro_auc)
+        # Stamp partial runs. `--n-folds` leaves a pkl whose row count is a
+        # fraction of the canonical table, which is exactly the shape
+        # `assert_gcv_pkl_fresh` exists to reject. Recording the fold count lets
+        # that check tell "deliberately partial" from "built on a superseded row
+        # ordering", instead of every consumer refusing a smoke-test artifact.
+        if _n_folds is not None:
+            detailed_results["n_folds"] = len(fold_splits)
         detailed_results["iterations"][gcv_seed] = {
             "folds": fold_results, "micro_auc": micro_auc, "macro_auc": macro_auc}
 

@@ -39,8 +39,9 @@ Two tiers, both gitignored.
 | restricted | `datasets/source_data_restricted/` | four VarChAMP/IGVF files |
 
 The published files come from the supplementary material of the two source
-papers, see [DATA_PREPARATION.md](DATA_PREPARATION.md) for citations and download
-locations. The VarChAMP/IGVF files were unpublished consortium data at time of
+papers and from two public reference databases. Citations and download
+locations for all six are in
+[Where every dataset comes from](#where-every-dataset-comes-from) below. The VarChAMP/IGVF files were unpublished consortium data at time of
 release and **cannot be redistributed**; they are absent from Zenodo, and every
 stage below degrades cleanly without them (the `sahni_only`, `fragoza_only` and
 `sahni_fragoza` datasets are buildable from the published files alone).
@@ -210,8 +211,10 @@ Fold the emitted JSONs on a GPU machine, then return to **stage 3**.
 
 | Dataset | Source | Notes |
 |---------|--------|-------|
-| Sahni (Cell 2015) | Supplementary data from the paper | RefSeq IDs; 562 unique proteins. Sahni N, et al. Widespread macromolecular interaction perturbations in human genetic disorders. *Cell.* 2015 Apr 23;161(3):647-660. [doi:10.1016/j.cell.2015.04.013](https://doi.org/10.1016/j.cell.2015.04.013). PMID: 25910212; PMCID: PMC4441215 |
-| Fragoza (Nat Commun 2019) | Supplementary data from the paper | UniProt IDs. Fragoza R, Das J, Wierbowski SD, et al. Extensive disruption of protein interactions by genetic variants across the allele frequency spectrum in human populations. *Nat Commun* 10, 4141 (2019). [doi:10.1038/s41467-019-11959-3](https://doi.org/10.1038/s41467-019-11959-3) |
+| Sahni (Cell 2015) | **Table S3A** of the paper | `sahni_wt_and_mt_y2h_scores.csv`. RefSeq IDs; 562 unique proteins. Sahni N, et al. Widespread macromolecular interaction perturbations in human genetic disorders. *Cell.* 2015 Apr 23;161(3):647-660. [doi:10.1016/j.cell.2015.04.013](https://doi.org/10.1016/j.cell.2015.04.013). PMID: 25910212; PMCID: PMC4441215 |
+| Fragoza (Nat Commun 2019) | **Supplementary Data 2, 3 and 4** of the paper | `fragoza_exac.csv` (ExAC variants, Supplementary Data 2), `fragoza_cosmic.csv` (COSMIC somatic mutations, Supplementary Data 3), `fragoza_hgmd.csv` (HGMD disease-associated mutations, Supplementary Data 4). UniProt IDs. Fragoza R, Das J, Wierbowski SD, et al. Extensive disruption of protein interactions by genetic variants across the allele frequency spectrum in human populations. *Nat Commun* 10, 4141 (2019). [doi:10.1038/s41467-019-11959-3](https://doi.org/10.1038/s41467-019-11959-3) |
+| SKEMPI 2.0 (`skempi_v2.csv`) | [life.bsc.es/pid/skempi2](https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv) | Semicolon-delimited. Binding-affinity changes on mutation, used to derive the 342 accessions SAAMBE-3D/MutPPI/MutPPI+ were pretrained on. Jankauskaite J, Jimenez-Garcia B, Dapkunas J, Fernandez-Recio J, Moal IH. SKEMPI 2.0: an updated benchmark of changes in protein-protein binding energy, kinetics and thermodynamics upon mutation. *Bioinformatics.* 2019 Feb 1;35(3):462-469. [doi:10.1093/bioinformatics/bty635](https://doi.org/10.1093/bioinformatics/bty635) |
+| SIFTS (`pdb_chain_uniprot.csv`) | [EBI FTP](https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/pdb_chain_uniprot.csv.gz) | The **per-chain** mapping, columns `PDB,CHAIN,SP_PRIMARY,...`; the similarly named `uniprot_pdb` file is per-entry and will not work. Maps SKEMPI's `PDB_<chains>_<chains>` ids to UniProt. Dana JM, et al. SIFTS: updated Structure Integration with Function, Taxonomy and Sequences resource. *Nucleic Acids Res.* 2019;47(D1):D482-D489. [doi:10.1093/nar/gky1114](https://doi.org/10.1093/nar/gky1114) |
 | VarChAMP | Unpublished, IGVF Consortium | Not redistributed here; cross-reference [data.igvf.org](https://data.igvf.org) |
 | Tsuboyama (Nature 2023) | [doi.org/10.1038/s41586-023-06328-6](https://doi.org/10.1038/s41586-023-06328-6) | MegaScale stability pretraining data; train/val/test splits (`datasets/mega_splits.pkl`) from Li, Z., Luo, Y. Generalizable and scalable protein stability prediction with rewired protein generative models. *Nat Commun* 17, 891 (2026). https://doi.org/10.1038/s41467-025-67609-4 |
 | ClinVar | clinvar.ncbi.nlm.nih.gov | January 2, 2025 release. Pathogenic (P/LP) and benign (B/LB) with ≥1 review star; all missense VUS. AR/AD-only disease genes flagged via ClinGen MOI curations (Chen et al. 2026, doi:10.64898/2026.02.17.706269) |

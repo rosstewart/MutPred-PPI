@@ -22,7 +22,7 @@ import pandas as pd
 import requests
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import DATASETS_DIR, REPO_ROOT  # noqa: E402
+from paths import DATASETS_DIR, PROTEIN_CLASS_DIR, REPO_ROOT  # noqa: E402
 from utils.identifiers import bare_accession  # noqa: E402
 
 
@@ -32,7 +32,7 @@ _PUB = REPO_ROOT
 # `cid.split("_")[0]` -- a guess that is wrong for any RefSeq-style accession.
 # These tables have `interactor` as its own column, so there is nothing to split.
 _DB_DIR = DATASETS_DIR / "variant_dbs"
-_OUT = _PUB / "results" / "protein_class" / "protein_class_annotations.csv"
+_OUT = PROTEIN_CLASS_DIR / "protein_class_annotations.csv"
 
 # GO slim classifications: GO term ID → broad class
 # These cover the most common functional classes in interactomes

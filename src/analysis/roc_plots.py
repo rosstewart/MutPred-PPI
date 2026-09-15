@@ -207,7 +207,16 @@ def precompute_gcv_inputs():
     dataset_saambe_test_classes = {}
 
     for dataset, (canonical, prefix, ptc_prefix) in CANONICAL_DATASETS.items():
-        rows = _load_canonical_rows(canonical, prefix)
+        # A dataset whose row table is absent is skipped, not fatal. The two
+        # VarChAMP-derived tables are not redistributable, so a reader working
+        # from the Zenodo deposit has three of the five -- and without this,
+        # one missing table took down Fig 3, S2 and S4, none of which use it.
+        try:
+            rows = _load_canonical_rows(canonical, prefix)
+        except FileNotFoundError:
+            print(f"[skip] {dataset}: no row table for {canonical}; its panels "
+                  f"will be absent from figures that use it")
+            continue
         interactors = rows['interactor'].tolist()
         partners = rows['partner'].tolist()
 
@@ -248,6 +257,8 @@ def precompute_gcv_inputs():
     BASE_SEED = 1
 
     for dataset, (canonical, prefix, ptc_prefix) in CANONICAL_DATASETS.items():
+        if dataset not in dataset_labels:
+            continue          # skipped above: no row table for this dataset
         n_rows = len(dataset_labels[dataset])
 
         _base_splits_path = f'{CV_REF}/{prefix}fold_splits_{BASE_SEED}.pkl'

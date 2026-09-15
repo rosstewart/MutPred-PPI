@@ -26,7 +26,7 @@ import numpy as np
 
 # --- repo-relative path resolution (see src/paths.py) ---
 from analysis import edgotypes  # noqa: E402
-from paths import REPO_ROOT  # noqa: E402
+from paths import REPO_ROOT, RESULTS_DIR, VARIANT_DBS_DIR  # noqa: E402
 
 
 _PUB = REPO_ROOT
@@ -37,9 +37,9 @@ from analysis.variant_db_charts import calc_enrichment
 # Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
 # variant_dbs_classified/ trees hold SF-model predictions; mixing the two
 # across panels is what this path previously did.
-BOOTSTRAP_PKL = _PUB / "results" / "variant_dbs_all_data" / "all_bootstrap_results.pkl"
-CLASSIFIED_DIR = _PUB / "results" / "variant_dbs_all_data" / "cosmic"
-OUT_DIR        = _PUB / "results" / "cosmic_stat_test"
+BOOTSTRAP_PKL = VARIANT_DBS_DIR / "all_bootstrap_results.pkl"
+CLASSIFIED_DIR = VARIANT_DBS_DIR / "cosmic"
+OUT_DIR        = RESULTS_DIR / "cosmic_stat_test"
 
 BIN_LABELS   = ["Single", r"$\geq$2", r"$\geq$4", r"$\geq$8", r"$\geq$16", r"$\geq$32"]
 BIN_KEYS     = ["single", "2+", "4+", "8+", "16+", "32+"]

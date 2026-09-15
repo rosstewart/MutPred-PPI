@@ -47,6 +47,10 @@ from evaluation.swing_common import (  # noqa: E402  single source for all SWING
     _build_swing_df, build_wt_df, build_d2v,
 )
 
+#: Seeds in a published run. Every other GCV script exposes this as `--n-gcv`;
+#: this one hardcoded it, so `QUICK=True` in notebooks/reproduce_all_figures.py
+#: silently ran 30 seeds of the slowest comparator in the suite while every
+#: other method ran 1.
 N_SEEDS = 30
 
 
@@ -114,7 +118,8 @@ def _fold_features(train_df: pd.DataFrame, test_df: pd.DataFrame):
 
 
 def run(dataset: str, test_pretrain: bool, outdir: Path,
-        resume: bool = True, fold_jobs: int = 1) -> None:
+        resume: bool = True, fold_jobs: int = 1, n_gcv: int = N_SEEDS,
+        n_folds: int | None = None) -> None:
     cfg = dataset_config(dataset)
     print(f"dataset={dataset}  mode="
           f"{'test-pretrain (leaky)' if test_pretrain else 'blind test'}", flush=True)
@@ -174,7 +179,8 @@ def run(dataset: str, test_pretrain: bool, outdir: Path,
 
     code = "_test_pretrain" if test_pretrain else "_no_test_pretrain"
 
-    _args = argparse.Namespace(n_gcv=N_SEEDS, outdir=str(outdir), resume=resume,
+    _args = argparse.Namespace(n_gcv=n_gcv, n_folds=n_folds,
+                               outdir=str(outdir), resume=resume,
                               fold_jobs=fold_jobs)
     run_gcv(cfg, _args,
             result_stem=f"SWING_{dataset}{code}",
@@ -188,6 +194,13 @@ def main() -> None:
     ap.add_argument("--test-pretrain", action="store_true",
                     help="Train Doc2Vec once on the FULL dataset including test folds. "
                          "Leaks test information; reported only as the 'Test Pretrain' variant.")
+    ap.add_argument("--n-gcv", type=int, default=N_SEEDS,
+                    help=f"Cross-validation seeds (default: {N_SEEDS}, the "
+                         f"published setting). Lower it only to smoke-test.")
+    ap.add_argument("--n-folds", type=int, default=None,
+                    help="Use only the first N of the 10 folds (default: all). "
+                         "Smoke tests only: the reported AUC is then over N/10 "
+                         "of the data.")
     ap.add_argument("--outdir", default=str(GCV_RESULTS_DIR))
     ap.add_argument(
         "--fold-jobs", type=int, default=1,
@@ -201,7 +214,8 @@ def main() -> None:
              "completed GCV seed (default: True).",
     )
     args = ap.parse_args()
-    run(args.dataset, args.test_pretrain, Path(args.outdir), args.resume, args.fold_jobs)
+    run(args.dataset, args.test_pretrain, Path(args.outdir), args.resume,
+        args.fold_jobs, args.n_gcv, args.n_folds)
 
 
 if __name__ == "__main__":

@@ -13,10 +13,11 @@ here would put a different n next to the same group name in two places.
 Writes figures/variant_db_stats_table.tex as a drop-in tabular block.
 """
 import pickle
+from pathlib import Path
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, REPO_ROOT, VARIANT_DBS_DIR  # noqa: E402
 from analysis import training_overlap  # noqa: E402
 from utils.legacy_guard import LegacyInputError  # noqa: E402
 
@@ -26,7 +27,7 @@ _BASE = DATA_ROOT
 _HOME = _BASE / "home"
 _OUT  = _PUB / "figures" / "variant_db_stats_table.tex"
 
-PRED_DIR = _PUB / "results" / "variant_dbs_all_data"
+PRED_DIR = VARIANT_DBS_DIR
 
 
 def prediction_tsv(db):
@@ -64,6 +65,15 @@ def parse_preds(tsv_path) -> pd.DataFrame:
     split a welded `complex_id` on its first underscore, which raises on every
     current file and is wrong for any accession containing the delimiter.
     """
+    # A repository with no predictions yields an empty frame rather than
+    # raising: COSMIC and HGMD are licence-restricted, so a reader without
+    # those licences legitimately has four of the six, and Table S1 should
+    # report the four rather than not exist.
+    if not Path(tsv_path).exists():
+        print(f"  [skip] {tsv_path} not found -- that repository is omitted "
+              f"from the table", flush=True)
+        return pd.DataFrame(columns=["interactor", "partner", "variant", "score"])
+
     df = pd.read_csv(tsv_path, sep="\t")
     if "complex_id" in df.columns:
         raise LegacyInputError(
@@ -172,46 +182,55 @@ def main() -> None:
     lines.append(row("Pathogenic AD", stats(cv_df, ad_pathogenic_set)))
     lines.append(r"\hline")
 
-    # ── COSMIC ───────────────────────────────────────────────────────────────
-    print("Processing COSMIC...", flush=True)
-    cos_df = parse_preds(prediction_tsv("cosmic"))
-    # Despite the file name, the list holds one entry PER OCCURRENCE (a site repeats once per sample), so len() is the recurrence -- the number of times the variant was observed, NOT the number of distinct tissues.
-    vt_to_sites = pickle.load(open(VT_TO_TUMOR_SITE, "rb"))
-    onco_tsg    = pickle.load(open(ONCO_TSG_FILE, "rb"))
-    onco_vts    = onco_tsg["oncogene"]
-    tsg_vts     = onco_tsg["TSG"]
+    # ── COSMIC ───────────────────────────────────────────────────────────────────
+    # Guarded like the HGMD block below: the recurrence and oncogene/TSG
+    # annotations are derived from COSMIC and need a licence, so a reader
+    # without one gets a table of the repositories they do have rather than
+    # a FileNotFoundError.
+    _cosmic_tsv = prediction_tsv("cosmic")
+    if (_cosmic_tsv.exists() and VT_TO_TUMOR_SITE.exists()
+            and ONCO_TSG_FILE.exists()):
+        print("Processing COSMIC...", flush=True)
+        cos_df = parse_preds(prediction_tsv("cosmic"))
+        # Despite the file name, the list holds one entry PER OCCURRENCE (a site repeats once per sample), so len() is the recurrence -- the number of times the variant was observed, NOT the number of distinct tissues.
+        vt_to_sites = pickle.load(open(VT_TO_TUMOR_SITE, "rb"))
+        onco_tsg    = pickle.load(open(ONCO_TSG_FILE, "rb"))
+        onco_vts    = onco_tsg["oncogene"]
+        tsg_vts     = onco_tsg["TSG"]
 
-    def recurrence(r) -> int:
-        return len(vt_to_sites.get(f"{r.interactor} {r.variant}", []))
+        def recurrence(r) -> int:
+            return len(vt_to_sites.get(f"{r.interactor} {r.variant}", []))
 
-    cos_df = cos_df.copy()
-    cos_df["recurrence"] = cos_df.apply(recurrence, axis=1)
-    cos_df["is_onco"]    = cos_df.apply(lambda r: f"{r.interactor} {r.variant}" in onco_vts, axis=1)
-    cos_df["is_tsg"]     = cos_df.apply(lambda r: f"{r.interactor} {r.variant}" in tsg_vts, axis=1)
+        cos_df = cos_df.copy()
+        cos_df["recurrence"] = cos_df.apply(recurrence, axis=1)
+        cos_df["is_onco"]    = cos_df.apply(lambda r: f"{r.interactor} {r.variant}" in onco_vts, axis=1)
+        cos_df["is_tsg"]     = cos_df.apply(lambda r: f"{r.interactor} {r.variant}" in tsg_vts, axis=1)
 
-    thresholds = [1, 2, 4, 8, 16, 32]
-    labels_rec = ["Single-occurrence", r"Recurrence $\geq$ 2", r"Recurrence $\geq$ 4",
-                  r"Recurrence $\geq$ 8", r"Recurrence $\geq$ 16", r"Recurrence $\geq$ 32"]
+        thresholds = [1, 2, 4, 8, 16, 32]
+        labels_rec = ["Single-occurrence", r"Recurrence $\geq$ 2", r"Recurrence $\geq$ 4",
+                      r"Recurrence $\geq$ 8", r"Recurrence $\geq$ 16", r"Recurrence $\geq$ 32"]
 
-    lines += [r"\multicolumn{6}{l}{\textit{COSMIC}} \\"]
-    for thr, lbl in zip(thresholds, labels_rec):
-        sub = cos_df[cos_df["recurrence"] == thr] if thr == 1 else cos_df[cos_df["recurrence"] >= thr]
-        lines.append(row(lbl, stats(sub)))
-    lines.append(r"\hline")
+        lines += [r"\multicolumn{6}{l}{\textit{COSMIC}} \\"]
+        for thr, lbl in zip(thresholds, labels_rec):
+            sub = cos_df[cos_df["recurrence"] == thr] if thr == 1 else cos_df[cos_df["recurrence"] >= thr]
+            lines.append(row(lbl, stats(sub)))
+        lines.append(r"\hline")
 
-    lines += [r"\multicolumn{6}{l}{\textit{COSMIC (Oncogenes)}} \\"]
-    onco_df = cos_df[cos_df["is_onco"]]
-    for thr, lbl in zip(thresholds, labels_rec):
-        sub = onco_df[onco_df["recurrence"] == thr] if thr == 1 else onco_df[onco_df["recurrence"] >= thr]
-        lines.append(row(lbl, stats(sub)))
-    lines.append(r"\hline")
+        lines += [r"\multicolumn{6}{l}{\textit{COSMIC (Oncogenes)}} \\"]
+        onco_df = cos_df[cos_df["is_onco"]]
+        for thr, lbl in zip(thresholds, labels_rec):
+            sub = onco_df[onco_df["recurrence"] == thr] if thr == 1 else onco_df[onco_df["recurrence"] >= thr]
+            lines.append(row(lbl, stats(sub)))
+        lines.append(r"\hline")
 
-    lines += [r"\multicolumn{6}{l}{\textit{COSMIC (Tumor Suppressor Genes)}} \\"]
-    tsg_df = cos_df[cos_df["is_tsg"]]
-    for thr, lbl in zip(thresholds, labels_rec):
-        sub = tsg_df[tsg_df["recurrence"] == thr] if thr == 1 else tsg_df[tsg_df["recurrence"] >= thr]
-        lines.append(row(lbl, stats(sub)))
-    lines.append(r"\hline")
+        lines += [r"\multicolumn{6}{l}{\textit{COSMIC (Tumor Suppressor Genes)}} \\"]
+        tsg_df = cos_df[cos_df["is_tsg"]]
+        for thr, lbl in zip(thresholds, labels_rec):
+            sub = tsg_df[tsg_df["recurrence"] == thr] if thr == 1 else tsg_df[tsg_df["recurrence"] >= thr]
+            lines.append(row(lbl, stats(sub)))
+        lines.append(r"\hline")
+    else:
+        print("  [skip] COSMIC: needs a COSMIC licence (predictions and datasets/annotations_licensed/)", flush=True)
 
     # ── HGMD ─────────────────────────────────────────────────────────────────
     print("Processing HGMD...", flush=True)

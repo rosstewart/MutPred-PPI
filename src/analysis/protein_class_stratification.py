@@ -38,7 +38,7 @@ plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT, cv_reference_dir
+from paths import ANNOTATIONS_DIR, DATA_ROOT, GCV_RESULTS_DIR, REPO_ROOT, ROBUSTNESS_DIR, cv_reference_dir  # noqa: E402
 from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
     load_canonical_rows, stratified_fold_curves)
@@ -50,13 +50,13 @@ _PUB = str(REPO_ROOT)
 _BASE = str(DATA_ROOT)
 CV_DIR = str(cv_reference_dir())
 PFAM_CACHE = str(ANNOTATIONS_DIR / "pfam_domains_cache.pkl")
-GCV_RESULTS = (f"{_PUB}/results/gcv/"
+GCV_RESULTS = (f"{GCV_RESULTS_DIR}/"
                f"MutPredPPI_sahni_fragoza{DATASET_SUFFIX}_megascale_all"
                f"_detailed_results.pkl")
 CANONICAL_DATASET = f"sahni_fragoza{DATASET_SUFFIX}"
 # Canonical row ordering: row_index indexes the fold splits and test classes.
 ROWS_FILE = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
-OUT_DIR   = f"{_PUB}/results/robustness"
+OUT_DIR   = str(ROBUSTNESS_DIR)
 
 # `StaleGcvCacheError` (a locally-defined duplicate of `StaleCacheError`)
 # retired 2026-09-10: `StaleCacheError` from `utils.gcv_common` is the one

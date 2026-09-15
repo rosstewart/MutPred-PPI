@@ -130,6 +130,10 @@ def _parse_args() -> argparse.Namespace:
     # from it, so a different default silently reseeds every fold.
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--n-gcv", type=int, default=30)
+    p.add_argument("--n-folds", type=int, default=None,
+                   help="Use only the first N of the 10 folds (default: all). "
+                        "Smoke tests only: the reported AUC is then over N/10 "
+                        "of the data.")
     p.add_argument("--outdir", default=str(GCV_RESULTS_DIR))
     p.add_argument(
         "--two-hop", action=argparse.BooleanOptionalAction, default=True,

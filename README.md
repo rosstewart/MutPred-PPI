@@ -70,25 +70,34 @@ File formats and a worked example: [`docs/INFERENCE.md`](docs/INFERENCE.md).
 
 ## Reproducing the paper
 
-Download the data ([`docs/DATA.md`](docs/DATA.md)), then:
+Download the data ([`docs/DATA.md`](docs/DATA.md)). To reproduce the comparison-method
+curves as well, clone each upstream method into `external_methods/` first, following
+[`docs/REPRODUCING_ANALYSES.md`](docs/REPRODUCING_ANALYSES.md#comparison-methods-clone-each-upstream-repository).
+Then:
 
 ```bash
 python notebooks/reproduce_all_figures.py
 ```
 
 A Jupytext-format notebook that reproduces all analyses from the paper. `QUICK = True`
-(line 52) by default to reduce computation, using 1 cross-validation seed instead of 30 and
-subsampled variant repositories, and writing to `results_quick/`. Set `QUICK = False` for the
-published numbers in `results/`.
+(line 54) by default to reduce computation: 1 cross-validation seed instead of 30, 1 of the 10
+folds, subsampled variant repositories, and a 200-row cap on the pretrained comparators. It
+writes to `results_quick/`. Set `QUICK = False` for the published numbers in `results/`.
 
 ### What you can reproduce
 
 VarChAMP data was unpublished at the time of writing and will be cross-linked from the IGVF
-portal ([data.igvf.org](https://data.igvf.org)) on release. Until then Fig 4, S3 and Table 1
-cannot be reproduced. COSMIC and HGMD analyses need a licence for the underlying data; the
-panels that use them are skipped without it, and the rest of each figure is drawn.
+portal ([data.igvf.org](https://data.igvf.org)) on release. Until then Fig 4, S3, S6 and
+Table 1 cannot be reproduced: all four are built on those measurements, so neither they nor
+anything derived from them is in the deposit. COSMIC and HGMD analyses need a licence for the
+underlying data; the panels that use them are skipped without it, and the rest of each figure
+is drawn.
 
-Everything else reproduces from the deposit: Fig 3, Fig 5, and S1, S2, S4 through S10.
+Everything else reproduces from the deposit: Fig 3, Fig 5, and S1, S2, S4, S5, S7 through S10.
+
+Variant-repository scoring (Fig 5, S7 through S10) does not need VarChAMP: the all-data model
+is trained on it but `weights/MutPred-PPI.pt` is deposited, so those figures reproduce with
+the published numbers. Only retraining that model needs the measurements.
 
 Dataset versions and licensing: [`docs/DATA_PREPARATION.md`](docs/DATA_PREPARATION.md).
 

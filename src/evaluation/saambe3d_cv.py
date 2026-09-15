@@ -126,6 +126,14 @@ def run(args: argparse.Namespace) -> None:
     for fold, _train_idx, test_idx in fold_splits:
         print(f"\nfold {fold}: {len(test_idx)} test rows", flush=True)
         for idx in test_idx:
+            # Smoke-test cap. NaN is already the value this array carries for a
+            # row with no structure, and every consumer masks it, so stopping
+            # early pads rather than truncates: the array keeps its full length
+            # and stays aligned with the fold labels derived from the splits.
+            if args.max_rows is not None and n_ok + n_no_struct + n_error >= args.max_rows:
+                all_preds.append(float("nan"))
+                all_binary.append(-1)
+                continue
             row = rows.loc[idx]
             mutation = row["mutation"]          # 1-based, e.g. "E80K"
             wt, pos_int, mt = mutations.parse(mutation)
@@ -185,6 +193,11 @@ def _parse_args() -> argparse.Namespace:
                         "this method's arrays in $CWD while its siblings wrote to "
                         "results/gcv/ -- so a plain invocation produced results the "
                         "figure scripts could not find.")
+    p.add_argument("--max-rows", type=int, default=None,
+                   help="Score at most this many rows and leave the rest NaN. "
+                        "For smoke tests only: a full pass over "
+                        "sahni_fragoza is roughly six hours, because SAAMBE-3D "
+                        "is invoked as one subprocess per row.")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
     return p.parse_args()
 

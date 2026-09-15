@@ -65,11 +65,40 @@ def training_variants_or_none(dataset: str = TRAINING_DATASET):
         return None
 
 
+_WARNED_UNAVAILABLE = False
+
+
+def _warn_unavailable_once(dataset: str) -> None:
+    """Say, once per process, that the overlap filter could not be applied."""
+    global _WARNED_UNAVAILABLE
+    if _WARNED_UNAVAILABLE:
+        return
+    _WARNED_UNAVAILABLE = True
+    print("*" * 72, flush=True)
+    print("TRAINING-OVERLAP FILTER NOT APPLIED. The training table "
+          f"({dataset}) is absent -- it carries the unpublished VarChAMP "
+          "measurements and is not in the public deposit.", flush=True)
+    print("Every enrichment below therefore INCLUDES variants the model was "
+          "trained on, which inflates it. These are not the published numbers.",
+          flush=True)
+    print("*" * 72, flush=True)
+
+
 def overlap_mask(df: pd.DataFrame, uniprot_col: str = "uniprot",
                  variant_col: str = "variant",
                  dataset: str = TRAINING_DATASET) -> pd.Series:
-    """Boolean Series: True where (uniprot, variant) was in the training set."""
-    known = training_variants(dataset)
+    """Boolean Series: True where (uniprot, variant) was in the training set.
+
+    All-False, with a loud one-time warning, when the training table is absent.
+    Returning "nothing overlaps" is the wrong answer, but it is the only one
+    available without the table, and saying so beats taking down every
+    downstream figure -- which is what raising here did for deposit-only
+    readers.
+    """
+    known = training_variants_or_none(dataset)
+    if known is None:
+        _warn_unavailable_once(dataset)
+        return pd.Series(False, index=df.index, dtype=bool)
     keys = zip(df[uniprot_col].astype(str), df[variant_col].astype(str))
     return pd.Series([k in known for k in keys], index=df.index, dtype=bool)
 

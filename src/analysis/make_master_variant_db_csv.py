@@ -33,14 +33,14 @@ from pathlib import Path
 import pandas as pd
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT  # noqa: E402
+from paths import VARIANT_DBS_DIR, ANNOTATIONS_DIR, ANNOTATIONS_LICENSED_DIR, DATA_ROOT, RESULTS_DIR  # noqa: E402
 
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 _BASE = DATA_ROOT
 _HOME   = _BASE / "home"
 _PUB    = _BASE / "publication"
-_REVDIR = _PUB / "results"
+_REVDIR = RESULTS_DIR
 
 # Where the inference actually writes, taken from the runner rather than
 # re-spelled here. These used to be hardcoded under `results/variant_dbs_all_data/`
@@ -56,7 +56,22 @@ _DEFAULT_OUT = str(_REVDIR / "master_variant_db_predictions.csv.gz")
 _MASTER_DBS = ("clinvar", "gnomad", "cosmic", "hgmd", "neurodev", "asd")
 # Dropped by --deposition; see the module docstring.
 _LICENCE_RESTRICTED = ("cosmic", "hgmd")
-ALL_DATA_TSV = {db: _VDB_CONFIGS[db]["default_out"] for db in _MASTER_DBS}
+def _prediction_tsv(db: str):
+    """One repository's predictions, in either supported layout.
+
+    The runner's own default is `$MUTPRED_DATA_ROOT/<db>/mutpred_ppi_predictions.tsv`,
+    but notebooks/reproduce_all_figures.py passes `--out` to collect them under
+    `<results>/variant_dbs_all_data/<db>_mutpred_ppi_predictions.tsv`, and that
+    collected layout is also what the Zenodo deposit unpacks to. Looking only at
+    the runner default meant every TSV silently failed to load for anyone who
+    had not run inference in the legacy layout. Same resolution order as
+    `src/build_zenodo_deposit.py::_prediction_tsv`.
+    """
+    collected = VARIANT_DBS_DIR / f"{db}_mutpred_ppi_predictions.tsv"
+    return collected if collected.exists() else _VDB_CONFIGS[db]["default_out"]
+
+
+ALL_DATA_TSV = {db: _prediction_tsv(db) for db in _MASTER_DBS}
 
 CLINVAR_PKL = {
     "pathogenic": ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl",
@@ -162,6 +177,14 @@ def main(args):
     print(f"  {len(all_data):,} rows")
 
     key_cols = ["interactor_uniprot", "variant", "partner_uniprot"]
+
+    if all_data.empty:
+        looked = "\n".join(f"    {p}" for p in dbs.values())
+        raise SystemExit(
+            "No prediction TSVs could be loaded, so there is nothing to build a "
+            f"master table from. Looked for:\n{looked}\n"
+            "  Run src/variant_db_inference/run_variant_db_inference.py first, "
+            "or unpack the Zenodo results archive.")
 
     master = all_data.drop(columns=["_source"])
     master = master.drop_duplicates(subset=key_cols)

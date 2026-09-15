@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from paths import DATA_ROOT, REPO_ROOT
+from paths import DATA_ROOT, EXTERNAL_METHODS_DIR, REPO_ROOT
 
 # Extensions from the retired per-source pipeline (FASTA/label-file era).
 # The one live mapping generation. Every canonical dataset name ends with this,
@@ -100,23 +100,35 @@ def reject_legacy(*paths: str | Path, check_mtime: bool = True) -> None:
         if reason:
             raise LegacyInputError(f"{p}: {reason} -- regenerate from datasets/training_eval/")
 
+        # Third root: the comparison-method checkouts. `MUTPRED_PPI_METHODS_DIR`
+        # is a documented setting, and `external_methods/<method>` is commonly a
+        # symlink to wherever that upstream repo was cloned, so a pinned
+        # checkpoint legitimately resolves anywhere on the filesystem. Those
+        # directories hold third-party code and weights, never our data, so
+        # nothing this guard looks for can be inside one.
+        #
+        # Matched on the LOGICAL path rather than the resolved one: the caller
+        # built it from `paths.method_dir()`, and resolving would follow the
+        # per-method symlink out to an arbitrary tree. Both forms are tried, so
+        # it holds whether or not the checkout is a link.
         resolved = p.resolve()
-        try:
-            resolved.relative_to(REPO_ROOT)
-            in_tree = True
-        except ValueError:
-            in_tree = False
-        if not in_tree:
+        logical = p if p.is_absolute() else Path.cwd() / p
+        in_tree = False
+        for candidate, root in ((resolved, REPO_ROOT), (resolved, DATA_ROOT),
+                                (resolved, EXTERNAL_METHODS_DIR.resolve()),
+                                (logical, EXTERNAL_METHODS_DIR)):
             try:
-                resolved.relative_to(DATA_ROOT)
+                candidate.relative_to(root)
                 in_tree = True
+                break
             except ValueError:
-                in_tree = False
+                continue
         if not in_tree:
             raise LegacyInputError(
-                f"{p}: resolves outside REPO_ROOT ({REPO_ROOT}) and DATA_ROOT "
-                f"({DATA_ROOT}) -- this is almost always a hardcoded path to a "
-                f"retired external script directory (e.g. ~/gnn/..., "
+                f"{p}: resolves outside REPO_ROOT ({REPO_ROOT}), DATA_ROOT "
+                f"({DATA_ROOT}) and the method checkouts "
+                f"({EXTERNAL_METHODS_DIR}) -- this is almost always a hardcoded "
+                f"path to a retired external script directory (e.g. ~/gnn/..., "
                 f"~/ppi_lossgain/2026/...); point it at the canonical tree instead"
             )
 

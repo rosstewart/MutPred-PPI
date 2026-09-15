@@ -228,8 +228,15 @@ def predict_ddg(wt_graph, mt_graph, wt_seq_a: str, mt_seq_a: str,
 # ── row scoring, shared by GCV and the blind test ──────────────────────────────
 
 def score_rows(rows: pd.DataFrame, model_variant: int,
-              device: str = "", pdb_cache: Path | None = None) -> np.ndarray:
-    """Score every row of a canonical table. `model_variant`: 0=MutPPI, 1=MutPPI+."""
+              device: str = "", pdb_cache: Path | None = None,
+              max_rows: int | None = None) -> np.ndarray:
+    """Score every row of a canonical table. `model_variant`: 0=MutPPI, 1=MutPPI+.
+
+    `max_rows` stops after that many rows and leaves the rest NaN, which is the
+    value this array already carries for a row with no structure. The array
+    keeps its full length, so it stays aligned with the fold labels. Smoke
+    tests only: MutPPI+ over sahni_fragoza is about 100 minutes.
+    """
     dev = torch.device(device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
     models = load_ensemble(model_variant, dev)
     structures = Structures(pdb_cache=pdb_cache)
@@ -237,6 +244,8 @@ def score_rows(rows: pd.DataFrame, model_variant: int,
     scores = np.full(len(rows), np.nan, dtype=np.float32)
     skipped: Counter = Counter()
     for i, row in enumerate(rows.itertuples()):
+        if max_rows is not None and i >= max_rows:
+            break
         pdb_path, chain_a = structures.find_pdb(
             interactor=row.interactor_sequence, partner=row.partner_sequence)
         if pdb_path is None:
@@ -280,7 +289,8 @@ def run(args: argparse.Namespace) -> None:
     # guarantee saambe3d_cv.py relies on), so scoring the whole table once
     # and never re-scoring is equivalent to iterating folds.
     scores = score_rows(rows, args.model, device=args.device,
-                       pdb_cache=outdir / "_pdb_cache")
+                       pdb_cache=outdir / "_pdb_cache",
+                       max_rows=args.max_rows)
     np.save(out_npy, scores)
     print(f"Saved: {out_npy}  shape={scores.shape}", flush=True)
 
@@ -299,6 +309,9 @@ def _parse_args() -> argparse.Namespace:
                         "this method's arrays in $CWD while its siblings wrote to "
                         "results/gcv/ -- so a plain invocation produced results the "
                         "figure scripts could not find.")
+    p.add_argument("--max-rows", type=int, default=None,
+                   help="Score at most this many rows and leave the rest NaN. "
+                        "For smoke tests only.")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
     return p.parse_args()
 

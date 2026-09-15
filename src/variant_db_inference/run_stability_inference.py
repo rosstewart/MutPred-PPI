@@ -62,7 +62,7 @@ import torch
 
 from contact_graphs import ContactGraphStore, check_embedding_lengths  # noqa: E402
 from model import GAT_mut_processor  # noqa: E402
-from paths import DATA_ROOT, DATASETS_DIR, contact_graph_store  # noqa: E402
+from paths import DATASETS_DIR, DATA_ROOT, VARIANT_DBS_STABILITY_DIR, contact_graph_store  # noqa: E402
 from utils import mutations  # noqa: E402
 from variant_db_inference import variant_rows as vr  # noqa: E402
 
@@ -71,7 +71,7 @@ _PUB = _THIS_DIR.parent.parent
 _BASE = DATA_ROOT
 _MEGASCALE_PRETRAINED = _PUB / "weights" / "MutPred-PPI_stability_pretrain.pt"
 _SCALER_PATH = _PUB / "weights" / "mutation_diff_scaler.pkl"
-_OUT_DIR = _PUB / "results" / "variant_dbs_stability"
+_OUT_DIR = VARIANT_DBS_STABILITY_DIR
 
 STORE = contact_graph_store()
 
@@ -298,9 +298,14 @@ def _run_full_emb(rows, embs, store: ContactGraphStore, model, scaler, device,
 
 
 def run_dataset(dataset: str, device: torch.device, model, scaler,
-                out_path: Path, store_path: Path) -> None:
+                out_path: Path, store_path: Path,
+                rows_override: str | None = None) -> None:
     cfg = DATASET_CONFIGS[dataset]
-    rows_path = Path(cfg["rows"])
+    # `--rows` mirrors run_variant_db_inference.py. Without it QUICK mode
+    # subsampled the interaction predictions and scored every row for stability,
+    # so the two halves of S10 were built from different row sets and this was
+    # the slowest step in a run meant to be a smoke test.
+    rows_path = Path(rows_override) if rows_override else Path(cfg["rows"])
     if not rows_path.exists():
         print(f"[SKIP] {dataset}: row table not found at {rows_path} -- run "
               f"build_variant_db_tables.py", flush=True)
@@ -356,6 +361,9 @@ def main() -> None:
     ap.add_argument("--store", default=str(STORE),
                     help="Contact-graph store (default: "
                          "the contact-graph store)")
+    ap.add_argument("--rows",
+                    help="Row table (default: datasets/variant_dbs/{dataset}_rows.csv.gz). "
+                         "Same meaning as run_variant_db_inference.py's --rows.")
     ap.add_argument("--out-dir", default=str(_OUT_DIR))
     args = ap.parse_args()
 
@@ -378,7 +386,8 @@ def main() -> None:
     for ds in datasets:
         out_path = Path(args.out_dir) / f"{ds}_stability_predictions.tsv"
         print(f"\n=== {ds} → {out_path}", flush=True)
-        run_dataset(ds, device, model, scaler, out_path, Path(args.store))
+        run_dataset(ds, device, model, scaler, out_path, Path(args.store),
+                    rows_override=args.rows)
 
 
 if __name__ == "__main__":

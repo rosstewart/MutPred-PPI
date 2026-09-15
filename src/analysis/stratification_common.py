@@ -27,7 +27,7 @@ import pandas as pd
 from sklearn.metrics import auc, roc_curve
 
 from analysis.gcv_curves import FPR_GRID
-from paths import REPO_ROOT, cv_reference_dir
+from paths import GCV_RESULTS_DIR, REPO_ROOT, cv_reference_dir  # noqa: E402
 from utils.gcv_common import StaleCacheError, load_gcv_detailed_results
 from utils.legacy_guard import DATASET_SUFFIX
 
@@ -38,7 +38,7 @@ CV_DIR = str(cv_reference_dir())
 # `swing_train_`). Spelling the results file without the stamp is why these
 # figures could not find their input.
 CANONICAL_DATASET = f"sahni_fragoza{DATASET_SUFFIX}"
-GCV_RESULTS = (f"{REPO_ROOT}/results/gcv/"
+GCV_RESULTS = (f"{GCV_RESULTS_DIR}/"
                f"MutPredPPI_{CANONICAL_DATASET}_megascale_all_detailed_results.pkl")
 ROWS_FILE = f"{CV_DIR}/sahni_fragoza_train_rows.csv.gz"
 

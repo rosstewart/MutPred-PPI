@@ -62,15 +62,15 @@ import numpy as np                       # noqa: E402
 import pandas as pd                      # noqa: E402
 from scipy.stats import gaussian_kde     # noqa: E402
 
-from paths import REPO_ROOT              # noqa: E402
+from paths import REPO_ROOT, STABILITY_INTERACTION_DIR, VARIANT_DBS_DIR, VARIANT_DBS_STABILITY_DIR  # noqa: E402
 
 _PUB  = REPO_ROOT
 # Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt).
 # Default is the published all-data tree. The demonstration tier writes to
 # results/variant_dbs_sahni_fragoza/ and is selected with --data-dir.
-_DB   = _PUB / "results" / "variant_dbs_all_data"
-_STAB = _PUB / "results" / "variant_dbs_stability"
-_OUT  = _PUB / "results" / "stability_interaction"
+_DB   = VARIANT_DBS_DIR
+_STAB = VARIANT_DBS_STABILITY_DIR
+_OUT  = STABILITY_INTERACTION_DIR
 
 # Strata that exist only when the licensed COSMIC/HGMD annotations are present.
 _RESTRICTED_DBS = {"cosmic", "hgmd"}

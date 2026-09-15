@@ -12,8 +12,12 @@ Alongside them it writes MANIFEST.sha256 and a deposit-facing README.txt, both
 generated from the same specification below, so the listing cannot drift from
 the contents.
 
-Licence-restricted material (COSMIC, HGMD) and unpublished material (VarChAMP)
-are excluded by construction: they are not in the specification. Structures are
+Licence-restricted material (COSMIC, HGMD) is excluded by construction: it is
+not in the specification. Unpublished VarChAMP material is excluded by an
+explicit filter, `_redistributable`, because parts of the specification are
+globs and a glob excludes nothing -- `TRAINING_EVAL_DIR.glob("*_rows.csv.gz")`
+swept in the VarChAMP measurement tables, and `cv_reference/` is a whole
+directory. Structures are
 the in-house half of the canonical tree, selected on the manifest's `provenance`
 column; the full manifest is deposited so the ProtVar half is identifiable.
 
@@ -42,6 +46,50 @@ OUT = REPO_ROOT / "zenodo"
 #: Repositories whose predictions may be redistributed. COSMIC and HGMD are
 #: licence-restricted and deliberately absent.
 OPEN_DBS = ("clinvar", "gnomad", "neurodev", "asd")
+
+#: Substring marking a path as derived from the unpublished VarChAMP/IGVF
+#: measurements. Every canonical name that carries them has it: the
+#: `varchamp_all` and `sahni_fragoza_varchamp_all` row/split tables, their
+#: cv_reference fold arrays, and the GCV result pickles, which store per-fold
+#: `labels` arrays and so carry the measurements themselves.
+_UNPUBLISHED = "varchamp"
+
+
+def _redistributable(path: Path) -> bool:
+    """False for anything derived from the unpublished VarChAMP measurements.
+
+    Model checkpoints are exempt: depositing a model TRAINED on VarChAMP is
+    intended and documented, and weights are not the measurements.
+    """
+    if WEIGHTS_DIR in path.parents or path.parent == WEIGHTS_DIR:
+        return True
+    return _UNPUBLISHED not in path.name.lower()
+
+
+def _filtered(paths):
+    """Drop unpublished entries, and prune them out of directory entries.
+
+    A directory is kept as a directory only when every file under it is
+    redistributable; otherwise its redistributable files are listed
+    individually, so `cv_reference/` cannot smuggle its VarChAMP arrays in
+    behind a single directory entry.
+    """
+    out = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            bad = [q for q in p.rglob("*") if q.is_file() and not _redistributable(q)]
+            if not bad:
+                out.append(p)
+                continue
+            print(f"  [filter] {p.name}/: {len(bad)} unpublished file(s) excluded")
+            out.extend(q for q in sorted(p.rglob("*"))
+                       if q.is_file() and _redistributable(q))
+        elif _redistributable(p):
+            out.append(p)
+        else:
+            print(f"  [filter] excluded (unpublished): {p.name}")
+    return out
 
 
 def _prediction_tsv(db: str) -> Path:
@@ -73,6 +121,13 @@ def bundles() -> list[dict]:
            DATASETS_DIR / "af3_structures_canonical" / "manifest.csv",
            contact_graph_store()]
         + [DATASETS_DIR / "variant_dbs" / f"{db}_rows.csv.gz" for db in OPEN_DBS]
+        # The WT+variant sequences. Iterating a row table needs them -- the
+        # tables carry accessions and a pair key, not sequence -- so without
+        # these no variant-repository inference can run from the deposit at all.
+        # 63 MB gzipped for the four open repositories; COSMIC and HGMD are
+        # licence-restricted and excluded with the rest of their material.
+        + [DATASETS_DIR / "variant_dbs" / f"{db}_interaction_loss_wt_and_vt.fasta.gz"
+           for db in OPEN_DBS]
         + [DATASETS_DIR / "variant_dbs" / "aliases.csv"]
     )
 
@@ -91,6 +146,10 @@ def bundles() -> list[dict]:
     renamed = {_prediction_tsv(db): vdb / f"{db}_mutpred_ppi_predictions.tsv"
                for db in OPEN_DBS}
     results += list(renamed)
+
+    datasets = _filtered(datasets)
+    results = _filtered(results)
+    renamed = {k: v for k, v in renamed.items() if _redistributable(Path(k))}
 
     return [
         {"name": "mutpred-ppi-datasets.tar.gz", "srcs": datasets, "rename": {},
@@ -234,7 +293,7 @@ def main() -> int:
         fh.write(_readme(specs, struct_files))
 
     print(f"\n{out} ready: {len(written)} archives + MANIFEST.sha256 + README.txt")
-    print("Verify with:  cd zenodo && sha256sum -c MANIFEST.sha256")
+    print("Verify with:  cd zenodo && sha256sum -c --ignore-missing MANIFEST.sha256")
     return 0
 
 
@@ -259,7 +318,7 @@ def _readme(specs, struct_files) -> str:
         lines.append(f"  {b['unpack']}")
     lines += [
         "",
-        "  sha256sum -c MANIFEST.sha256",
+        "  sha256sum -c --ignore-missing MANIFEST.sha256",
         "",
         "Then:  python -c \"from paths import describe; describe()\"",
         "",

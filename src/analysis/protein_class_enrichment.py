@@ -34,20 +34,20 @@ from analysis import edgotypes  # noqa: E402
 from analysis import training_overlap  # noqa: E402
 from analysis.classify_variant_dbs import (  # noqa: E402
     group_by_variant, load_predictions as _load_predictions)
-from paths import ANNOTATIONS_DIR, DATA_ROOT, REPO_ROOT  # noqa: E402
+from paths import ANNOTATIONS_DIR, DATA_ROOT, PROTEIN_CLASS_DIR, REPO_ROOT, VARIANT_DBS_DIR  # noqa: E402
 
 
 _PUB = REPO_ROOT
 _BASE = DATA_ROOT
 _HOME = _BASE / "home"
-_OUT  = _PUB / "results" / "protein_class"
+_OUT  = PROTEIN_CLASS_DIR
 
 # Import calc_enrichment and plot rcParams from variant_db_charts
 from analysis.variant_db_charts import calc_enrichment
 
 
 
-ANNOTATION_CSV = _PUB / "results" / "protein_class" / "protein_class_annotations.csv"
+ANNOTATION_CSV = PROTEIN_CLASS_DIR / "protein_class_annotations.csv"
 # Must match the all-data model used for Fig 5 (weights/MutPred-PPI.pt). The old,
 # variant_dbs_classified/ trees hold SF-model predictions; mixing the two
 # across panels is what this path previously did.
@@ -61,7 +61,7 @@ def _prediction_tsv(db):
     master CSV loading zero rows. Same resolver as
     `extract_variant_db_stats.prediction_tsv`.
     """
-    collected = _PUB / "results" / "variant_dbs_all_data" / f"{db}_mutpred_ppi_predictions.tsv"
+    collected = VARIANT_DBS_DIR / f"{db}_mutpred_ppi_predictions.tsv"
     if collected.exists():
         return collected
     return Path(DATA_ROOT) / db / "mutpred_ppi_predictions.tsv"

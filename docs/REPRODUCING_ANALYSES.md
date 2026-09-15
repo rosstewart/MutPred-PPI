@@ -25,7 +25,7 @@ its target exists; `ls -l figures/` shows the targets.
 | S2 | `roc_sahni_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_only` |
 | S3 | `roc_varchamp_blind_test_training_comparison.png` | `analysis/blind_test_figures.py` | blind test, both training sets |
 | S4 | `ablation_bar_sahni_fragoza_with_variance.png` | `analysis/run_roc_ablation.py` | GCV ablations, `sahni_fragoza` |
-| S6 | `roc_sahni_fragoza_varchamp_all_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza_varchamp_all` |
+| S6 | `roc_sahni_fragoza_varchamp_all_with_variance.png` | `analysis/run_roc_comparison.py` | GCV, `sahni_fragoza_varchamp_all` (needs VarChAMP) |
 | S7 | `enrichment_bootstrap_sufficient_partners_k3.png` | `analysis/variant_db_charts.py --controlled-bootstrap --k3-only` | all six repositories classified |
 | S8 | `threshold_sensitivity.png` | `analysis/threshold_sensitivity.py` | all six repositories classified |
 | S1 | `roc_sahni_fragoza_biclass_with_variance.png` | `analysis/biclass_sf_gcv.py` | GCV, `sahni_fragoza` |
@@ -98,7 +98,7 @@ invariants the analysis code assumes.
 `pytest tests/ --run-data` asserts the same properties non-interactively.
 
 `notebooks/reproduce_all_figures.py` runs everything below in order, caching each step and
-writing to the paths this document describes. `QUICK = True` (line 52) is the default and
+writing to the paths this document describes. `QUICK = True` (line 54) is the default and
 writes to `results_quick/`; set it to `False` for the published numbers.
 
 ## The canonical data layer
@@ -189,14 +189,9 @@ Variant-database complexes come from two places, and both are needed:
 
 1. **Folded in-house** -- the per-database `af3_models*/` trees (neurodev, gnomad,
    clinvar, asd, hgmd, cosmic).
-2. **ProtVar precomputed AlphaFold3 interfaces** -- 126,118 high-confidence
-   complexes, downloaded separately:
-
-   ```bash
-   curl -O https://ftp.ebi.ac.uk/pub/databases/ProtVar/predictions/interfaces/2024.05.28_interface_models_high_confidence.tar
-   tar xf 2024.05.28_interface_models_high_confidence.tar
-   ln -s $PWD/pdb external/protvar_pdb
-   ```
+2. **ProtVar precomputed AlphaFold 3 interfaces**, 126,118 high-confidence complexes
+   downloaded from EMBL-EBI. The download and link commands are in
+   [DATA.md](DATA.md#structures).
 
 ClinVar, COSMIC, gnomAD and HGMD draw most of their partner structures from ProtVar:
 **76,023 of the 100,739 canonical structures (75.5%) come from it**, against 24,716 folded
@@ -204,7 +199,7 @@ in-house. The `provenance` column of `datasets/af3_structures_canonical/manifest
 which is which for every structure. neurodev and asd need none of it.
 
 Omitting ProtVar does not affect the figures if you use the deposited contact-graph store,
-which already contains all 100,739 graphs, it matters only when rebuilding the store from
+which already contains all 100,739 graphs; it matters only when rebuilding the store from
 structures.
 
 `canonicalize_structures.py` resolves every chain by SEQUENCE against the
@@ -393,19 +388,23 @@ retrained here, and are classed by SKEMPI training-protein overlap
 (`utils.gcv_common.skempi_test_class`), not Sahni+Fragoza overlap, same rule as their GCV
 stratification.
 
-## Variant Repository Inference (Fig 5, S6, S8)
+## Variant Repository Inference (Fig 5, S7 through S10)
 
 Scored with the single all-data model (`weights/MutPred-PPI.pt`);
 `assert_all_data_model` refuses to start with anything else, so there is only ever one
 published results tree.
 
-**Without the unpublished VarChAMP data** that model cannot be trained. Pass
-`--model-tier sahni_fragoza` to use the demonstration model from the Zenodo weights bundle
-instead. It writes to `results/variant_dbs_sahni_fragoza/` and to
+**Without the unpublished VarChAMP data** that model cannot be *retrained*. Scoring with it
+needs nothing unpublished: `weights/MutPred-PPI.pt` is in the Zenodo weights bundle, and
+`assert_all_data_model` hashes it, so a deposit-only run reproduces the published numbers.
+`notebooks/reproduce_all_figures.py` uses it whenever it is present.
+
+To run the whole chain from a model you can retrain yourself, pass
+`--model-tier sahni_fragoza` for the demonstration model. It writes to
+`results/variant_dbs_sahni_fragoza/` and to
 `{db}_mutpred_ppi_predictions_sahni_fragoza.tsv`, never over the published tree, and the
 figure scripts take `--demo-tier` to stamp their output accordingly. Its scores are **not**
-the published numbers. `notebooks/reproduce_all_figures.py` selects this automatically when
-the VarChAMP table is missing.
+the published numbers.
 
 ΔΔG predictions are unaffected: `run_stability_inference.py` uses the MegaScale-pretrained
 stability model, which never saw VarChAMP.

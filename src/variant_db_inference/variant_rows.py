@@ -52,18 +52,42 @@ _ROOT = DATA_ROOT
 _TABLE_DIR = _PUB / "datasets" / "variant_dbs"
 _ALIASES = _TABLE_DIR / "aliases.csv"
 
+def _fasta(db: str) -> Path:
+    """One database's WT+variant FASTA, preferring the deposited copy.
+
+    Two locations, in order:
+
+      1. `datasets/variant_dbs/<db>_interaction_loss_wt_and_vt.fasta.gz` -- the
+         Zenodo copy, for the four repositories whose sequences may be
+         redistributed. Sequences are needed to iterate the row tables at all,
+         so without this a reader working from the deposit could not score a
+         single variant, no matter which caches they had.
+      2. `$MUTPRED_DATA_ROOT/<db>/<db>_interaction_loss_wt_and_vt.fasta` -- the
+         uncompressed working copy this pipeline writes when it builds a
+         repository from source. Licensed repositories (COSMIC, HGMD) only ever
+         have this one.
+
+    `utils.sequences.iter_fasta` picks its opener from the suffix, so the
+    gzipped and plain forms are interchangeable here.
+    """
+    deposited = _TABLE_DIR / f"{db}_interaction_loss_wt_and_vt.fasta.gz"
+    if deposited.exists():
+        return deposited
+    return _ROOT / db / f"{db}_interaction_loss_wt_and_vt.fasta"
+
+
 # Per database: the WT+variant FASTA (0-based headers) and the sequence map.
 DB_SOURCES = {
-    "clinvar": {"fasta": _ROOT / "clinvar" / "clinvar_interaction_loss_wt_and_vt.fasta",
+    "clinvar": {"fasta": _fasta("clinvar"),
                 "id_to_seq": _ROOT / "clinvar" / "id_to_seq.pkl"},
-    "cosmic":  {"fasta": _ROOT / "cosmic" / "cosmic_interaction_loss_wt_and_vt.fasta"},
-    "gnomad":  {"fasta": _ROOT / "gnomad" / "gnomad_interaction_loss_wt_and_vt.fasta",
+    "cosmic":  {"fasta": _fasta("cosmic")},
+    "gnomad":  {"fasta": _fasta("gnomad"),
                 "id_to_seq": _ROOT / "gnomad" / "id_to_seq.pkl"},
-    "hgmd":    {"fasta": _ROOT / "hgmd" / "hgmd_interaction_loss_wt_and_vt.fasta",
+    "hgmd":    {"fasta": _fasta("hgmd"),
                 "id_to_seq": _ROOT / "hgmd" / "id_to_seq.pkl"},
-    "neurodev": {"fasta": _ROOT / "neurodev" / "neurodev_interaction_loss_wt_and_vt.fasta",
+    "neurodev": {"fasta": _fasta("neurodev"),
                  "id_to_seq": _ROOT / "neurodev" / "id_to_seq.pkl"},
-    "asd":      {"fasta": _ROOT / "asd" / "asd_interaction_loss_wt_and_vt.fasta",
+    "asd":      {"fasta": _fasta("asd"),
                  "id_to_seq": _ROOT / "asd" / "id_to_seq.pkl"},
 }
 

@@ -76,6 +76,11 @@ def add_common_args(
         help="Number of GCV iterations (default: 30)",
     )
     p.add_argument(
+        "--n-folds", type=int, default=None,
+        help="Use only the first N of the 10 folds (default: all). Smoke tests "
+             "only: the reported AUC is then over N/10 of the data.",
+    )
+    p.add_argument(
         "--outdir", default=str(GCV_RESULTS_DIR),
         help="Output directory for results (default: results/gcv/)",
     )

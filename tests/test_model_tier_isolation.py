@@ -106,3 +106,81 @@ class TestFigureProducersAcceptTheFlag:
         mod = importlib.import_module(module)
         src = open(mod.__file__).read()
         assert "--demo-tier" in src, f"{module} cannot stamp its figures"
+
+
+class TestGuardChecksIdentityNotPresence:
+    """The all-data guard must verify WHICH checkpoint it found.
+
+    It used to check only that a file named `MutPred-PPI.pt` existed in
+    `--models-dir`. Three directories hold a file with that name: `weights/`
+    (all-data), `weights/sahni_fragoza/` (the demonstration tier) and
+    `weights/blind_test/` (whatever the blind test trained last). A mistyped
+    `--models-dir` therefore passed the guard and scored every repository with
+    the wrong model, producing a results tree indistinguishable from the
+    published one. That is how the archived `results/variant_dbs/` tree came to
+    exist, and the guard could not detect it.
+    """
+
+    def _write(self, tmp_path, digest_source):
+        import shutil
+        d = tmp_path / "models"
+        d.mkdir()
+        shutil.copy(digest_source, d / "MutPred-PPI.pt")
+        return d
+
+    def test_known_hashes_do_not_collide(self):
+        assert rvdi.ALL_DATA_SHA256 not in rvdi.KNOWN_OTHER_MODELS, (
+            "the all-data checkpoint is also listed as a non-all-data model")
+        assert len(set(rvdi.KNOWN_OTHER_MODELS)) == len(rvdi.KNOWN_OTHER_MODELS)
+
+    @pytest.mark.requires_data
+    def test_the_published_checkpoint_matches_the_pinned_hash(self):
+        from paths import WEIGHTS_DIR
+
+        primary = WEIGHTS_DIR / "MutPred-PPI.pt"
+        if not primary.exists():
+            pytest.skip("weights/MutPred-PPI.pt not present")
+        assert rvdi._sha256(primary) == rvdi.ALL_DATA_SHA256, (
+            "weights/MutPred-PPI.pt is not the checkpoint ALL_DATA_SHA256 pins. "
+            "If the model was retrained deliberately, update the constant.")
+
+    @pytest.mark.requires_data
+    def test_the_published_checkpoint_is_the_all_data_one(self):
+        """Pinned by hash, but also confirm it against its qualified sibling."""
+        from paths import WEIGHTS_DIR
+        from utils.gcv_common import dataset_name
+
+        primary = WEIGHTS_DIR / "MutPred-PPI.pt"
+        sibling = WEIGHTS_DIR / (
+            f"MutPred-PPI_{dataset_name('sahni_fragoza_varchamp_all')}"
+            f"_megascale_all_all.pt")
+        if not (primary.exists() and sibling.exists()):
+            pytest.skip("checkpoints not present")
+        assert rvdi._sha256(primary) == rvdi._sha256(sibling), (
+            "weights/MutPred-PPI.pt is not byte-identical to the all-data "
+            "checkpoint it is supposed to be a copy of")
+
+    @pytest.mark.requires_data
+    @pytest.mark.parametrize("subdir", ["sahni_fragoza", "blind_test"])
+    def test_pointing_at_another_tier_is_refused(self, tmp_path, subdir):
+        """The scenario that produced the archived results/variant_dbs/ tree."""
+        from paths import WEIGHTS_DIR
+
+        candidates = sorted((WEIGHTS_DIR / subdir).glob("*.pt"))
+        if not candidates:
+            pytest.skip(f"weights/{subdir}/ has no checkpoints")
+        d = self._write(tmp_path, candidates[0])
+        with pytest.raises(ValueError, match="not the all-data model"):
+            rvdi.assert_all_data_model(str(d))
+
+    def test_an_unrecognised_checkpoint_warns_rather_than_raises(self, tmp_path, capsys):
+        """A legitimate retrain must not be blocked."""
+        d = tmp_path / "models"
+        d.mkdir()
+        (d / "MutPred-PPI.pt").write_bytes(b"not a real checkpoint")
+        rvdi.assert_all_data_model(str(d))       # must not raise
+        assert "not the published all-data checkpoint" in capsys.readouterr().err
+
+    def test_a_missing_checkpoint_still_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            rvdi.assert_all_data_model(str(tmp_path))

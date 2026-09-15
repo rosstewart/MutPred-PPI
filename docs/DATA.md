@@ -18,7 +18,7 @@ tar xzf mutpred-ppi-datasets.tar.gz -C .     # 1.4 GB  tables, annotations, grap
 tar xzf mutpred-ppi-results.tar.gz  -C .     # 324 MB  cross-validation and predictions
 tar xzf mutpred-ppi-weights.tar.gz  -C .     #  13 MB  model checkpoints
 
-sha256sum -c MANIFEST.sha256
+sha256sum -c --ignore-missing MANIFEST.sha256
 ```
 
 Those three reproduce every figure. The fourth is optional:
@@ -50,7 +50,7 @@ python -c "from paths import describe; describe()"
 | datasets | `megascale_rows.csv.gz`, `mega_splits.pkl` | 4.8 MB | stability pretraining |
 | datasets | `mutpred2_inputs/` | 0.7 MB | the MutPred2 comparison |
 | weights | `weights/` | 13 MB | inference, blind test, ablations |
-| results | `gcv/*_detailed_results.pkl`, `*_aucs.npy` | 132 MB | Fig 3, S1, S2, S4, S6 |
+| results | `gcv/*_detailed_results.pkl`, `*_aucs.npy` | 132 MB | Fig 3, S1, S2, S4 |
 | results | `variant_dbs_all_data/{db}_mutpred_ppi_predictions.tsv` | 69 MB | Fig 5, S7 |
 | results | `variant_dbs_stability/{db}_stability_predictions.tsv` | 64 MB | S10 |
 | results | `master_variant_db_predictions_unrestricted.csv.gz` | 24 MB | per-variant scores in one table |
@@ -89,11 +89,13 @@ complexes downloaded from ProtVar (EMBL-EBI). Only the in-house structures are d
 | ProtVar (EMBL-EBI) | 76,023 (75.5%) | 7.4 GB | no |
 
 The `provenance` column of `manifest.csv` records which is which for every structure. To
-obtain the ProtVar half, download
-`2024.05.28_interface_models_high_confidence.tar` (~57 GB) from ProtVar and link it:
+obtain the ProtVar half (~57 GB), download it from the EMBL-EBI FTP site and link the
+extracted `pdb/` directory into `external/`:
 
 ```bash
-ln -s /path/to/pdb external/protvar_pdb
+curl -O https://ftp.ebi.ac.uk/pub/databases/ProtVar/predictions/interfaces/2024.05.28_interface_models_high_confidence.tar
+tar xf 2024.05.28_interface_models_high_confidence.tar
+ln -s "$PWD/pdb" external/protvar_pdb
 ```
 
 You need it only to rebuild the graph store from structures. The deposited
@@ -118,13 +120,19 @@ Professional 2025). Analyses skip the affected panels with a warning and draw th
 
 VarChAMP measurements were unpublished IGVF consortium data at the time of writing, and will
 be cross-linked from [data.igvf.org](https://data.igvf.org) on release. Excluded: the
-VarChAMP row and split tables, the blind-test arrays, the matching `cv_reference` entries
-and the eSIG-Net supplement caches. Fig 4, S3 and Table 1 cannot be reproduced until then.
+VarChAMP row and split tables, the matching `cv_reference` entries and GCV result pickles,
+the blind-test arrays, and the eSIG-Net supplement caches. Fig 4, S3, S6 and Table 1 cannot
+be reproduced until then.
 
-Because the all-data model is trained partly on VarChAMP, it cannot be retrained without it.
-The deposit therefore includes a Sahni+Fragoza model in `weights/sahni_fragoza/`, which runs
-the whole variant-repository pipeline end to end. Its scores are not the published ones: it
-writes to a separate results tree and marks every figure it produces.
+The all-data model is trained partly on VarChAMP, so it cannot be retrained without it.
+Scoring with it needs no such thing: `weights/MutPred-PPI.pt` is in the deposit, and
+`notebooks/reproduce_all_figures.py` uses it to reproduce the published variant-repository
+numbers whether or not the measurements are present.
+
+The deposit also includes a Sahni+Fragoza model in `weights/sahni_fragoza/`, for running the
+variant-repository pipeline end to end from a model you can retrain yourself. Its scores are
+not the published ones: it writes to a separate results tree and marks every figure it
+produces.
 
 ### Too large to be useful as bytes
 
@@ -161,6 +169,6 @@ All optional; the defaults resolve for a standard checkout.
 ## Verifying a download
 
 ```bash
-sha256sum -c MANIFEST.sha256
+sha256sum -c --ignore-missing MANIFEST.sha256
 python -m pytest tests/ --run-data
 ```
