@@ -84,6 +84,15 @@ def _matches_legacy_name(name: str) -> str | None:
     return None
 
 
+
+def _under(path: Path, root: Path) -> bool:
+    """True if `path` is `root` or sits beneath it."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
 def reject_legacy(*paths: str | Path, check_mtime: bool = True) -> None:
     """Raise `LegacyInputError` if any path looks like a pre-090826 artifact.
 
@@ -111,18 +120,22 @@ def reject_legacy(*paths: str | Path, check_mtime: bool = True) -> None:
         # built it from `paths.method_dir()`, and resolving would follow the
         # per-method symlink out to an arbitrary tree. Both forms are tried, so
         # it holds whether or not the checkout is a link.
+        # Both the resolved and the logical (symlinks unfollowed) form are
+        # tried against every root. What this check is for is a hardcoded
+        # reference to a retired external script directory, and such a path sits
+        # outside the tree in BOTH forms. A multi-GB embedding cache symlinked
+        # into datasets/ from other storage, or an external_methods/<method>
+        # checkout that is a link, is logically inside and must pass -- matching
+        # only the resolved form rejected exactly those.
         resolved = p.resolve()
         logical = p if p.is_absolute() else Path.cwd() / p
-        in_tree = False
-        for candidate, root in ((resolved, REPO_ROOT), (resolved, DATA_ROOT),
-                                (resolved, EXTERNAL_METHODS_DIR.resolve()),
-                                (logical, EXTERNAL_METHODS_DIR)):
-            try:
-                candidate.relative_to(root)
-                in_tree = True
-                break
-            except ValueError:
-                continue
+        roots = (REPO_ROOT, DATA_ROOT, EXTERNAL_METHODS_DIR,
+                 EXTERNAL_METHODS_DIR.resolve())
+        in_tree = any(
+            _under(candidate, root)
+            for candidate in (resolved, logical)
+            for root in roots
+        )
         if not in_tree:
             raise LegacyInputError(
                 f"{p}: resolves outside REPO_ROOT ({REPO_ROOT}), DATA_ROOT "

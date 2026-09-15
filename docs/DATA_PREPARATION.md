@@ -9,25 +9,20 @@ Everything below writes under `datasets/`, which is **not** in git (see
 [DATA.md](DATA.md)). Paths resolve through `src/paths.py`; nothing in the
 pipeline hardcodes an absolute path.
 
-```
-  source files                notebooks/map_ppi_datasets.py
-  (published + restricted)  ────────────────────────────────────►  datasets/source_mapping/
-                                                                          │
-                             src/data_processing/training_sets/            │
-                             prepare_gcv_tables.py                         ▼
-                           ◄────────────────────────────────────  datasets/training_eval/
-                                                                    *_rows.csv.gz
-                                                                    *_splits.csv.gz
-                                                                    sequences.csv.gz
-                                                                          │
-  AlphaFold3 predictions                                                  ▼
-  ──────────────────────►  canonicalize_structures.py  ──►  datasets/af3_structures_canonical/
-         ▲                                                          │        manifest.csv
-         │                                                          ▼
-         │                 rebuild_graphs_from_structures.py  ──►  contact_graphs.h5
-         │                                                          │
-         └───── fold externally ◄── prepare_af3_inputs.py ◄─────────┘
-```
+| # | Stage | Script | Writes |
+|---|---|---|---|
+| 0 | Source data | download by hand | `datasets/source_data{,_restricted}/` |
+| 1 | Mapping | `notebooks/map_ppi_datasets.py` | `datasets/source_mapping/` |
+| 3 | Structures | `canonicalize_structures.py` | `datasets/af3_structures_canonical/` |
+| 4 | Contact graphs | `rebuild_graphs_from_structures.py` | `datasets/contact_graphs.h5` |
+| 2a | AlphaFold3 coverage | `annotate_af3_coverage.py` | `af3_failed` column, into the stage 1 CSVs |
+| 2 | GCV tables | `training_sets/prepare_gcv_tables.py` | `datasets/training_eval/` |
+| 2b | SKEMPI reference | `training_sets/prepare_skempi_reference.py` | `datasets/annotations/skempi_train_uniprots.csv` |
+| 5 | Inputs for what is missing | `prepare_af3_inputs.py` | AlphaFold3 job JSONs, folded externally, back to stage 3 |
+
+Scripts are under `src/data_processing/`. The numbers are the section headings
+below; the rows are in execution order, which is the order
+`notebooks/reproduce_all_figures.py` runs them.
 
 ## Stage 0, source data
 
@@ -262,7 +257,9 @@ Licensing and what is redistributable: [DATA.md](DATA.md#what-is-not-deposited).
 
 ## Order
 
-Stages 1 → 2 → 3 → 4, with 5 feeding back into 3. Stage 2 must precede stage 5,
-since the required-pair set is derived from the tables stage 2 writes.
-`notebooks/reproduce_all_figures.py` runs stages 2–5 in this order and caches on
-output existence.
+Two constraints are not obvious from the table. Stage 2a needs stage 3's
+manifest to know what was folded, and must finish before stage 2, which drops
+the rows it marks before assigning `row_index`. Stage 5 derives its
+required-pair set from stage 2's tables, so it runs last and feeds back into
+stage 3. `notebooks/reproduce_all_figures.py` caches on output existence, so
+re-running the chain costs nothing once it is built.

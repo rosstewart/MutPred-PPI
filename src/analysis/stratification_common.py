@@ -62,6 +62,19 @@ def load_canonical_rows(rows_file: str = ROWS_FILE) -> pd.DataFrame:
     return rows
 
 
+def _has_index(container, key) -> bool:
+    """True if `container[key]` exists, for a dict OR a list.
+
+    `run_gcv` writes `iterations` as a dict keyed by seed; older pkls and the
+    test fixtures use a list. Both are indexed the same way, so the presence
+    check has to cover both -- a plain `key in container` on a list is a VALUE
+    test and is always False here.
+    """
+    if isinstance(container, dict):
+        return key in container
+    return isinstance(key, int) and 0 <= key < len(container)
+
+
 def stratified_fold_curves(row_groups, groups, *, min_n: int = MIN_N,
                            n_seeds: int = N_SEEDS, rows_file: str = ROWS_FILE,
                            gcv_results: str = GCV_RESULTS,
@@ -89,6 +102,10 @@ def stratified_fold_curves(row_groups, groups, *, min_n: int = MIN_N,
     all_rows_by_group = {c: {g: set() for g in groups} for c in CLASSES}
 
     for seed in range(n_seeds):
+        # A `--n-gcv` smoke-test pkl holds only the seeds it ran. Same reasoning
+        # as the per-fold skip below: use what is there rather than raising.
+        if not _has_index(gcv["iterations"], seed):
+            continue
         fold_splits_path = f"{CV_DIR}/sahni_fragoza_train_fold_splits_{seed}.pkl"
         ptc_path = f"{CV_DIR}/swing_train_pair_test_classes_{seed}.npy"
         if not all(os.path.exists(p) for p in (fold_splits_path, ptc_path)):
@@ -112,6 +129,14 @@ def stratified_fold_curves(row_groups, groups, *, min_n: int = MIN_N,
         flat_cursor = 0
 
         for fold, _train_idx, test_idx in sorted(fold_splits, key=lambda t: t[0]):
+            # A `--n-folds` smoke-test pkl holds only the folds it ran, while
+            # `fold_splits` always describes all ten. Skip what the pkl does not
+            # have rather than raising KeyError: the curves are then over fewer
+            # folds, which is exactly what a smoke test asks for, and a real
+            # mismatch is still caught by the per-fold count check below.
+            if not _has_index(iteration["folds"], fold):
+                flat_cursor += len(test_idx)
+                continue
             fold_data = iteration["folds"][fold]
             n_test = len(test_idx)
             ptc_fold = pair_test_classes[flat_cursor:flat_cursor + n_test]
