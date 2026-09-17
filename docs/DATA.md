@@ -3,8 +3,7 @@
 The repository holds code. Datasets, structures, contact graphs, model weights and
 precomputed predictions are deposited on Zenodo.
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22757182.svg)](https://doi.org/10.5281/zenodo.22757182)
-
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22757182.svg)](https://doi.org/10.5281/zenodo.22774603)
 ## Download and unpack
 
 The deposit is four archives. Each is rooted at the repository, so unpack them from the
