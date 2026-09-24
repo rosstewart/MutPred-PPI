@@ -41,22 +41,28 @@ from .prott5_loader import get_T5_model, run_T5_from_model
 '''
 write output
 '''
-def write_output(out_f, ppi_preds, rows):
+def write_output(out_f, ppi_preds, rows, display=None):
     """Predictions with EXPLICIT columns: interactor, partner, mutation, score.
 
-    `rows` is [(interactor, partner, mutation_0b)]. The mutation arrives 0-based
-    (ProtT5 keys are) and is converted through the pipeline's one named
-    conversion, `variant_rows.to_one_based`, so the emitted column is 1-based
-    like every other table. This previously wrote a `complex_id` composite and
-    re-based with an inline `+1`, both of which this refactor removes.
-    """
-    from utils.mutations import to_one_based
+    `rows` is [(interactor, partner, mutation)], 1-based, straight from `variants.csv`.
 
+    `display` maps (interactor, partner, mutation) -> the variant AS THE USER WROTE IT,
+    from `variants.csv`'s `mutation_input` column. It matters whenever positions were
+    supplied in a structure's own residue numbering: the sidecar holds the SEQUENTIAL
+    position, so for 1H9D (RUNX1 chain starting at residue 54) reporting that back gave
+    every position shifted by 53 against the input. Falls back to the sidecar position
+    when the column is absent, which is right when input and sequential numbering agree.
+
+    Both are 1-based; nothing here re-bases. `variants.csv` used to hold 0-based positions
+    and this function converted, which is why the note about `to_one_based` is gone.
+    """
     assert len(ppi_preds) == len(rows)
+    display = display or {}
     with open(out_f, 'w') as f:
         f.write('interactor\tpartner\tmutation\tscore\n')
-        for pred, (interactor, partner, mutation_0b) in zip(ppi_preds, rows):
-            f.write(f'{interactor}\t{partner}\t{to_one_based(mutation_0b)}\t{pred}\n')
+        for pred, (interactor, partner, mutation) in zip(ppi_preds, rows):
+            shown = display.get((interactor, partner, mutation)) or mutation
+            f.write(f'{interactor}\t{partner}\t{shown}\t{pred}\n')
 
 
 '''
@@ -112,7 +118,10 @@ def get_complex_and_vt_emb(refseq_id, partner_id, variant, INCLUDE_STABILITY, de
     # The two accessions are passed in, never recovered by splitting a composite
     # id: `complex_id.split('_')` mis-assigns both proteins for any accession
     # that contains the separator.
-    mut_idx = mutations.position(variant)   # already 0-based
+    mut_idx = mutations.index(variant)   # 1-based: the inference sidecars carry the same convention as every other
+    # table. 0-based survives only in the variant-db/training caches, where the
+    # persistent ProtT5/H5 keys are too expensive to re-key; this pipeline builds
+    # its embedding H5 in a temp file and deletes it, so it had nothing to gain.
     vt_id = f'{refseq_id} {variant}'
 
     if refseq_emb is None:
@@ -147,7 +156,7 @@ def get_dict_from_fasta(fasta_path):
     return read_fasta(fasta_path, whole_header, on_duplicate="last")
 
 def get_vts_from_wt(save_dir):
-    """{(interactor, partner): [mutation_0b]} from `variants.csv`.
+    """{(interactor, partner): [mutation]} from `variants.csv`, 1-based.
 
     Reads the explicit table step 01 writes. It used to parse
     `all_variants.labels` FASTA headers of the form
@@ -164,6 +173,24 @@ def get_vts_from_wt(save_dir):
             wt_to_vt.setdefault((row['interactor'], row['partner']), []).append(
                 row['mutation'])
     return wt_to_vt
+
+def read_variant_display_map(save_dir):
+    """{(interactor, partner, mutation): mutation_input} from `variants.csv`.
+
+    Empty when the table predates the `mutation_input` column, which makes
+    `write_output` fall back to re-basing.
+    """
+    import csv as _csv
+
+    path = os.path.join(save_dir, 'variants.csv')
+    out = {}
+    with open(path) as f:
+        for row in _csv.DictReader(f):
+            shown = row.get('mutation_input')
+            if shown:
+                out[(row['interactor'], row['partner'], row['mutation'])] = shown
+    return out
+
 
 def read_complex_index(save_dir):
     """Rows of the `complexes.csv` sidecar written by step 01.
@@ -184,7 +211,8 @@ def read_complex_index(save_dir):
 '''
 main inference logic
 '''
-def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path, results_dir, method='interaction_loss', models_dir=None):
+def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path, results_dir,
+                             method='interaction_loss', models_dir=None, arch='current'):
     device = torch.device(device_code if torch.cuda.is_available() else 'cpu')
     print('using GPU',device)
     save_dir = graph_dir
@@ -200,7 +228,17 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
     model_dir = os.path.abspath(models_dir)
     assert os.path.exists(model_dir), model_dir
 
-    models = get_models(model_dir, device)
+    # `arch` selects the model GENERATION. Everything else in this function -- contact
+    # graphs, ProtT5 embeddings, mutation-diff scaling -- is shared, and verified to give
+    # bit-identical scores to the retired v1.0 code tree. Only the architecture and its
+    # weights are actually legacy.
+    if arch == 'v1.0':
+        from .model_loader import load_legacy_v1_ensemble
+        models = load_legacy_v1_ensemble(model_dir, device)
+    elif arch == 'current':
+        models = get_models(model_dir, device)
+    else:
+        raise ValueError(f"unknown arch {arch!r}; expected 'current' or 'v1.0'")
     scaler = joblib.load(f'{model_dir}/mutation_diff_scaler.pkl')
     print('loaded MutPred-PPI')
 
@@ -216,6 +254,7 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
     complexes = read_complex_index(save_dir)
     store = ContactGraphStore(f'{save_dir}/contact_graphs.h5')
     wt_to_vt = get_vts_from_wt(save_dir)
+    variant_display = read_variant_display_map(save_dir)
     # Named, counted reasons: a silent `continue` is how rows used to vanish
     # from a run with nothing to point at afterwards.
     skipped = Counter()
@@ -256,7 +295,7 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
         for vt_labels_f in variant_f_list:
             
             variant = vt_labels_f
-            mut_idx = mutations.position(variant)   # already 0-based
+            mut_idx = mutations.index(variant)   # 1-based sidecars; see above
             mutated_prot_vt_id = f'{refseq_id} {variant}'
             complex_and_vt = f'{complex_id} {variant}'
             
@@ -305,7 +344,8 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
 
                 # save results along the way for large requests
                 if prediction_count % 2000 == 1000:
-                    write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids)
+                    write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids,
+                                display=variant_display)
 
             
             except Exception as e:
@@ -318,7 +358,8 @@ def run_inference_on_dataset(device_code, dataset_name, graph_dir, t5_fasta_path
         print(f'  skipped, {reason}: {count}', flush=True)
 
     # save predictions
-    write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids)
+    write_output(f'{results_dir}/MutPred-PPI_preds.tsv', ppi_preds, all_vt_ids,
+                                display=variant_display)
     print(f'\nWrote {len(ppi_preds)} prediction{"s" if len(ppi_preds) != 1 else ""} to {results_dir}/MutPred-PPI_preds.tsv', end='\n\n')
 
     

@@ -119,14 +119,79 @@ class GAT_mut_processor_no_mut(nn.Module):
         return self.binding_predictor(h[mutation_idx:mutation_idx + 1])
 
 
+class GAT_mut_processor_v1(nn.Module):
+    """The v1.0 architecture -- RECOMB 2026 and bioRxiv v1/v2.
+
+    Kept ONLY so the published v1.0 checkpoints remain scoreable. It is not a
+    hyperparameter variant of `GAT_mut_processor` and cannot be expressed as one: the
+    head has three Linear layers rather than two (hence the extra `binding_predictor.6`
+    parameters, 18 tensors against 16), the GAT is four times wider (`hidden_dim=256`),
+    and the mutation-diff MLP ends at 128 rather than 32.
+
+    Everything AROUND the model -- contact graphs, ProtT5 embeddings, the mutation-diff
+    scaling -- is shared with the current generation, and verified to give bit-identical
+    scores to the retired v1.0 code tree on the published example. So only the weights,
+    their scaler, and this class are actually legacy; the data pipeline is not.
+
+    Scores from this generation are not comparable with the current model.
+    """
+
+    def __init__(self, input_dim, hidden_dim=256, output_dim=1,
+                 num_heads=4, mutation_diff_dim=1024):
+        super().__init__()
+
+        self.mutation_diff_processor = nn.Sequential(
+            nn.Linear(mutation_diff_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 128),
+        )
+
+        self.complex_gat1 = GATConv(input_dim, hidden_dim, heads=num_heads, concat=True)
+        self.complex_gat2 = GATConv(hidden_dim * num_heads, hidden_dim // 2, heads=1,
+                                    concat=False)
+
+        self.binding_predictor = nn.Sequential(
+            nn.Linear(hidden_dim // 2 + 128, 128),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 32),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(32, output_dim),
+        )
+
+    def forward(self, x, edge_index, mutation_idx, num_mut_res=None,
+                mutation_site_diff=None):
+        # Same 4-arg/5-arg tolerance as the current class, so the shared inference path
+        # can call either without knowing which generation it holds.
+        if mutation_site_diff is None:
+            mutation_site_diff = num_mut_res
+        if mutation_site_diff.dim() == 1:
+            mutation_site_diff = mutation_site_diff.unsqueeze(0)
+        processed = self.mutation_diff_processor(mutation_site_diff)
+
+        h = torch.relu(self.complex_gat1(x, edge_index))
+        h = torch.relu(self.complex_gat2(h, edge_index))
+
+        if torch.is_tensor(mutation_idx) and mutation_idx.dim() > 0:
+            features = h[mutation_idx]
+        else:
+            features = h[mutation_idx:mutation_idx + 1]
+        return self.binding_predictor(torch.cat([features, processed], dim=-1))
+
+
 # Historical alias used by the public inference pipeline.
 MutPred_PPI = GAT_mut_processor
+MutPred_PPI_v1 = GAT_mut_processor_v1
 
 __all__ = [
     "GAT_mut_processor",
     "GAT_mut_processor_no_gat",
     "GAT_mut_processor_no_mut",
+    "GAT_mut_processor_v1",
     "MutPred_PPI",
+    "MutPred_PPI_v1",
 ]
 
 

@@ -16,7 +16,8 @@ import argparse
 from joblib import Parallel, delayed
 
 from contact_graphs import (
-    DEFAULT_THRESHOLD, ContactGraphStore, contact_graph_from_structure,
+    DEFAULT_THRESHOLD, ContactGraphStore, chain_resnums,
+    contact_graph_from_structure,
 )
 from utils import mutations
 
@@ -27,12 +28,20 @@ parser.add_argument('working_dir')
 parser.add_argument('mmcif_dir')
 parser.add_argument('variants_file')
 parser.add_argument('n_jobs', type=int, nargs='?', default=-1)
+parser.add_argument('--numbering', choices=('auto', 'sequential', 'structure'),
+                    default='auto',
+                    help='How to read variant positions. sequential = 1-based index into '
+                         'the polymer residues present in the file (AF3 models start at 1). '
+                         'structure = the author residue numbers in the file, which need '
+                         'not start at 1. auto (default) tries sequential then structure '
+                         'and uses whichever matches every variant of a complex.')
 args = parser.parse_args()
 
 wd = args.working_dir
 mmcif_dir = args.mmcif_dir
 variants_file = args.variants_file
 n_jobs = args.n_jobs
+numbering = args.numbering
 
 # setup directories
 save_dir = os.path.join(wd, 'af3_graphs')
@@ -56,32 +65,145 @@ EDGE_DIST_THRESHOLD = DEFAULT_THRESHOLD
 
 
 def get_labeled_residues(variant_file):
-    """Parse variant file to get mutation positions and complex IDs."""
-    all_pos_indices = {}
+    """Parse the variant file into raw variants per complex, plus any chain selection.
+
+    Accepts THREE or FIVE tab-separated columns:
+
+        id_a  variant  id_b                 -- chains auto-detected (the only old form)
+        id_a  variant  id_b  chain_a  chain_b
+
+    The five-column form exists because a structure may hold more than the two chains to
+    score: PDB 1H9D is two copies of RUNX1/CBFbeta plus DNA, and `chains=None` requires
+    exactly two non-empty chains, so it cannot be read at all without saying which. The
+    chain pair is per complex, so one batch can mix layouts. `chain_a` is the interactor
+    (the mutated chain) and its order is significant.
+
+    Positions are NOT converted here. Which convention they are written in can only be
+    decided against the structure's own sequence and residue numbers, which are not known
+    until the graph is built, so the raw variant string is carried through and resolved
+    in `resolve_variant_indices`.
+    """
+    all_variants = {}
+    all_chains = {}
     all_complex_ids = set()
     n_variant_partner_interactions = 0
-    
+
     with open(variant_file, 'r') as f:
-        for line in f:
+        for line_no, line in enumerate(f, 1):
             if len(line.strip()) == 0:
                 continue
-            id_a, variant, id_b = line.strip().split('\t')
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) == 3:
+                id_a, variant, id_b = (x.strip() for x in fields)
+                chains = None
+            elif len(fields) == 5:
+                id_a, variant, id_b, chain_a, chain_b = (x.strip() for x in fields)
+                chains = (chain_a, chain_b)
+                if not chain_a or not chain_b:
+                    raise ValueError(
+                        f"{variant_file}:{line_no}: chain columns must not be empty")
+            else:
+                raise ValueError(
+                    f"{variant_file}:{line_no}: expected 3 or 5 tab-separated columns "
+                    f"(id_a, variant, id_b[, chain_a, chain_b]), got {len(fields)}")
+
             n_variant_partner_interactions += 1
-            
             complex_id = f'{id_a}:{id_b}'
-            
-            # parse variant notation (e.g., V123A)
-            wt_res = variant[0]
-            res_idx = mutations.index(variant)  # convert to 0-based
-            mt_res = variant[-1]
-            
-            if complex_id not in all_pos_indices:
-                all_pos_indices[complex_id] = []
-            
-            all_pos_indices[complex_id].append(('A', res_idx, wt_res, mt_res))
+
+            prev = all_chains.get(complex_id, "unset")
+            if prev == "unset":
+                all_chains[complex_id] = chains
+            elif prev != chains:
+                # One graph is built per complex, so two different chain pairs for the
+                # same complex cannot both be honoured.
+                raise ValueError(
+                    f"{variant_file}:{line_no}: complex {complex_id} is given chains "
+                    f"{chains} here but {prev} earlier; a complex must use one chain pair")
+
+            all_variants.setdefault(complex_id, []).append((line_no, variant))
             all_complex_ids.add(complex_id)
-    
-    return all_pos_indices, all_complex_ids, n_variant_partner_interactions
+
+    return (all_variants, all_chains, all_complex_ids,
+            n_variant_partner_interactions)
+
+
+def resolve_variant_indices(all_variants, records, numbering):
+    """Turn raw variant strings into array indices into the interactor sequence.
+
+    The index is 0-based because it indexes a Python string; the mutation STRINGS this
+    pipeline reads and writes are 1-based throughout. `src/utils/mutations.py` is the one
+    place the two meet, and `mutations.index` is the named conversion.
+
+    Returns the same structure the rest of the pipeline expects:
+    `{complex_id: [('A', res_idx, wt_res, mt_res), ...]}`.
+
+    `numbering` selects how the written position is read:
+      sequential -- 1-based index into the polymer residues present (position 1 is the
+                    first residue in the file, whatever it is numbered)
+      structure  -- the author residue number from the file
+      auto       -- sequential if every variant of the complex validates that way,
+                    otherwise structure; identical when numbering starts at 1 and is gapless
+
+    A variant is accepted only when its WT residue matches the sequence at the resolved
+    index, which is also what makes `auto` safe: a convention that resolves to the wrong
+    residue is rejected rather than silently scored.
+    """
+    by_complex = {r['complex_id']: r for r in records}
+    resolved = {}
+    used = {}
+
+    for complex_id, entries in all_variants.items():
+        rec = by_complex.get(complex_id)
+        if rec is None:
+            continue                      # graph failed; reported separately
+        seq = rec['interactor_sequence']
+        resnums = rec['interactor_resnums']
+
+        index_maps = {
+            'sequential': {i + 1: i for i in range(len(seq))},
+            'structure': {n: i for i, n in enumerate(resnums)},
+        }
+        order = ['sequential', 'structure'] if numbering == 'auto' else [numbering]
+
+        attempts = {}
+        for mode in order:
+            idx_map = index_maps[mode]
+            out, errors = [], []
+            for line_no, variant in entries:
+                wt_res, mt_res = variant[0], variant[-1]
+                try:
+                    pos = int(variant[1:-1])
+                except ValueError:
+                    errors.append(f"line {line_no}: {variant} is not missense notation")
+                    continue
+                i = idx_map.get(pos)
+                if i is None:
+                    errors.append(f"line {line_no}: {variant} position not in interactor")
+                elif seq[i] != wt_res:
+                    errors.append(
+                        f"line {line_no}: {variant} expects {wt_res} but structure "
+                        f"has {seq[i]}")
+                else:
+                    # `variant` is kept verbatim so the final table can report
+                    # positions in the numbering the user actually supplied.
+                    out.append(('A', i, wt_res, mt_res, variant))
+            if not errors:
+                resolved[complex_id] = out
+                used[complex_id] = mode
+                break
+            attempts[mode] = errors
+        else:
+            detail = '; '.join(
+                f"as {mode}: " + ', '.join(errs[:5]) +
+                (f" (+{len(errs) - 5} more)" if len(errs) > 5 else "")
+                for mode, errs in attempts.items())
+            rng = (f"interactor covers residues {resnums[0]}-{resnums[-1]}"
+                   if resnums else "interactor has no residues")
+            raise ValueError(
+                f"{complex_id}: variant positions do not match the structure. "
+                f"{detail}. {rng} ({len(seq)} residues)")
+
+    return resolved, used
 
 
 # AF3 wraps the JSON `name` field in a job prefix/suffix, e.g. a job named
@@ -201,7 +323,7 @@ def find_mmcif_file(id_a, id_b, mmcif_dir):
     return list(unique_files.values())[0]
 
 
-def make_graph(complex_id, mmcif_dir, save_dir):
+def make_graph(complex_id, mmcif_dir, save_dir, chains=None):
     """Contact graph for one complex, as a record the caller stores.
 
     The contact rule itself lives in `contact_graphs.contact_graph_from_structure`
@@ -218,14 +340,35 @@ def make_graph(complex_id, mmcif_dir, save_dir):
     id_a, id_b = complex_id.split(':')
 
     mmcif_file, swapped = find_mmcif_file(id_a, id_b, mmcif_dir)
-    built = contact_graph_from_structure(mmcif_file, EDGE_DIST_THRESHOLD)
+    built = contact_graph_from_structure(mmcif_file, EDGE_DIST_THRESHOLD, chains=chains)
     if built is None:
-        raise ValueError(f"{mmcif_file}: not a readable two-chain structure")
+        if chains is not None:
+            raise ValueError(
+                f"{mmcif_file}: could not read chains {chains[0]!r} and {chains[1]!r} "
+                f"-- check the chain IDs exist in the file")
+        raise ValueError(
+            f"{mmcif_file}: not a readable two-chain structure. If it holds more than "
+            f"two polymer chains (extra copies of the complex, DNA, ...), name the pair "
+            f"to score with the 5-column variants form: id_a, variant, id_b, "
+            f"chain_a, chain_b")
     seq_a, seq_b, edge_index = built
 
-    # `swapped` says the file lists id_b first, so id_a is the SECOND chain.
-    interactor_sequence, partner_sequence = (
-        (seq_b, seq_a) if swapped else (seq_a, seq_b))
+    resnum_map = chain_resnums(mmcif_file, chains=chains) or {}
+    nums = list(resnum_map.values())
+    num_a = nums[0] if len(nums) > 0 else []
+    num_b = nums[1] if len(nums) > 1 else []
+
+    if chains is not None:
+        # Explicit chains are returned in the REQUESTED order, so the first one is the
+        # interactor by construction and `swapped` (a filename heuristic) must not apply.
+        interactor_sequence, partner_sequence = seq_a, seq_b
+        interactor_resnums, partner_resnums = num_a, num_b
+    else:
+        # `swapped` says the file lists id_b first, so id_a is the SECOND chain.
+        interactor_sequence, partner_sequence = (
+            (seq_b, seq_a) if swapped else (seq_a, seq_b))
+        interactor_resnums, partner_resnums = (
+            (num_b, num_a) if swapped else (num_a, num_b))
 
     return {
         'complex_id': complex_id,
@@ -233,6 +376,9 @@ def make_graph(complex_id, mmcif_dir, save_dir):
         'partner': id_b,
         'interactor_sequence': interactor_sequence,
         'partner_sequence': partner_sequence,
+        'interactor_resnums': interactor_resnums,
+        'partner_resnums': partner_resnums,
+        'chains': chains,
         'store_seq_a': seq_a,
         'store_seq_b': seq_b,
         'edge_index': edge_index,
@@ -256,9 +402,13 @@ def write_variant_labels(variant_indices, complex_seqs, save_dir,
     and `all_variants.labels_separated`. `variants.csv` is the canonical form
     and is what `generate_fasta_output` and `inference_utils` actually read.
 
-    `mutation` is 0-BASED here, matching the ProtT5 keys the next step looks up;
-    conversion to the canonical 1-based form happens once, in
-    `inference_utils.write_output`.
+    `mutation` is 1-BASED, like every other table in the repo. It is the SEQUENTIAL
+    position (first polymer residue present = 1).
+    `mutation_input` is the variant exactly as the user wrote it, which is what the final
+    table reports: positions may have been supplied in the structure's own residue
+    numbering (1H9D's RUNX1 chain starts at 54), and echoing back a silently re-based
+    position would not match the input. `inference_utils.write_output` prefers it and
+    falls back to re-basing `mutation` for tables written before this column existed.
     """
     variant_rows = []
     num_bad_variants = 0
@@ -272,7 +422,7 @@ def write_variant_labels(variant_indices, complex_seqs, save_dir,
         pdb_seq = seq_a + seq_b
         num_residues_a = len(seq_a)
 
-        for chain, mt_idx, wt_res, mt_res in variant_indices[complex_id]:
+        for chain, mt_idx, wt_res, mt_res, variant_input in variant_indices[complex_id]:
             if mt_idx >= num_residues_a or pdb_seq[mt_idx] != wt_res:
                 print(f'  bad variant {key} {wt_res}{mt_idx}{mt_res}: '
                       f'chain={chain} num_residues_a={num_residues_a} '
@@ -280,14 +430,21 @@ def write_variant_labels(variant_indices, complex_seqs, save_dir,
                 num_bad_variants += 1
                 continue
             assert chain == 'A', f'only chain A mutations are supported, got {chain}'
-            variant_rows.append((id_a, id_b, f'{wt_res}{mt_idx}{mt_res}'))
+            # 1-BASED, like every other table. This sidecar held 0-based positions
+            # until 2026-09-15 because the ProtT5 keys derived from it were 0-based;
+            # those keys live in a temp .h5 this pipeline deletes on the way out, so
+            # there was no cache to re-key and nothing to justify the second
+            # convention. (The variant-db/training caches keep theirs -- see
+            # src/variant_db_inference/variant_rows.py.)
+            variant_rows.append((id_a, id_b, f'{wt_res}{mt_idx + 1}{mt_res}',
+                                 variant_input))
 
     print(f'{num_bad_variants} bad variants')
 
     variants_index = os.path.join(save_dir, 'variants.csv')
     with open(variants_index, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['interactor', 'partner', 'mutation'])
+        w.writerow(['interactor', 'partner', 'mutation', 'mutation_input'])
         w.writerows(variant_rows)
     print(f'Wrote {variants_index} ({len(variant_rows)} variants)')
 
@@ -312,7 +469,7 @@ def generate_fasta_output(save_dir, wd):
             seqs.setdefault(row['interactor'], row['interactor_sequence'])
             seqs.setdefault(row['partner'], row['partner_sequence'])
 
-    variants = []                   # (interactor, mutation_0b), de-duplicated
+    variants = []                   # (interactor, mutation) 1-based, de-duplicated
     seen = set()
     with open(variants_path) as f:
         for row in csv.DictReader(f):
@@ -333,10 +490,8 @@ def generate_fasta_output(save_dir, wd):
             seq = seqs.get(interactor)
             if seq is None:
                 continue
-            # variants.csv holds 0-BASED positions, so `position` (raw integer,
-            # no base assumed) is the right accessor -- `index` would subtract
-            # one from a number that is already an index.
-            idx = mutations.position(mutation)
+            # variants.csv holds 1-BASED positions, so `index` is the right accessor.
+            idx = mutations.index(mutation)
             if idx >= len(seq) or seq[idx] != mutation[0]:
                 continue
             f_out.write(f">{interactor} {mutation}\n"
@@ -348,15 +503,26 @@ def generate_fasta_output(save_dir, wd):
 
 if __name__ == "__main__":
     # load variant data
-    variant_indices, complex_ids, n_variant_partner_interactions = get_labeled_residues(variants_file)
+    (raw_variants, complex_chains, complex_ids,
+     n_variant_partner_interactions) = get_labeled_residues(variants_file)
     print(f'Loaded {n_variant_partner_interactions} variant-partner interactions')
-    
+
     # generate contact graphs in parallel
     print(f'Generating {len(complex_ids)} contact graph{"s" if len(complex_ids) != 1 else ""}...')
     records = [r for r in Parallel(n_jobs=n_jobs)(
-        delayed(make_graph)(complex_id, mmcif_dir, save_dir)
+        delayed(make_graph)(complex_id, mmcif_dir, save_dir,
+                            chains=complex_chains.get(complex_id))
         for complex_id in complex_ids
     ) if r is not None]
+
+    # Positions are resolved only now: the convention they are written in can only be
+    # decided against the structure's own sequence and residue numbers.
+    variant_indices, numbering_used = resolve_variant_indices(
+        raw_variants, records, numbering)
+    for complex_id, mode in sorted(numbering_used.items()):
+        print(f'  {complex_id}: read {len(variant_indices[complex_id])} variant'
+              f'{"s" if len(variant_indices[complex_id]) != 1 else ""} '
+              f'as {mode} numbering')
 
     # One container keyed by chain sequence, plus the sidecar that maps a
     # complex_id to its two chains. Step 02 reads the sidecar and looks the graph
@@ -376,10 +542,18 @@ if __name__ == "__main__":
     index_path = os.path.join(save_dir, 'complexes.csv')
     with open(index_path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=['complex_id', 'interactor', 'partner',
-                                          'interactor_sequence', 'partner_sequence'])
+                                          'interactor_sequence', 'partner_sequence',
+                                          'interactor_chain', 'partner_chain',
+                                          'numbering'])
         w.writeheader()
         for r in records:
-            w.writerow({k: r[k] for k in w.fieldnames})
+            row = {k: r[k] for k in ('complex_id', 'interactor', 'partner',
+                                     'interactor_sequence', 'partner_sequence')}
+            chains = r.get('chains')
+            row['interactor_chain'] = chains[0] if chains else ''
+            row['partner_chain'] = chains[1] if chains else ''
+            row['numbering'] = numbering_used.get(r['complex_id'], '')
+            w.writerow(row)
     print(f"Wrote {index_path}")
 
     # Sequences stay in memory and are handed to the variant step directly.

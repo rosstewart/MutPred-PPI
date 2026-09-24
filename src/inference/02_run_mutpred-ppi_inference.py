@@ -38,6 +38,12 @@ def parse_args(argv=None):
     parser.add_argument('--models-dir', default=_DEFAULT_MODELS_DIR,
                         help='Directory holding MutPred-PPI.pt and '
                              'mutation_diff_scaler.pkl (default: weights/)')
+    parser.add_argument('--arch', choices=('current', 'v1.0'), default='current',
+                        help="Model generation. 'current' loads MutPred-PPI.pt. 'v1.0' "
+                             "loads the published 10-checkpoint ensemble (RECOMB 2026 / "
+                             "bioRxiv v1-v2) with its own architecture, from --models-dir "
+                             "together with that generation's mutation_diff_scaler.pkl. "
+                             "Scores from the two are not comparable.")
     return parser.parse_args(argv)
 
 
@@ -63,7 +69,7 @@ def main(argv=None):
         return 1
 
     run_inference_on_dataset(args.device, working_dir, graph_dir, t5_fasta_path,
-                             results_dir, models_dir=args.models_dir)
+                             results_dir, models_dir=args.models_dir, arch=args.arch)
     return 0
 
 
