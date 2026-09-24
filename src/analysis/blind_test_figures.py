@@ -124,7 +124,7 @@ def load_method_data(method_name, directory):
 
 def plot_comparison(methods_data, save_name="roc_varchamp_blind_test.png"):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=FIGURE_DPI)
-    class_labels = ["C1 (both in train)", "C2 (one in train)", "C3 (neither in train)"]
+    class_labels = ["Class One", "Class Two", "Class Three"]
 
     for class_idx, c in enumerate([1, 2, 3]):
         ax = axes[class_idx]
@@ -192,7 +192,7 @@ def plot_training_set_comparison(methods_data, save_name="roc_varchamp_blind_tes
     fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=FIGURE_DPI)
     # Panel titles name the class only; what C1/C2/C3 mean belongs in the
     # caption, not repeated three times across the top of the figure.
-    class_labels = ["Class one", "Class two", "Class three"]
+    class_labels = ["Class One", "Class Two", "Class Three"]
 
     for class_idx, c in enumerate([1, 2, 3]):
         ax = axes[class_idx]

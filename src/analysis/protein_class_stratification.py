@@ -2,9 +2,42 @@
 """Single-domain vs multi-domain stratification for Reviewer 1.
 
 Classifies each test interactor (the protein carrying the mutation) as
-single-domain (1 unique InterPro domain family) or multi-domain (2+), using
-the pre-built pfam_domains_cache.pkl. Computes AUROC separately per group
-across 30 seeds × 10 folds of existing GCV test predictions — no new GCV run.
+single-domain or multi-domain, then computes AUROC separately per group across
+30 seeds × 10 folds of existing GCV test predictions — no new GCV run.
+
+HOW A DOMAIN IS COUNTED (`--domain-source`):
+
+  ipr_all      len(set(InterPro accessions)) from `pfam_domains_cache.pkl`.
+               What the published figure used. It counts every InterPro entry
+               TYPE together -- Family, Domain, Conserved_site,
+               Homologous_superfamily -- so a genuinely single-domain protein
+               routinely accrues three to five accessions and `n == 1` almost
+               never fires: only 125 of 909 interactors (13.8%) come out
+               single-domain.
+  ipr_domain   InterPro restricted to `?type=domain`, dropping the family and
+               superfamily entries the rule above counted.
+  ted          TED (https://ted.cathdb.info), a structure-based domain parse of
+               the AlphaFold models, which gives an unambiguous count plus
+               residue ranges.
+
+`ipr_domain` and `ted` are read from `results/protein_class/domain_annotations.csv`,
+built by `fetch_ted_domains.py`, which prints the three sources side by side.
+`ted` is the default. The comparison that settled it, over the 968 interactors:
+
+    source        coverage   single-domain   C1 single/multi   C2          C3
+    ipr_all       909         13.8%          0.625 / 0.859     0.78/0.83   0.899 / 0.750
+    ipr_domain    968         27.1%          0.870 / 0.859     0.84/0.81   0.765 / 0.737
+    ted           968         36.5%          0.835 / 0.861     0.76/0.84   0.701 / 0.764
+
+(`ipr_domain`'s AUCs are over the 734 proteins it covered before HTTP 204 was
+recognised as "no entry of this type"; its coverage is now 968 as well, and the
+234 it gained have zero Domain-type entries so they stay unlabelled.)
+
+Under `ipr_all` the two extreme numbers rest on 250 and 54 of 300 fold curves;
+under `ted` no stratum falls below 287. TED and InterPro agree on the
+single-domain RATE to within 10 points (36.5% vs 27.1%) while disagreeing on 31%
+of individual
+proteins, so the rate is the robust part and neither is treated as ground truth.
 
 Aggregation matches compute_roc_with_variance() in roc_plots.py exactly:
   - 100 FPR interpolation points
@@ -38,10 +71,11 @@ plot_style.apply()   # shared rcParams + Agg backend
 import matplotlib.pyplot as plt
 
 # --- repo-relative path resolution (see src/paths.py) ---
-from paths import ANNOTATIONS_DIR, DATA_ROOT, GCV_RESULTS_DIR, REPO_ROOT, ROBUSTNESS_DIR, cv_reference_dir  # noqa: E402
+from paths import ANNOTATIONS_DIR, DATA_ROOT, GCV_RESULTS_DIR, PROTEIN_CLASS_DIR, REPO_ROOT, ROBUSTNESS_DIR, cv_reference_dir  # noqa: E402
 from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
-    load_canonical_rows, stratified_fold_curves)
+    composition, load_canonical_rows, row_perturbation_labels,
+    stratified_fold_curves)
 from utils.identifiers import bare_accession  # noqa: E402
 
 
@@ -74,6 +108,17 @@ LABELS  = {"single": "Single-domain", "multi": "Multi-domain"}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+DOMAIN_SOURCES = ("ipr_all", "ipr_domain", "ted")
+DOMAIN_TABLE = str(PROTEIN_CLASS_DIR / "domain_annotations.csv")
+
+#: Default source. TED, chosen from the three-way comparison `fetch_ted_domains.py`
+#: prints: it and InterPro both cover all 968 interactors, but TED is the only one
+#: whose direction is consistent across C1/C2/C3,
+#: and the only one where every stratum keeps 287-300 of its 300 fold curves.
+#: Under `ipr_all` the C3 single-domain curve rested on 54.
+DOMAIN_SOURCE = "ted"
+
+
 def build_domain_lookup(pfam_hits: dict) -> dict:
     """UniProt ID → 'single' | 'multi' | None."""
     out = {}
@@ -81,6 +126,31 @@ def build_domain_lookup(pfam_hits: dict) -> dict:
         n = len(set(ipr_list))
         out[uid] = "single" if n == 1 else "multi"
     return out
+
+
+def load_domain_lookup(source: str = DOMAIN_SOURCE) -> dict:
+    """UniProt ID → 'single' | 'multi', from whichever domain definition is asked for.
+
+    A protein the source has no answer for is absent from the dict rather than
+    labelled, so it falls through to "unknown" and is never selected -- the same
+    treatment the InterPro path has always given a protein with no hits.
+    """
+    if source not in DOMAIN_SOURCES:
+        raise ValueError(f"unknown domain source {source!r}; expected one of "
+                         f"{DOMAIN_SOURCES}")
+    if source == "ipr_all":
+        with open(PFAM_CACHE, "rb") as f:
+            return build_domain_lookup(pickle.load(f)["hits"])
+
+    if not os.path.exists(DOMAIN_TABLE):
+        raise FileNotFoundError(
+            f"{DOMAIN_TABLE} not found; run "
+            f"src/analysis/fetch_ted_domains.py to build it.")
+    df = pd.read_csv(DOMAIN_TABLE)
+    column = {"ipr_domain": "n_ipr_domain", "ted": "n_ted"}[source]
+    counts = df.dropna(subset=[column])
+    return {str(u): ("single" if int(n) == 1 else "multi")
+            for u, n in zip(counts["uniprot_id"], counts[column]) if int(n) >= 1}
 
 
 def build_row_groups(rows: pd.DataFrame, domain_lookup: dict) -> np.ndarray:
@@ -100,17 +170,16 @@ def build_row_groups(rows: pd.DataFrame, domain_lookup: dict) -> np.ndarray:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def compute_curves():
+def compute_curves(domain_source: str = None):
     """Per-(test class, domain-group) ROC fold curves.
 
     The reconstruction itself lives in `analysis.stratification_common`, shared
     with the pLDDT and interface supplements; this only builds the grouping.
     """
-    print("Loading pfam_domains_cache...", flush=True)
-    with open(PFAM_CACHE, "rb") as f:
-        pfam = pickle.load(f)
-    domain_lookup = build_domain_lookup(pfam["hits"])
-    print(f"  {len(domain_lookup)} proteins with IPR hits", flush=True)
+    source = domain_source or DOMAIN_SOURCE
+    print(f"Loading domain annotations (source: {source})...", flush=True)
+    domain_lookup = load_domain_lookup(source)
+    print(f"  {len(domain_lookup)} proteins with a domain count", flush=True)
 
     rows = load_canonical_rows(ROWS_FILE)
     print(f"  {len(rows)} canonical rows", flush=True)
@@ -127,11 +196,27 @@ def compute_curves():
                                   n_seeds=N_SEEDS, rows_file=ROWS_FILE)
 
 
+#: Column order of the summary TSV, shared with
+#: `export_reconstruction_tables._export_one_robustness` so the exported
+#: CSV cannot drift from the TSV when a column is added.
+SUMMARY_COLUMNS = (
+    "class",
+    "group",
+    "mean_auroc",
+    "sem",
+    "n_variants",
+    "n_fold_curves",
+    "positive_rate",
+)
+
+
 def plot_on_axes(axes, fold_curves, all_rows_by_grp, show_titles: bool = True):
     """Draw the 3-panel (C1/C2/C3) single-vs-multi-domain ROC comparison onto
     pre-supplied axes. Returns summary_rows (list[str]) for the TSV output.
     """
     class_labels = CLASS_LABELS
+
+    labels = row_perturbation_labels()
 
     summary_rows = []
     for ax, cls in zip(axes, (1, 2, 3)):
@@ -141,7 +226,7 @@ def plot_on_axes(axes, fold_curves, all_rows_by_grp, show_titles: bool = True):
         for grp in GROUPS:
             curves      = fold_curves[cls][grp]
             n_fold      = len(curves)
-            n_variants  = len(all_rows_by_grp[cls][grp])
+            n_variants, pos_rate = composition(all_rows_by_grp[cls][grp], labels)
             color       = COLORS[grp]
 
             if curves:
@@ -156,14 +241,15 @@ def plot_on_axes(axes, fold_curves, all_rows_by_grp, show_titles: bool = True):
                                      mean_tpr - sem_tpr, mean_tpr + sem_tpr,
                                      sem_auc, n_variants, n_fold))
                 summary_rows.append(
-                    f"C{cls}\t{grp}\t{mean_auc:.4f}\t{sem_auc:.4f}\t{n_variants}\t{n_fold}"
+                    f"C{cls}\t{grp}\t{mean_auc:.4f}\t{sem_auc:.4f}\t{n_variants}\t{n_fold}\t{pos_rate:.4f}"
                 )
             else:
-                summary_rows.append(f"C{cls}\t{grp}\tnan\tnan\t{n_variants}\t0")
+                summary_rows.append(f"C{cls}\t{grp}\tnan\tnan\t{n_variants}\t0\t{pos_rate:.4f}")
 
         plot_entries.sort(reverse=True, key=lambda e: e[0])
         for mean_auc, grp, color, mean_tpr, lo_tpr, hi_tpr, sem_auc, n_variants, _ in plot_entries:
-            label = f"{LABELS[grp]} (n={n_variants:,}, AUC={mean_auc:.3f}±{sem_auc:.3f})"
+            label = (f"{LABELS[grp]}\n"
+                     f"(n={n_variants:,}, AUC={mean_auc:.3f}±{sem_auc:.3f})")
             ax.plot(FPR_GRID, mean_tpr, color=color, lw=2, label=label)
             ax.fill_between(FPR_GRID, lo_tpr, hi_tpr, color=color, alpha=0.15)
 
@@ -183,20 +269,30 @@ def plot_on_axes(axes, fold_curves, all_rows_by_grp, show_titles: bool = True):
 
 
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    fold_curves, all_rows_by_grp = compute_curves()
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--domain-source", choices=DOMAIN_SOURCES, default=DOMAIN_SOURCE,
+                   help=f"how a domain is counted (default: {DOMAIN_SOURCE})")
+    p.add_argument("--out-dir", default=OUT_DIR,
+                   help="where to write the panel and summary (default: %(default)s)")
+    args = p.parse_args()
+
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
+    fold_curves, all_rows_by_grp = compute_curves(args.domain_source)
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), sharey=True)
     summary_rows = plot_on_axes(axes, fold_curves, all_rows_by_grp)
 
     plt.tight_layout()
-    out_png = os.path.join(OUT_DIR, "protein_class_auroc_by_class.png")
+    out_png = os.path.join(out_dir, "protein_class_auroc_by_class.png")
     plt.savefig(out_png, dpi=SAVE_DPI, bbox_inches="tight")
     print(f"Saved: {out_png}", flush=True)
 
-    out_tsv = os.path.join(OUT_DIR, "protein_class_auroc_summary.tsv")
+    out_tsv = os.path.join(out_dir, "protein_class_auroc_summary.tsv")
     with open(out_tsv, "w") as f:
-        f.write("class\tgroup\tmean_auroc\tsem\tn_variants\tn_fold_curves\n")
+        f.write("\t".join(SUMMARY_COLUMNS) + "\n")
         f.write("\n".join(summary_rows) + "\n")
     print(f"Saved: {out_tsv}", flush=True)
 

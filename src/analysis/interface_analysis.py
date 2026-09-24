@@ -1,11 +1,40 @@
 #!/usr/bin/env python
-"""Interface vs. non-interface variant analysis for Reviewer 1.
+"""Interface vs. surface vs. buried variant analysis for Reviewer 1.
 
 For each of 30 GCV seeds × 10 folds = up to 300 per-fold ROC curves,
-reconstructs which test samples are at the PPI interface (the mutated residue
-makes at least one cross-chain contact in the AF3 contact graph), then computes
-AUROC separately for interface and non-interface variants across the three test
-classes (C1/C2/C3).
+reconstructs where in the structure each test variant sits, then computes AUROC
+separately per group across the three test classes (C1/C2/C3).
+
+THE COMPARATOR IS SPLIT IN TWO. The interface rule is unchanged -- the mutated
+residue makes at least one cross-chain contact in the AF3 contact graph -- but
+its complement is no longer reported as one group. "Non-interface" held the
+buried core together with the free surface, and 1,623 of its 5,612 variants
+(29%) are buried, so a reader comparing against it was comparing against a
+mixture rather than against the surface control they had in mind. The three
+groups are now:
+
+    interface                 >=1 cross-chain contact
+    non-interface, surface    no cross-chain contact, RSA >= 0.25
+    non-interface, buried     no cross-chain contact, RSA < 0.25
+
+Both comparator groups are defined WITHIN the non-interface set, and their names
+say so. An interface residue is usually solvent-exposed itself (82% sit at
+RSA >= 0.25), so "surface" on its own would be read as including the interface;
+and 18% of interface residues are buried by RSA, so "buried" on its own is
+equally partial.
+
+RSA is unbound relative solvent accessibility from
+`datasets/annotations/residue_cache.pkl` (see build_residue_cache.py), computed
+on the ISOLATED chain so that a residue is not called buried merely because its
+partner covers it, and referenced to the Tien et al. 2013 theoretical maxima.
+
+A fourth curve, `interface_hc`, is the interface restricted to contacts that are
+confident on BOTH sides: the mutated residue's own pLDDT >= 70 and the mean
+pLDDT of the partner residues it touches >= 70. The partner-side condition
+removes contacts made by a disordered stretch of the partner wrapping onto a
+well-modelled site. It is a SUBSET of `interface`, so it is computed in its own
+pass: `stratified_fold_curves` assigns one group per row and cannot take
+overlapping groups.
 
 Aggregation matches compute_roc_with_variance() in roc_plots.py exactly:
   - 100 FPR interpolation points
@@ -14,6 +43,10 @@ Aggregation matches compute_roc_with_variance() in roc_plots.py exactly:
 Output:
   results/robustness/interface_auroc_by_class.png
   results/robustness/interface_auroc_summary.tsv
+      columns: class, group, mean_auroc, sem, n_variants, n_fold_curves,
+               positive_rate -- the fraction of the stratum whose interaction is
+               disrupted. Strata differ in class balance, so an AUC gap is only
+               a skill gap once the positive rates are comparable.
 
 Usage:
   conda run -n ppi python src/analysis/interface_analysis.py
@@ -35,7 +68,10 @@ from paths import DATA_ROOT, GCV_RESULTS_DIR, REPO_ROOT, ROBUSTNESS_DIR, contact
 from variant_db_inference import variant_rows as vr
 from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
-    ROWS_FILE, load_canonical_rows, stratified_fold_curves)
+    ROWS_FILE, composition, load_canonical_rows, row_perturbation_labels,
+    stratified_fold_curves)
+from analysis.build_residue_cache import lookup as residue_lookup  # noqa: E402
+from paths import ANNOTATIONS_DIR as _ANNOTATIONS_DIR  # noqa: E402
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -156,34 +192,207 @@ def build_row_iface_flags(canonical_rows: pd.DataFrame, store=None) -> list:
 
 # ── Main analysis ──────────────────────────────────────────────────────────────
 
+RESIDUE_CACHE = str(_ANNOTATIONS_DIR / "residue_cache.pkl")
+
+#: Relative solvent accessibility above which a non-interface residue counts as
+#: surface rather than buried. 25% is the long-standing convention (Rost and
+#: Sander 1994); it is a convention, not a measurement, so it is named here and
+#: stated in Methods alongside the Tien et al. 2013 reference maxima that RSA
+#: is computed against.
+RSA_SURFACE = 0.25
+
+#: Per-residue pLDDT above which an interface assignment is treated as
+#: confident, applied to BOTH sides of the contact. AlphaFold's own "confident"
+#: band starts at 70. Raising it to 85 was tested and is worse on every axis:
+#: it keeps 206 of 600 interface variants, and one class-two cell falls to 55
+#: variants on 123 of 300 fold curves.
+PLDDT_CONFIDENT = 70.0
+
+#: Disjoint, and reported as the figure's three curves.
+GROUPS = ["interface", "surface", "buried"]
+
+#: A subset of `interface`, so it needs its own pass.
+CONFIDENCE_GROUPS = ["interface_hc"]
+
+
+def build_row_residue_properties(canonical_rows: pd.DataFrame,
+                                 cache_path: str = RESIDUE_CACHE):
+    """`(rsa, plddt)` per canonical row, in `row_index` order, NaN where unknown.
+
+    The residue is located in the INTERACTOR chain, keyed by accession within
+    the pair record -- not by chain letter. AF3 chain order is unrelated to the
+    (interactor, partner) order of the row table, so a chain-letter lookup would
+    silently read the partner's residue for roughly half the pairs.
+    """
+    with open(cache_path, "rb") as f:
+        cache = pickle.load(f)
+
+    rsa = np.full(len(canonical_rows), np.nan)
+    plddt = np.full(len(canonical_rows), np.nan)
+    no_pair = no_chain = out_of_range = 0
+
+    for i, row in enumerate(canonical_rows.itertuples(index=False)):
+        record = residue_lookup(cache, str(row.interactor), str(row.partner))
+        if record is None:
+            no_pair += 1
+            continue
+        chain = record.get(str(row.interactor))
+        if chain is None:
+            no_chain += 1
+            continue
+        try:
+            pos0 = _mutation_pos1(str(row.mutation)) - 1
+        except ValueError:
+            continue
+        if not 0 <= pos0 < len(chain["rsa"]):
+            out_of_range += 1
+            continue
+        rsa[i] = chain["rsa"][pos0]
+        plddt[i] = chain["plddt"][pos0]
+
+    for n, what in ((no_pair, "pair absent from the residue cache"),
+                    (no_chain, "interactor accession absent from the pair record"),
+                    (out_of_range, "mutation position outside the modelled chain")):
+        if n:
+            print(f"  {n} rows: {what}")
+    return rsa, plddt
+
+
+def build_row_interface_plddt(canonical_rows: pd.DataFrame, cache_path: str = RESIDUE_CACHE,
+                              store=None):
+    """`(site_plddt, partner_contact_plddt)` per canonical row, NaN where unknown.
+
+    The second array is the mean pLDDT over the PARTNER residues the mutated
+    residue actually touches, taken from that residue's cross-chain edges in the
+    contact graph. Thresholding the site alone leaves in contacts made by a
+    disordered stretch of the partner that wraps onto a well-modelled site, which
+    is a confident-looking interface assignment resting on an unconfident
+    partner. The two are only weakly related (Spearman 0.33 over the 600
+    interface variants), so this is not a restatement of the site's own pLDDT.
+    """
+    from contact_graphs import ContactGraphStore
+
+    with open(cache_path, "rb") as f:
+        cache = pickle.load(f)
+    seq_map = _complex_id_sequences()
+    own_store = store is None
+    if own_store:
+        store = ContactGraphStore(TRAIN_EVAL_STORE)
+
+    site = np.full(len(canonical_rows), np.nan)
+    partner = np.full(len(canonical_rows), np.nan)
+    try:
+        for i, row in enumerate(canonical_rows.itertuples(index=False)):
+            seqs = seq_map.get(f"{row.interactor}-{row.partner}")
+            if seqs is None:
+                continue
+            try:
+                pos0 = _mutation_pos1(str(row.mutation)) - 1
+            except ValueError:
+                continue
+            if not 0 <= pos0 < len(seqs[0]):
+                continue
+            record = residue_lookup(cache, str(row.interactor), str(row.partner))
+            if record is None:
+                continue
+            mine = record.get(str(row.interactor))
+            theirs = record.get(str(row.partner))
+            if mine is None or pos0 >= len(mine["plddt"]):
+                continue
+            site[i] = mine["plddt"][pos0]
+            G = store.load_dense(interactor=seqs[0], partner=seqs[1])
+            if G is None or theirs is None:
+                continue
+            contacts = np.nonzero(G[pos0, len(seqs[0]):] > 0)[0]
+            contacts = contacts[contacts < len(theirs["plddt"])]
+            if len(contacts):
+                partner[i] = float(np.mean(theirs["plddt"][contacts]))
+    finally:
+        if own_store:
+            store.close()
+    return site, partner
+
+
 def compute_curves():
-    """Per-(test class, interface-vs-non-interface) ROC fold curves.
+    """Per-(test class, structural group) ROC fold curves.
 
     The reconstruction lives in `analysis.stratification_common`, shared with
-    the protein-class and pLDDT supplements; this only builds the flags.
+    the protein-class and pLDDT supplements; this only builds the groupings.
+
+    Two passes, because `interface_hc` is a subset of `interface` and
+    `stratified_fold_curves` takes one group per row.
     """
     canonical_rows = load_canonical_rows(ROWS_FILE)
     print(f"Canonical rows: {len(canonical_rows)}")
 
     flags = build_row_iface_flags(canonical_rows)       # list[bool|None]
+    rsa, plddt = build_row_residue_properties(canonical_rows)
+
     # The plotting code and the colour/label tables key on these strings, so
     # translate once here rather than carrying booleans through and mapping at
     # every use. None (no structure / position not resolvable) stays None and is
     # therefore never selected.
-    row_groups = [None if v is None else ("interface" if v else "non_interface")
-                  for v in flags]
-    groups = ["interface", "non_interface"]
-    counts = {g: row_groups.count(g) for g in groups}
-    print(f"  interface flags: {counts} | missing: {row_groups.count(None)}")
+    row_groups = []
+    for flag, r in zip(flags, rsa):
+        if flag is None:
+            row_groups.append(None)
+        elif flag:
+            row_groups.append("interface")
+        elif np.isnan(r):
+            row_groups.append(None)
+        else:
+            row_groups.append("surface" if r >= RSA_SURFACE else "buried")
 
-    return stratified_fold_curves(row_groups, groups, min_n=MIN_N,
-                                  n_seeds=N_SEEDS, rows_file=ROWS_FILE)
+    counts = {g: row_groups.count(g) for g in GROUPS}
+    print(f"  structural groups: {counts} | missing: {row_groups.count(None)}")
+
+    site_plddt, partner_plddt = build_row_interface_plddt(canonical_rows)
+    hc_groups = ["interface_hc"
+                 if (g == "interface" and sp >= PLDDT_CONFIDENT
+                     and pp >= PLDDT_CONFIDENT)
+                 else None
+                 for g, sp, pp in zip(row_groups, site_plddt, partner_plddt)]
+    print(f"  interface_hc (site and partner-contact pLDDT >= "
+          f"{PLDDT_CONFIDENT:.0f}): {hc_groups.count('interface_hc')}")
+
+    fold_curves, all_rows = stratified_fold_curves(
+        row_groups, GROUPS, min_n=MIN_N, n_seeds=N_SEEDS, rows_file=ROWS_FILE)
+    hc_curves, hc_rows = stratified_fold_curves(
+        hc_groups, CONFIDENCE_GROUPS, min_n=MIN_N, n_seeds=N_SEEDS,
+        rows_file=ROWS_FILE)
+
+    for cls in fold_curves:
+        fold_curves[cls].update(hc_curves[cls])
+        all_rows[cls].update(hc_rows[cls])
+    return fold_curves, all_rows
 
 
-# Restored: centralising the shared palette into plot_style dropped these two,
-# which are specific to this figure (interface vs non-interface), not shared.
-CURVE_COLORS = {"interface": "#1f77b4", "non_interface": "#aec7e8"}
-DISPLAY_NAMES = {"interface": "Interface", "non_interface": "Non-interface"}
+# Restored: centralising the shared palette into plot_style dropped these,
+# which are specific to this figure, not shared. Interface and its
+# high-confidence subset share a hue so the nesting reads off the legend.
+CURVE_COLORS = {"interface": "#1f77b4", "interface_hc": "#08306b",
+                "surface": "#aec7e8", "buried": "#6b6b6b"}
+# Both non-interface groups say so. Interface residues are themselves mostly
+# solvent-exposed (82% at RSA >= 25%), so a bare "Surface" reads as including
+# them, which is the confusion this three-way split exists to remove; and 18% of
+# interface residues are buried by RSA, so a bare "Buried" is equally partial.
+DISPLAY_NAMES = {"interface": "Interface", "interface_hc": "Interface (confident, pLDDT \u2265 70)",
+                 "surface": "Non-interface, surface",
+                 "buried": "Non-interface, buried"}
+
+
+#: Column order of the summary TSV, shared with
+#: `export_reconstruction_tables._export_one_robustness` so the exported
+#: CSV cannot drift from the TSV when a column is added.
+SUMMARY_COLUMNS = (
+    "class",
+    "group",
+    "mean_auroc",
+    "sem",
+    "n_variants",
+    "n_fold_curves",
+    "positive_rate",
+)
 
 
 def plot_on_axes(axes, fold_curves, all_rows_group, show_titles: bool = True):
@@ -194,6 +403,7 @@ def plot_on_axes(axes, fold_curves, all_rows_group, show_titles: bool = True):
     class_labels = CLASS_LABELS
     curve_colors = CURVE_COLORS
     display_names = DISPLAY_NAMES
+    labels = row_perturbation_labels()
 
     summary_rows = []
     for ax, cls in zip(axes, (1, 2, 3)):
@@ -201,10 +411,10 @@ def plot_on_axes(axes, fold_curves, all_rows_group, show_titles: bool = True):
 
         # Compute all curves first, then sort legend by AUC descending
         plot_entries = []
-        for key in ["interface", "non_interface"]:
+        for key in GROUPS + CONFIDENCE_GROUPS:
             curves = fold_curves[cls][key]
             n_fold_curves = len(curves)
-            n_variants = len(all_rows_group[cls][key])
+            n_variants, pos_rate = composition(all_rows_group[cls][key], labels)
             color = curve_colors[key]
 
             if curves:
@@ -220,15 +430,18 @@ def plot_on_axes(axes, fold_curves, all_rows_group, show_titles: bool = True):
                 plot_entries.append((mean_auc, key, color, mean_tpr, lo_tpr, hi_tpr,
                                      sem_auc, n_variants, n_fold_curves))
                 summary_rows.append(
-                    f"C{cls}\t{key}\t{mean_auc:.4f}\t{sem_auc:.4f}\t{n_variants}\t{n_fold_curves}"
+                    f"C{cls}\t{key}\t{mean_auc:.4f}\t{sem_auc:.4f}\t{n_variants}"
+                    f"\t{n_fold_curves}\t{pos_rate:.4f}"
                 )
             else:
-                summary_rows.append(f"C{cls}\t{key}\tnan\tnan\t{n_variants}\t0")
+                summary_rows.append(
+                    f"C{cls}\t{key}\tnan\tnan\t{n_variants}\t0\t{pos_rate:.4f}")
 
         # Sort descending by AUC before plotting (so legend is AUC-sorted)
         plot_entries.sort(reverse=True, key=lambda e: e[0])
         for mean_auc, key, color, mean_tpr, lo_tpr, hi_tpr, sem_auc, n_variants, _ in plot_entries:
-            label = f"{display_names[key]} (n={n_variants:,}, AUC={mean_auc:.3f}±{sem_auc:.3f})"
+            label = (f"{display_names[key]}\n"
+                     f"(n={n_variants:,}, AUC={mean_auc:.3f}±{sem_auc:.3f})")
             ax.plot(FPR_GRID, mean_tpr, color=color, lw=2, label=label)
             ax.fill_between(FPR_GRID, lo_tpr, hi_tpr, color=color, alpha=0.15)
 
@@ -262,7 +475,7 @@ def main():
 
     out_tsv = os.path.join(OUT_DIR, "interface_auroc_summary.tsv")
     with open(out_tsv, "w") as f:
-        f.write("class\tgroup\tmean_auroc\tsem\tn_variants\tn_fold_curves\n")
+        f.write("\t".join(SUMMARY_COLUMNS) + "\n")
         f.write("\n".join(summary_rows) + "\n")
     print(f"Saved: {out_tsv}")
 

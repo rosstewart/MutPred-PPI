@@ -104,7 +104,8 @@ import pandas as pd
 from IPython.display import Image, display
 
 sys.path.insert(0, str(REPO / "src"))
-from paths import (CONTACT_GRAPH_STORE, DATA_ROOT, DATASETS_DIR,  # noqa: E402
+from paths import (ANNOTATIONS_LICENSED_DIR, CONTACT_GRAPH_STORE,  # noqa: E402
+                   DATA_ROOT, DATASETS_DIR,
                    MAPPING_DIR, REPO_ROOT, TRAINING_EVAL_DIR, WEIGHTS_DIR,
                    describe)
 from utils.gcv_common import dataset_name  # noqa: E402
@@ -476,18 +477,38 @@ run([PY, "src/analysis/export_cv_reference.py", "--dataset", "all", "--n-seeds",
    name="export_cv_reference.py")
 
 _ANNOT = DATASETS_DIR / "annotations"
+# No `produces=` on these two: `run()` checks it before executing, so passing
+# both meant the step reported [cached] and `--force` never reached the script.
+# These scan the structure tree for newly folded complexes, so rebuilding every
+# time is the intent.
 run([PY, "src/analysis/build_plddt_cache.py",
     "--output", str(_ANNOT / "plddt_pair_cache.pkl"), "--force"],
-   produces=[_ANNOT / "plddt_pair_cache.pkl"], name="build_plddt_cache.py")
+   name="build_plddt_cache.py")
 run([PY, "src/analysis/build_confidence_cache.py",
     "--json-dir", str(DATA_ROOT), "--recursive",
     "--output", str(_ANNOT / "confidence_scores.pkl"), "--force"],
-   produces=[_ANNOT / "confidence_scores.pkl"], name="build_confidence_cache.py")
+   name="build_confidence_cache.py")
+# Per-residue RSA and pLDDT over the benchmark complexes, for the S5A
+# interface / surface / buried split. ~2,600 structures, two SASA passes each.
+run([PY, "src/analysis/build_residue_cache.py",
+    "--output", str(_ANNOT / "residue_cache.pkl"), "--workers", "24", "--force"],
+   name="build_residue_cache.py")
+# Per-residue disorder (AIUPred) for the S5B structured-only curves. Sequence
+# based, so it covers every row, unlike AF3's per-complex fraction_disordered.
+run([PY, "src/analysis/build_disorder_cache.py",
+    "--output", str(_ANNOT / "disorder_cache.pkl"), "--force"],
+   name="build_disorder_cache.py")
 run([PY, "src/analysis/build_ar_ad_gene_sets.py"],
    produces=[_ANNOT / "clingen_ar_ad_uniprot_sets.pkl"], name="build_ar_ad_gene_sets.py")
 run([PY, "src/analysis/fetch_protein_class_annotations.py"],
    produces=[_RESULTS_DIR / "protein_class" / "protein_class_annotations.csv"],
    name="fetch_protein_class_annotations.py")
+# TED and InterPro domain counts for S5C. Both are cached on disk and the fetch
+# is resumable, so a rerun costs nothing once the caches exist. This replaces
+# `pfam_domains_cache.pkl`, which nothing in the repository built.
+run([PY, "src/analysis/fetch_ted_domains.py"],
+   produces=[_RESULTS_DIR / "protein_class" / "domain_annotations.csv"],
+   name="fetch_ted_domains.py")
 
 # %% [markdown]
 # ## Step 3 -- Embeddings
@@ -859,8 +880,13 @@ _VDB_READY = any((_VDB_DIR / f"{db}_mutpred_ppi_predictions.tsv").exists()
 _DEMO_ARGS = ["--demo-tier"] if _DEMO_TIER else []
 
 if _VDB_READY:
+    # --min-partners 3 is the coverage rule stated in Methods: a variant is
+    # analysed only when at least three of its partners were tested, and only
+    # when BioGRID lists that many for it in the first place. The flag defaults
+    # to 1, so leaving it off silently ran a different analysis from the one
+    # described.
     run([PY, "src/analysis/classify_variant_dbs.py", "--output-dir", str(_VDB_DIR),
-        "--pred-dir", str(_VDB_DIR)],
+        "--pred-dir", str(_VDB_DIR), "--min-partners", "3"],
        name="classify_variant_dbs.py")
     if not _DEMO_TIER:
         # The deposited master CSV is a published artifact; it is only built from
@@ -927,6 +953,17 @@ if _VDB_READY:
         print(f"[skip] combined_robustness_figure.py: {exc}")
 
     run([PY, "src/analysis/cosmic_onco_tsg_stat_test.py"], name="cosmic_onco_tsg_stat_test.py")
+
+    # Does edgetic enrichment rise with COSMIC recurrence? Reported three ways:
+    # across the cumulative Fig 5 strata (with a bootstrap interval on rho,
+    # because those strata are nested), against each variant's raw recurrence
+    # count, and -- with --disjoint -- over non-overlapping bins. `requires` the
+    # COSMIC recurrence annotation, which needs a licence.
+    run([PY, "src/analysis/cosmic_recurrence_trend.py"],
+       produces=[_RESULTS_DIR / "cosmic_recurrence_trend" /
+                 "cosmic_recurrence_trend.tsv"],
+       requires=[ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"],
+       name="cosmic_recurrence_trend.py")
 else:
     print("[skip] Step 9 variant-DB figures: needs Step 7/8's predictions.")
 

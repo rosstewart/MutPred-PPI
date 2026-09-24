@@ -33,7 +33,8 @@ import pandas as pd
 from analysis import edgotypes  # noqa: E402
 from analysis import training_overlap  # noqa: E402
 from analysis.classify_variant_dbs import (  # noqa: E402
-    group_by_variant, load_predictions as _load_predictions)
+    group_by_variant, load_biogrid_partner_counts,
+    load_predictions as _load_predictions)
 from paths import ANNOTATIONS_DIR, DATA_ROOT, PROTEIN_CLASS_DIR, REPO_ROOT, VARIANT_DBS_DIR  # noqa: E402
 
 
@@ -118,16 +119,47 @@ def load_annotations() -> dict[str, str]:
     return dict(zip(df["uniprot_id"], df["protein_class"]))
 
 
-def load_predictions(tsv: Path,
+#: The coverage rule stated in Methods, matching `classify_variant_dbs.py`'s
+#: `--min-partners` default.
+MIN_PARTNERS = 3
+
+
+def _apply_coverage_rule(grouped: dict, db: str,
+                         min_partners: int = MIN_PARTNERS) -> dict:
+    """Drop variants BioGRID lists >= `min_partners` partners for, scored on fewer.
+
+    Same rule and same source as `classify_variant_dbs.build_arrays`: the
+    denominator comes from `{db}_rows.csv.gz`, which keeps the pairs that could
+    not be scored, because the predictions TSV holds only the scored ones.
+    """
+    try:
+        biogrid = load_biogrid_partner_counts(db)
+    except FileNotFoundError:
+        print(f"  [warn] {db}: row table unavailable, so the >= {min_partners} "
+              f"tested-partner rule is NOT applied -- these are not the "
+              f"published numbers", flush=True)
+        return grouped
+    kept = {k: v for k, v in grouped.items()
+            if not (biogrid.get(k, len(v)) >= min_partners and len(v) < min_partners)}
+    dropped = len(grouped) - len(kept)
+    if dropped:
+        print(f"  coverage rule [{db}]: dropped {dropped:,} of {len(grouped):,} "
+              f"variants scored on fewer than {min_partners} of their "
+              f">= {min_partners} BioGRID partners", flush=True)
+    return kept
+
+
+def load_predictions(tsv: Path, db: str,
                      drop_training: bool = True) -> dict[tuple[str, str], dict[str, float]]:
     """(uniprot, variant) -> {partner: score}, via the shared reader.
 
     This figure reads the raw prediction TSVs rather than the classified stratum
-    tables, so the training-overlap exclusion that `classify_variant_dbs.py`
-    applies for Fig 5/S8/S9 has to be applied here too -- otherwise the same
-    variants would be excluded from some panels of the paper and not others.
+    tables, so both filters `classify_variant_dbs.py` applies for Fig 5/S8/S10
+    have to be applied here too -- the training-overlap exclusion and the
+    partner-coverage rule -- otherwise the same variants would be excluded from
+    some panels of the paper and not others.
     """
-    grouped = group_by_variant(_load_predictions(str(tsv)))
+    grouped = _apply_coverage_rule(group_by_variant(_load_predictions(str(tsv))), db)
     if not drop_training:
         return grouped
     known = training_overlap.training_variants_or_none()
@@ -263,10 +295,10 @@ def main() -> None:
         subset_by_vt[(u, v)].add(p)
 
     print("Loading ClinVar predictions...", flush=True)
-    clinvar = load_predictions(CLINVAR_TSV)
+    clinvar = load_predictions(CLINVAR_TSV, "clinvar")
 
     print("Loading gnomAD predictions...", flush=True)
-    gnomad = load_predictions(GNOMAD_TSV)
+    gnomad = load_predictions(GNOMAD_TSV, "gnomad")
 
     # gnomAD baseline — ALL variants
     print("Computing gnomAD baseline...", flush=True)

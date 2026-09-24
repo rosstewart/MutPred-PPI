@@ -88,6 +88,12 @@ GROUPS = [
      "≥16\n(COSMIC)", "#E64A19"),
     ("cosmic_32+",           ("cosmic", "cosmic_32+"),
      "≥32\n(COSMIC)", "#B71C1C"),
+    ("cosmic_64+",           ("cosmic", "cosmic_64+"),
+     "≥64\n(COSMIC)", "#8E0000"),
+    ("cosmic_128+",          ("cosmic", "cosmic_128+"),
+     "≥128\n(COSMIC)", "#6A0F0F"),
+    ("cosmic_256+",          ("cosmic", "cosmic_256+"),
+     "≥256\n(COSMIC)", "#4A0A0A"),
     # HGMD
     ("hgmd",                 ("hgmd", "hgmd"),
      "HGMD", "#E74C3C"),
@@ -123,7 +129,7 @@ GNOMAD_REFERENCE = ("gnomad", "gnomad")
 
 # Visual separators between dataset groups (after these group keys, add spacing)
 SEPARATOR_AFTER = {
-    "clinvar_ad_pathogenic", "cosmic_32+", "hgmd_ad", "gnomad_af6", "ndd_control",
+    "clinvar_ad_pathogenic", "cosmic_256+", "hgmd_ad", "gnomad_af6", "ndd_control",
 }
 
 

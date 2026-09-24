@@ -30,7 +30,7 @@ its target exists; `ls -l figures/` shows the targets.
 | S8 | `threshold_sensitivity.png` | `analysis/threshold_sensitivity.py` | all six repositories classified |
 | S1 | `roc_sahni_fragoza_biclass_with_variance.png` | `analysis/biclass_sf_gcv.py` | GCV, `sahni_fragoza` |
 | S9 | `pathogenic_by_class.png` | `analysis/protein_class_enrichment.py` | ClinVar + gnomAD predictions, GO annotations |
-| S5 | `combined_robustness_by_class.png` | `analysis/combined_robustness_figure.py` | interface / pLDDT / protein-class stratifications |
+| S5 | `combined_robustness_by_class.png` | `analysis/combined_robustness_figure.py` | interface-surface-buried / local confidence / protein-class stratifications |
 | S10 | `stability_interaction_scatter.png` | `analysis/stability_interaction_scatter.py` | interaction + stability predictions |
 
 These labels are the ones `notebooks/reproduce_all_figures.py` prints, so the notebook's
@@ -573,9 +573,26 @@ gradient.
 
 ### Robustness analyses
 
+Two caches are required first. Both are built by Step 2 of the notebook.
+
 ```bash
-conda run -n ppi python src/analysis/interface_analysis.py             # interface vs. non-interface
-conda run -n ppi python src/analysis/plddt_stratification.py           # AF3 pLDDT quality
+# Per-residue RSA and pLDDT over the benchmark complexes (panel A)
+conda run -n ppi python src/analysis/build_residue_cache.py \
+    --output datasets/annotations/residue_cache.pkl --workers 24 --force
+
+# TED and InterPro domain counts (panel C)
+conda run -n ppi python src/analysis/fetch_ted_domains.py
+
+# Per-residue disorder from AIUPred (panel B's structured-only strata, and
+# the disorder table cited in the text)
+conda run -n ppi python src/analysis/build_disorder_cache.py \
+    --output datasets/annotations/disorder_cache.pkl --force
+```
+
+```bash
+conda run -n ppi python src/analysis/interface_analysis.py             # interface / surface / buried
+conda run -n ppi python src/analysis/disorder_stratification.py        # disordered vs. structured site (not a panel; cited in the text)
+conda run -n ppi python src/analysis/plddt_stratification.py           # local AF3 confidence
 conda run -n ppi python src/analysis/threshold_sensitivity.py
 conda run -n ppi python src/analysis/protein_class_stratification.py   # single- vs. multi-domain
 
@@ -585,6 +602,35 @@ conda run -n ppi python src/analysis/combined_robustness_figure.py
 
 Output in `results/robustness/`: each script's own `*_auroc_by_class.png` +
 `.tsv`, plus `combined_robustness_by_class.png`.
+
+Panel A compares interface residues against surface and buried residues
+separately. Relative solvent accessibility is computed on the isolated chain and
+referenced to the Tien et al. 2013 theoretical maxima; a non-interface residue
+counts as surface at RSA >= 0.25 and buried below it. A fourth curve restricts
+the interface to residues with pLDDT >= 70.
+
+Panel B bins by the mean pLDDT over the mutation's two-hop contact
+neighbourhood, which is the subgraph the model is given (`--scope local`, the
+default). `--scope complex` reproduces the earlier complex-wide mean. The two
+are only weakly related (Spearman 0.50) and they disagree: the complex mean puts
+62% of variants in the low bin and shows the low bin scoring HIGHEST, which
+inverts once confidence is measured where the model reads it. The complex mean
+is also confounded with complex size, as low-mean complexes are about 55%
+longer.
+
+Panel C counts domains with `--domain-source`, which takes `ted` (the default,
+the structure-based TED parse of the AlphaFold models), `ipr_domain` (InterPro
+restricted to `?type=domain`) or `ipr_all` (`len(set(InterPro accessions))`).
+`ipr_all` counts Family, Conserved_site and Homologous_superfamily entries
+alongside Domain ones, so it calls only 13.8% of interactors single-domain
+against 27.1% for InterPro type=domain and 36.5% for TED, and two of its six strata rest on 250 and 54 of 300 fold
+curves. `fetch_ted_domains.py` prints the three side by side.
+
+Every summary `.tsv` carries `positive_rate`, the fraction of the stratum whose
+interaction is disrupted, and the pLDDT one also carries
+`median_fraction_disordered`. The strata differ in class balance and in how
+disordered their proteins are, so an AUC difference between them is not on its
+own a statement about model skill.
 
 ## Table Generation
 

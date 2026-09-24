@@ -18,6 +18,7 @@ tmp_af3_missing/
 
 # Symlinks to large machine-local trees (scripts/link_external.sh).
 external/
+scripts/find_af3_outputs.py
 
 # Upstream checkouts of the comparison methods. Clone each repository
 # yourself; see docs/REPRODUCING_ANALYSES.md.

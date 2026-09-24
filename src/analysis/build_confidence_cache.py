@@ -3,7 +3,15 @@
 
 Consumer: src/analysis/roc_plots.py, which reads
 
-    {complex_key: {'iptm': float, 'ptm': float}}
+    {complex_key: {'iptm': float, 'ptm': float, ...}}
+
+`iptm` and `ptm` are what roc_plots.py uses. The other fields AF3 writes are
+kept rather than discarded, because the discarded `fraction_disordered` turned
+out to be the explanation for Supplementary Fig S5B: mean pLDDT and
+`fraction_disordered` correlate at Spearman rho = -0.62 over 1,945 complexes,
+and the low-pLDDT stratum is 44% disordered against 5% in the high one. A
+stratification cannot be explained from fields that were thrown away at cache
+time.
 
 where complex_key is the AF3 job name (lowercase, `_`-joined protein IDs, e.g.
 'a0a024qyx0_o43889', 'np_000014_sgta', 'o00308-1_b7z4b8').  roc_plots.py splits
@@ -36,6 +44,18 @@ DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "confidence_scores.pkl"
 
 _SUMMARY_RE = re.compile(r"^(.+?)_summary_confidences\.json$")
 
+#: Per-complex scalars AF3 writes. `iptm`/`ptm` are what roc_plots.py reads;
+#: the rest are kept so a stratification can be explained rather than only
+#: measured.
+SCALAR_FIELDS = ("iptm", "ptm", "fraction_disordered", "ranking_score", "has_clash")
+
+#: Per-chain-pair matrices, stored as the nested lists AF3 writes.
+MATRIX_FIELDS = ("chain_pair_iptm", "chain_pair_pae_min", "chain_iptm", "chain_ptm")
+
+
+def _scalar(value):
+    return float(value) if value is not None else None
+
 
 def collect_json_files(dirs: list[Path], recursive: bool) -> list[Path]:
     pattern = "**/*_summary_confidences.json" if recursive else "*_summary_confidences.json"
@@ -65,10 +85,12 @@ def build(files: list[Path]) -> dict:
             print(f"  WARNING: unreadable {path}: {exc}")
             unreadable += 1
             continue
-        entry = {
-            "iptm": float(data["iptm"]) if data.get("iptm") is not None else None,
-            "ptm": float(data["ptm"]) if data.get("ptm") is not None else None,
-        }
+        entry = {k: _scalar(data.get(k)) for k in SCALAR_FIELDS}
+        # `chain_pair_pae_min` is the minimum predicted aligned error between
+        # each pair of chains, so its off-diagonal element is an interface-PAE
+        # proxy available wherever a summary file exists -- the full PAE matrix,
+        # which ipSAE needs, is only in the `*_full_data_*.json` files.
+        entry.update({k: data.get(k) for k in MATRIX_FIELDS})
         # Earlier directories win, so --json-dir order is the precedence order.
         if key in cache:
             if cache[key] != entry:
@@ -99,10 +121,13 @@ def compare(built: dict, reference_path: Path) -> None:
             print(f"    {label} examples: {sorted(extra)[:5]}")
 
     for field in ("iptm", "ptm"):
+        # Only these two are compared: a reference built before the cache was
+        # widened carries no other field, and their absence is expected rather
+        # than a disagreement.
         diffs = [
             abs(built[k][field] - ref[k][field])
             for k in shared
-            if built[k][field] is not None and ref[k][field] is not None
+            if built[k].get(field) is not None and ref[k].get(field) is not None
         ]
         n_exact = sum(1 for d in diffs if d == 0.0)
         max_diff = max(diffs) if diffs else 0.0

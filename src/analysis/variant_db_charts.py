@@ -100,6 +100,11 @@ dataset_colors = {
     "cosmic_4+": ("#FF8F00", "#FF6F00"),
     "cosmic_8+": ("#FF5722", "#F4511E"),
     "cosmic_16+": ("#E64A19", "#D84315"),
+    # Deepest recurrence cuts, full COSMIC set only -- the ramp continues past
+    # >=32 so the tail reads as one progression rather than a separate series.
+    "cosmic_64+": ("#8E0000", "#6B0000"),
+    "cosmic_128+": ("#6A0F0F", "#4E0A0A"),
+    "cosmic_256+": ("#4A0A0A", "#330606"),
     # oncogenes
     "cosmic_onco_single": ("#FFE0B2", "#FFCC80"),
     "cosmic_onco_2+": ("#FFAB40", "#FF9100"),
@@ -142,6 +147,9 @@ dataset_labels = {
     "cosmic_8+": "Recurrence ≥ 8",
     "cosmic_16+": "Recurrence ≥ 16",
     "cosmic_32+": "Recurrence ≥ 32",
+    "cosmic_64+": "Recurrence ≥ 64",
+    "cosmic_128+": "Recurrence ≥ 128",
+    "cosmic_256+": "Recurrence ≥ 256",
     "cosmic_onco_single": "Single Occurrence",
     "cosmic_onco_2+": "Recurrence ≥ 2",
     "cosmic_onco_4+": "Recurrence ≥ 4",
@@ -168,7 +176,7 @@ dataset_enrichment_labels = {
     "asd": "ASD Case",
     "neurodev": ["NDD Case", "NDD Control"],
     "clinvar": ["Rare Benign", "Benign", "Pathogenic", "VUS", "Pathogenic AR", "Pathogenic AD"],
-    "cosmic": ["Single", "≥2", "≥4", "≥8", "≥16", "≥32"],
+    "cosmic": ["Single", "≥2", "≥4", "≥8", "≥16", "≥32", "≥64", "≥128", "≥256"],
     "cosmic_onco": ["Single", "≥2", "≥4", "≥8", "≥16", "≥32"],
     "cosmic_tsg": ["Single", "≥2", "≥4", "≥8", "≥16", "≥32"],
 }
@@ -187,8 +195,11 @@ CONFIGURATIONS = [
     ("neurodev", ["ndd_case", "ndd_control"], "upper right", "neurodev", None, ""),
     ("clinvar", ["rare_benign", "benign", "pathogenic", "vus", "ar_pathogenic", "ad_pathogenic"],
      "upper right", "clinvar", None, ""),
+    # The full COSMIC set runs to >=256; the oncogene and TSG subsets stop at
+    # >=32, where they already hold only ~130 and ~113 variants.
     ("cosmic", ["cosmic_single", "cosmic_2+", "cosmic_4+", "cosmic_8+",
-                "cosmic_16+", "cosmic_32+"], "upper right", "cosmic", None, ""),
+                "cosmic_16+", "cosmic_32+", "cosmic_64+", "cosmic_128+",
+                "cosmic_256+"], "upper right", "cosmic", None, ""),
     ("cosmic", ["cosmic_onco_single", "cosmic_onco_2+", "cosmic_onco_4+",
                 "cosmic_onco_8+", "cosmic_onco_16+", "cosmic_onco_32+"],
      "upper right", "cosmic_onco", None, "_onco"),
@@ -371,6 +382,10 @@ def _get_enrich_color(dataset, label):
         "Benign": "#1976D2", "Rare Benign": "#0D47A1", "Pathogenic": "#D32F2F", "VUS": "#9E9E9E",
         "Single": "#FFF59D", "≥2": "#FFCA28", "≥4": "#FF8F00",
         "≥8": "#FF5722", "≥16": "#E64A19", "≥32": "#B71C1C",
+        # The deepest cuts continue the same yellow->red ramp. Only the full
+        # COSMIC set reaches these; the onco/TSG branches above stop at >=32,
+        # so adding them here cannot affect those panels.
+        "≥64": "#8E0000", "≥128": "#660000", "≥256": "#3D0000",
         "AF ≤ 1e-6": "#FF7043", "1e-6 < AF ≤ 1e-5": "#FFA726",
         "1e-5 < AF ≤ 1e-4": "#FFCA28", "1e-4 < AF ≤ 1e-3": "#9CCC65",
         "1e-3 < AF ≤ 1e-2": "#66BB6A", "1e-2 < AF": "#4CAF50",
@@ -378,6 +393,10 @@ def _get_enrich_color(dataset, label):
         "AR": "#00897B", "AD": "#FFB300",
         "Pathogenic AR": "#00897B", "Pathogenic AD": "#FFB300",
     }
+    if label not in color_map:
+        # Silent grey is how three new COSMIC bins shipped uncoloured once.
+        print(f"  [warn] no enrichment colour for {dataset!r} label {label!r}; "
+              f"falling back to grey", flush=True)
     return color_map.get(label, "#666666")
 
 
@@ -545,35 +564,51 @@ def plot_enrichment_bootstrap(bootstrap_densities, sample_ns, output_dir,
 
 def _batch_bootstrap_controlled(valid_variants, k, posterior_threshold,
                                   edgotype_classes, n_iterations):
-    # Pre-convert partner scores to binary disruption arrays once
-    binary_arrays = [np.array(v) > posterior_threshold for v in valid_variants]
-    n_variants = len(binary_arrays)
-    qwt_idx = edgotype_classes.index("Quasi-wild-type")
-    qn_idx  = edgotype_classes.index("Quasi-null")
-    ed_idx  = edgotype_classes.index("Edgetic")
+    """One worker's share of the k-partner-controlled bootstrap.
 
-    results = []
-    for _ in range(n_iterations):
-        # Bootstrap resample variants
-        vi = np.random.choice(n_variants, size=n_variants, replace=True)
-        qwt = qn = ed = 0
-        for idx in vi:
-            b = binary_arrays[idx]
-            n_avail = len(b)
-            chosen = b[np.random.choice(n_avail, size=min(k, n_avail), replace=False)]
-            nd = int(np.sum(chosen))
-            if nd == k:
-                qn += 1
-            elif nd == 0:
-                qwt += 1
-            else:
-                ed += 1
-        row = [0.0] * len(edgotype_classes)
-        row[qwt_idx] = qwt / n_variants
-        row[qn_idx]  = qn  / n_variants
-        row[ed_idx]  = ed  / n_variants
-        results.append(row)
-    return np.array(results)
+    WHY THIS IS A HYPERGEOMETRIC AND NOT A LOOP
+    -------------------------------------------
+    The quantity resampled is "how many of k partners, drawn without
+    replacement, are disrupted". For a variant with `n_avail` scored partners of
+    which `n_disr` are disrupted, that count is *exactly* Hypergeometric(ngood =
+    n_disr, nbad = n_avail - n_disr, nsample = k). Nothing else about which
+    partners were picked is ever used: the edgotype depends only on the count.
+
+    So the original `np.random.choice(n_avail, size=k, replace=False)` per
+    variant per iteration -- 2e10 NumPy calls for a 200,000-variant group at
+    100,000 iterations -- collapses to one vectorised `hypergeometric` call per
+    chunk of iterations. Same distribution, not an approximation.
+
+    `valid_variants` is pre-filtered to `len(v) >= k` by the caller, so
+    `nsample = k` always holds and `nd == k` means "all k drawn were
+    disrupted", preserving the original classification exactly.
+    """
+    binary = [np.asarray(v) > posterior_threshold for v in valid_variants]
+    n_variants = len(binary)
+    n_disr = np.fromiter((int(b.sum()) for b in binary), dtype=np.int64,
+                         count=n_variants)
+    n_keep = np.fromiter((b.size for b in binary), dtype=np.int64,
+                         count=n_variants) - n_disr
+
+    qwt_idx = edgotype_classes.index("Quasi-wild-type")
+    qn_idx = edgotype_classes.index("Quasi-null")
+    ed_idx = edgotype_classes.index("Edgetic")
+
+    out = np.zeros((n_iterations, len(edgotype_classes)), dtype=float)
+    # Chunk so the (chunk x n_variants) index matrix stays a few tens of MB.
+    chunk = max(1, min(n_iterations, 4_000_000 // max(n_variants, 1)))
+    done = 0
+    while done < n_iterations:
+        m = min(chunk, n_iterations - done)
+        vi = np.random.randint(0, n_variants, size=(m, n_variants))
+        nd = np.random.hypergeometric(n_disr[vi], n_keep[vi], k)
+        qn = (nd == k).sum(axis=1)
+        qwt = (nd == 0).sum(axis=1)
+        out[done:done + m, qn_idx] = qn / n_variants
+        out[done:done + m, qwt_idx] = qwt / n_variants
+        out[done:done + m, ed_idx] = (n_variants - qn - qwt) / n_variants
+        done += m
+    return out
 
 
 def controlled_bootstrap_for_dataset(dataset, base, data_base_dir, n_partners_suffix,
@@ -624,13 +659,31 @@ def controlled_bootstrap_for_dataset(dataset, base, data_base_dir, n_partners_su
     return counts, boot
 
 
-def run_controlled_bootstrap_analysis(data_base_dir, k=3, n_bootstrap=10_000, n_jobs=-1):
+def run_controlled_bootstrap_analysis(data_base_dir, k=3, n_bootstrap=10_000,
+                                      n_jobs=-1, cached=None, cached_ns=None):
+    """Partner-controlled bootstrap, reusing `cached` where it still applies.
+
+    A cached group is reused only when it has the SAME NUMBER OF SUBGROUPS the
+    configuration now asks for -- adding a recurrence bin changes that count and
+    forces just that group to be recomputed. Every other group is untouched,
+    because its resampling does not depend on how COSMIC is binned. Only the
+    Bonferroni divisor is global, and that is recomputed at plot time from the
+    configuration rather than stored here.
+    """
     print(f"  k={k} partner-controlled bootstrap …")
     all_bootstrap, all_sample_ns = {}, {}
+    cached = cached or {}
+    cached_ns = cached_ns or {}
 
     for cfg in CONFIGURATIONS:
         base, datasets, _, save_name, _, n_partners_suffix = cfg
         if save_name == "gnomad_disease_gene":
+            continue
+        if (len(cached.get(save_name, [])) == len(datasets)
+                and save_name in cached_ns):
+            print(f"    {save_name}  [cached]")
+            all_bootstrap[save_name] = cached[save_name]
+            all_sample_ns[save_name] = cached_ns[save_name]
             continue
         print(f"    {save_name}")
         ns_list, boot_list = [], []
@@ -904,15 +957,21 @@ def main(args):
         for k in k_values:
             cache_path = os.path.join(args.output_dir, f"bootstrap_results_controlled_k{k}.pkl")
             ns_cache_path = os.path.join(args.output_dir, f"sample_ns_controlled_k{k}.pkl")
+            prev, prev_ns = {}, {}
             if os.path.exists(cache_path) and os.path.exists(ns_cache_path) and not args.recompute:
-                print(f"  Loading k={k} cache …")
                 with open(cache_path, "rb") as f:
-                    boot_k = pickle.load(f)
+                    prev = pickle.load(f)
                 with open(ns_cache_path, "rb") as f:
-                    ns_k = pickle.load(f)
+                    prev_ns = pickle.load(f)
+            if prev and all(len(prev.get(c[3], [])) == len(c[1])
+                            for c in CONFIGURATIONS if c[3] != "gnomad_disease_gene"):
+                print(f"  Loading k={k} cache …")
+                boot_k, ns_k = prev, prev_ns
             else:
+                # Incremental: only groups whose subgroup count changed are redone.
                 boot_k, ns_k = run_controlled_bootstrap_analysis(
-                    args.data_dir, k=k, n_bootstrap=args.n_bootstrap, n_jobs=args.n_jobs
+                    args.data_dir, k=k, n_bootstrap=args.n_bootstrap,
+                    n_jobs=args.n_jobs, cached=prev, cached_ns=prev_ns
                 )
                 with open(cache_path, "wb") as f:
                     pickle.dump(boot_k, f)

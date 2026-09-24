@@ -147,9 +147,12 @@ ENRICHMENT_GROUPS = [
         ("Pathogenic AR", "ar_pathogenic"),
         ("Pathogenic AD", "ad_pathogenic"),
     ]),
+    # Full COSMIC runs to >=256 (the oncogene and TSG subsets below stop at
+    # >=32, where they already hold ~130 and ~113 variants).
     ("COSMIC", "cosmic", [(lbl, f"cosmic_{st}") for lbl, st in
         [("Single", "single"), ("\u22652", "2+"), ("\u22654", "4+"),
-         ("\u22658", "8+"), ("\u226516", "16+"), ("\u226532", "32+")]]),
+         ("\u22658", "8+"), ("\u226516", "16+"), ("\u226532", "32+"),
+         ("\u226564", "64+"), ("\u2265128", "128+"), ("\u2265256", "256+")]]),
     ("COSMIC (Onco)", "cosmic", [(lbl, f"cosmic_onco_{st}") for lbl, st in
         [("Single", "single"), ("\u22652", "2+"), ("\u22654", "4+"),
          ("\u22658", "8+"), ("\u226516", "16+"), ("\u226532", "32+")]]),

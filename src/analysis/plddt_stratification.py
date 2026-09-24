@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """pLDDT quality stratification for Reviewer 1.
 
-Bins test complexes by the mean pLDDT of OUR OWN AF3 model of that complex,
-then computes AUROC separately for each bin across 30 seeds × 10 folds = up to
-300 per-fold ROC curves.
+Bins test variants by the confidence of the structure AROUND THE MUTATION, then
+computes AUROC separately for each bin across 30 seeds × 10 folds = up to 300
+per-fold ROC curves. By default that is the mean pLDDT over the mutation's
+two-hop contact neighbourhood, matching the subgraph the model is given;
+`--scope complex` reproduces the earlier complex-wide mean instead.
 
 The confidence values come from datasets/annotations/plddt_pair_cache.pkl, a
 pair-keyed `{"A__B": float}` map built by src/analysis/build_plddt_cache.py from
@@ -21,9 +23,21 @@ Confidence bins (per complex):
   Medium: 70 ≤ mean pLDDT < 85
   High:   mean pLDDT ≥ 85
 
+THE BINS ALSO DIFFER IN COMPOSITION. Low local confidence and intrinsic
+disorder are close to the same thing at this granularity: 80% of the low bin's
+variants sit in a disordered residue, against 12% of the high bin's.
+`disordered_rate` is reported per bin beside `positive_rate` so that is visible
+rather than implicit.
+
+Disorder comes from AIUPred (see build_disorder_cache.py), not from AF3's own
+`fraction_disordered`, which is one scalar per complex and covers 66% of rows
+where AIUPred covers all of them and resolves the mutated residue itself.
+
 Output:
   results/robustness/plddt_auroc_by_class.png
   results/robustness/plddt_auroc_summary.tsv
+      columns: class, plddt_bin, mean_auroc, sem, n_variants, n_fold_curves,
+               positive_rate, disordered_rate
 
 Usage:
   conda run -n ppi python src/analysis/plddt_stratification.py
@@ -31,6 +45,7 @@ Usage:
 
 import os
 import pickle
+import re
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -44,7 +59,8 @@ from paths import ANNOTATIONS_DIR, DATA_ROOT, GCV_RESULTS_DIR, REPO_ROOT, ROBUST
 from analysis.build_plddt_cache import lookup  # pair-keyed cache accessor (either chain order)
 from utils.legacy_guard import DATASET_SUFFIX  # noqa: E402
 from analysis.stratification_common import (  # noqa: E402
-    load_canonical_rows, stratified_fold_curves)
+    composition, load_canonical_rows, row_perturbation_labels,
+    stratified_fold_curves)
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -72,6 +88,127 @@ PLDDT_BINS = [
 ]
 BIN_COLORS = {"low": "#d6604d", "medium": "#f4a582", "high": "#4393c3"}
 BIN_LABELS = {"low": "Low (<70)", "medium": "Medium (70–85)", "high": "High (≥85)"}
+
+DISORDER_CACHE = str(ANNOTATIONS_DIR / "disorder_cache.pkl")
+RESIDUE_CACHE = str(ANNOTATIONS_DIR / "residue_cache.pkl")
+
+#: Confidence scope. `local` averages pLDDT over the mutation site's `HOPS`-hop
+#: contact neighbourhood; `complex` averages over the whole AlphaFold 3 model.
+#:
+#: LOCAL IS THE DEFAULT BECAUSE IT IS WHAT THE MODEL READS. MutPred-PPI consumes
+#: the two-hop subgraph around the mutation (`utils.mutpred_ppi_data`,
+#: `two_hop=True`), so a complex-wide mean scores confidence over residues the
+#: prediction never touches. The two are only weakly related, Spearman 0.50, and
+#: they disagree about the answer: under the complex mean the low-confidence bin
+#: has the HIGHEST AUC, which inverts once confidence is measured where the model
+#: looks. The complex mean is also confounded with complex size, since low-mean
+#: complexes are about 55% longer, and it bins 62/28/10 where the local measure
+#: bins 36/31/34.
+SCOPE_CHOICES = ("local", "complex")
+SCOPE = "local"
+HOPS = 2
+
+
+def _interactor_sequences(dataset: str = CANONICAL_DATASET) -> dict:
+    """`'{interactor}-{partner}'` -> interactor sequence.
+
+    Built from the canonical table's own columns and matched whole, for the same
+    reason `complex_id_pairs()` is: 261 of the complex_ids contain more than one
+    `-`, so splitting the string mis-assigns both proteins for every one.
+    """
+    from utils.gcv_common import dataset_config, load_data
+    df = load_data(dataset_config(dataset))
+    return {f"{i}-{p}": str(a) for i, p, a in
+            zip(df["interactor"], df["partner"], df["interactor_sequence"])}
+
+
+def build_row_local_plddt(canonical_rows, hops: int = HOPS,
+                          cache_path: str = RESIDUE_CACHE) -> np.ndarray:
+    """Mean pLDDT over the mutation site's `hops`-hop contact neighbourhood.
+
+    The neighbourhood spans BOTH chains: a site's contacts include cross-chain
+    edges, which is the point -- the confidence of the partner surface it sits
+    against is part of what the model reads. Residue pLDDT comes from the
+    residue cache (see build_residue_cache.py) and the adjacency from the same
+    contact-graph store the model is built on, so this is the input's own
+    confidence rather than a re-derivation of it.
+    """
+    from analysis.build_residue_cache import lookup as residue_lookup
+    from analysis.interface_analysis import (TRAIN_EVAL_STORE,
+                                             _complex_id_sequences, _mutation_pos1)
+    from contact_graphs import ContactGraphStore
+
+    with open(cache_path, "rb") as f:
+        cache = pickle.load(f)
+    seqs = _complex_id_sequences()
+    store = ContactGraphStore(TRAIN_EVAL_STORE)
+    per_pair: dict = {}
+    out = np.full(len(canonical_rows), np.nan)
+    try:
+        for i, row in enumerate(canonical_rows.itertuples(index=False)):
+            key = f"{row.interactor}-{row.partner}"
+            pair_seqs = seqs.get(key)
+            record = residue_lookup(cache, str(row.interactor), str(row.partner))
+            if pair_seqs is None or record is None:
+                continue
+            if key not in per_pair:
+                G = store.load_dense(interactor=pair_seqs[0], partner=pair_seqs[1])
+                mine = record.get(str(row.interactor))
+                theirs = record.get(str(row.partner))
+                if G is None or mine is None or theirs is None:
+                    per_pair[key] = None
+                else:
+                    plddt = np.concatenate([mine["plddt"], theirs["plddt"]])
+                    n = min(len(plddt), G.shape[0])
+                    per_pair[key] = ((G[:n, :n] > 0), plddt[:n])
+            entry = per_pair[key]
+            if entry is None:
+                continue
+            adj, plddt = entry
+            try:
+                pos0 = _mutation_pos1(str(row.mutation)) - 1
+            except ValueError:
+                continue
+            if not 0 <= pos0 < len(plddt):
+                continue
+            reach = adj[pos0].copy()
+            reach[pos0] = True
+            for _ in range(hops - 1):
+                reach = reach | adj[reach].any(axis=0)
+            out[i] = float(plddt[reach].mean())
+    finally:
+        store.close()
+    return out
+
+
+def build_row_disorder_state(canonical_rows) -> np.ndarray:
+    """`'disordered'` / `'structured'` / None per canonical row.
+
+    The state of the MUTATED RESIDUE, from AIUPred at its own calibrated cutoff
+    (see build_disorder_cache.py). Rows whose sequence or position cannot be
+    resolved stay None and are therefore never selected.
+    """
+    from analysis.build_disorder_cache import DISORDER_CUTOFF, residue_disorder
+
+    if not os.path.exists(DISORDER_CACHE):
+        print(f"  WARNING: {DISORDER_CACHE} not found; structured-only curves "
+              f"will be empty (run build_disorder_cache.py)", flush=True)
+        return np.array([None] * len(canonical_rows), dtype=object)
+
+    with open(DISORDER_CACHE, "rb") as f:
+        cache = pickle.load(f)
+    seqs = _interactor_sequences()
+    out = []
+    for row in canonical_rows.itertuples(index=False):
+        seq = seqs.get(f"{row.interactor}-{row.partner}")
+        score = None
+        if seq is not None:
+            m = re.search(r"(\d+)", str(row.mutation))
+            if m:
+                score = residue_disorder(cache, seq, int(m.group(1)))
+        out.append(None if score is None else
+                   ("disordered" if score > DISORDER_CUTOFF else "structured"))
+    return np.array(out, dtype=object)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -168,7 +305,7 @@ def build_row_plddt_bins(canonical_rows: pd.DataFrame, plddt_cache: dict) -> lis
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def compute_curves():
+def compute_curves(scope: str = None):
     """Per-(test class, pLDDT bin) ROC fold curves.
 
     The reconstruction lives in `analysis.stratification_common`, shared with
@@ -177,23 +314,43 @@ def compute_curves():
     -- and `load_canonical_rows` now VERIFIES that equivalence rather than
     asserting it in a comment, which is what this script used to do.
     """
+    scope = scope or SCOPE
+    if scope not in SCOPE_CHOICES:
+        raise ValueError(f"unknown scope {scope!r}; expected one of {SCOPE_CHOICES}")
     canonical_rows = load_canonical_rows(CANONICAL_ROWS_PATH)
     print(f"Canonical rows: {len(canonical_rows)}")
 
-    print("Loading pLDDT cache...")
-    with open(PLDDT_CACHE, "rb") as f:
-        plddt_cache = pickle.load(f)
-    print(f"  {len(plddt_cache)} AF3 complexes in cache")
+    if scope == "local":
+        print(f"Computing {HOPS}-hop neighbourhood pLDDT...", flush=True)
+        values = build_row_local_plddt(canonical_rows)
+        row_plddt_bins = [None if not np.isfinite(v) else bin_plddt(float(v))
+                          for v in values]
+    else:
+        print("Loading pLDDT cache (complex means)...")
+        with open(PLDDT_CACHE, "rb") as f:
+            plddt_cache = pickle.load(f)
+        print(f"  {len(plddt_cache)} AF3 complexes in cache")
+        row_plddt_bins = build_row_plddt_bins(canonical_rows, plddt_cache)
 
-    row_plddt_bins = build_row_plddt_bins(canonical_rows, plddt_cache)
     bin_names = [b for b, *_ in PLDDT_BINS]
     bin_counts = {b: sum(1 for v in row_plddt_bins if v == b) for b in bin_names}
     none_count = sum(1 for v in row_plddt_bins if v is None)
     print(f"  pLDDT bins: {bin_counts} | missing: {none_count}")
 
     return stratified_fold_curves(row_plddt_bins, bin_names, min_n=MIN_N,
-                                  n_seeds=N_SEEDS,
-                                  rows_file=CANONICAL_ROWS_PATH)
+                                  n_seeds=N_SEEDS, rows_file=CANONICAL_ROWS_PATH)
+
+
+SUMMARY_COLUMNS = (
+    "class",
+    "plddt_bin",
+    "mean_auroc",
+    "sem",
+    "n_variants",
+    "n_fold_curves",
+    "positive_rate",
+    "disordered_rate",
+)
 
 
 def plot_on_axes(axes, fold_curves, all_rows_bin, show_titles: bool = True):
@@ -204,6 +361,9 @@ def plot_on_axes(axes, fold_curves, all_rows_bin, show_titles: bool = True):
     bin_names = [b for b, *_ in PLDDT_BINS]
     class_labels = CLASS_LABELS
 
+    labels = row_perturbation_labels()
+    disorder_state = build_row_disorder_state(load_canonical_rows(CANONICAL_ROWS_PATH))
+
     summary_rows = []
     for ax, cls in zip(axes, (1, 2, 3)):
         ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
@@ -213,7 +373,15 @@ def plot_on_axes(axes, fold_curves, all_rows_bin, show_titles: bool = True):
         for bin_name in bin_names:
             curves = fold_curves[cls][bin_name]
             n_fold_curves = len(curves)
-            n_variants = len(all_rows_bin[cls][bin_name])
+            n_variants, pos_rate = composition(all_rows_bin[cls][bin_name], labels)
+            idx = sorted(all_rows_bin[cls][bin_name])
+            # Fraction of the stratum whose mutated residue is disordered. Zero
+            # by construction for the structured-only subsets, which is the
+            # cheapest check that the second pass selected what it meant to.
+            sel = disorder_state[np.asarray(idx)] if idx else np.array([], dtype=object)
+            known = sel[sel != None]  # noqa: E711 -- object array, `is not None` does not vectorise
+            frac_dis = (float((known == "disordered").mean()) if len(known)
+                        else float("nan"))
             color = BIN_COLORS[bin_name]
 
             if curves:
@@ -226,18 +394,21 @@ def plot_on_axes(axes, fold_curves, all_rows_bin, show_titles: bool = True):
                 per_fold_aucs = [np.trapz(c, FPR_GRID) for c in curves]
                 mean_auc = float(np.mean(per_fold_aucs))
                 sem_auc = float(np.std(per_fold_aucs, ddof=1) / np.sqrt(N_SEM_DIVISOR))
-                plot_entries.append((mean_auc, bin_name, color, mean_tpr, lo_tpr, hi_tpr,
-                                     sem_auc, n_variants, n_fold_curves))
+                plot_entries.append((mean_auc, bin_name, color, mean_tpr,
+                                     lo_tpr, hi_tpr, sem_auc, n_variants,
+                                     n_fold_curves))
                 summary_rows.append(
-                    f"C{cls}\t{bin_name}\t{mean_auc:.4f}\t{sem_auc:.4f}\t{n_variants}\t{n_fold_curves}"
+                    f"C{cls}\t{bin_name}\t{mean_auc:.4f}\t{sem_auc:.4f}\t{n_variants}\t{n_fold_curves}\t{pos_rate:.4f}\t{frac_dis:.4f}"
                 )
             else:
-                summary_rows.append(f"C{cls}\t{bin_name}\tnan\tnan\t{n_variants}\t0")
+                summary_rows.append(f"C{cls}\t{bin_name}\tnan\tnan\t{n_variants}\t0\t{pos_rate:.4f}\t{frac_dis:.4f}")
 
         # Sort descending by AUC before plotting (so legend is AUC-sorted)
         plot_entries.sort(reverse=True, key=lambda e: e[0])
-        for mean_auc, bin_name, color, mean_tpr, lo_tpr, hi_tpr, sem_auc, n_variants, _ in plot_entries:
-            label = f"{BIN_LABELS[bin_name]} (n={n_variants:,}, AUC={mean_auc:.3f}±{sem_auc:.3f})"
+        for (mean_auc, bin_name, color, mean_tpr, lo_tpr, hi_tpr, sem_auc,
+             n_variants, _) in plot_entries:
+            label = (f"{BIN_LABELS[bin_name]}\n"
+                     f"(n={n_variants:,}, AUC={mean_auc:.3f}±{sem_auc:.3f})")
             ax.plot(FPR_GRID, mean_tpr, color=color, lw=2, label=label)
             ax.fill_between(FPR_GRID, lo_tpr, hi_tpr, color=color, alpha=0.15)
 
@@ -258,8 +429,15 @@ def plot_on_axes(axes, fold_curves, all_rows_bin, show_titles: bool = True):
 
 
 def main():
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--scope", choices=SCOPE_CHOICES, default=SCOPE,
+                   help=f"confidence scope (default: {SCOPE})")
+    args = p.parse_args()
+
     os.makedirs(OUT_DIR, exist_ok=True)
-    fold_curves, all_rows_bin = compute_curves()
+    fold_curves, all_rows_bin = compute_curves(args.scope)
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), sharey=True)
     summary_rows = plot_on_axes(axes, fold_curves, all_rows_bin)
@@ -271,7 +449,7 @@ def main():
 
     out_tsv = os.path.join(OUT_DIR, "plddt_auroc_summary.tsv")
     with open(out_tsv, "w") as f:
-        f.write("class\tplddt_bin\tmean_auroc\tsem\tn_variants\tn_fold_curves\n")
+        f.write("\t".join(SUMMARY_COLUMNS) + "\n")
         f.write("\n".join(summary_rows) + "\n")
     print(f"Saved: {out_tsv}")
 

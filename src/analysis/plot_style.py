@@ -59,10 +59,12 @@ METHOD_COLORS = {
     "MutPred2":          "#bf812d",
 }
 
+#: Panel titles for the C1/C2/C3 test classes. Title case, matching the blind
+#: test figures, which spell them out the same way.
 CLASS_LABELS = {
-    1: "Class one",
-    2: "Class two",
-    3: "Class three",
+    1: "Class One",
+    2: "Class Two",
+    3: "Class Three",
 }
 
 

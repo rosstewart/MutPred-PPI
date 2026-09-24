@@ -1,7 +1,19 @@
 #!/usr/bin/env python
-"""Combined robustness figure: interface / pLDDT / single-vs-multi-domain, one
-figure with 3 rows (A/B/C), each row the existing 3-panel (C1/C2/C3) ROC
-comparison from the corresponding standalone script.
+"""Combined robustness figure, one figure with 4 rows (A/B/C/D), each row the
+existing 3-panel (C1/C2/C3) ROC comparison from the corresponding standalone
+script.
+
+ROW ORDER runs from the residue outward:
+
+  (A) interface / non-interface surface / non-interface buried   residue context
+  (B) local AlphaFold 3 confidence around the mutation           neighbourhood
+  (C) single- vs. multi-domain interactor                        protein
+
+`disorder_stratification.py` is deliberately NOT a row here. Once the confidence
+row switched from the complex mean to the two-hop neighbourhood, its
+low-confidence bin became 80% disordered sites, so a disorder row would have
+restated row B on 82% of variants. That script still runs standalone and its
+table is still exported, because the disorder numbers are cited in the text.
 
 Reuses compute_curves()/plot_on_axes() from each of the three underlying
 scripts — no duplicated computation or plotting logic. Each standalone script

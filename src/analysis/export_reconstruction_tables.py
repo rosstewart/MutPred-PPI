@@ -279,7 +279,7 @@ def export_blind_test():
 # Robustness figures (interface / pLDDT / protein-class stratification)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _export_one_robustness(name: str, module, group_order):
+def _export_one_robustness(name: str, module):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -295,16 +295,38 @@ def _export_one_robustness(name: str, module, group_order):
     summary_rows = module.plot_on_axes(axes, fold_curves, group_data)
     plt.close(fig)
 
+    # Columns come from the module rather than being spelled out here. They used
+    # to be unpacked into six fixed names, so adding `positive_rate` to the
+    # figure's TSV would have made this raise instead of exporting the new
+    # column -- the Zenodo CSVs would have silently stopped matching the figure.
+    columns = list(module.SUMMARY_COLUMNS)
+    numeric = {'mean_auroc', 'sem', 'positive_rate', 'median_fraction_disordered'}
     summary_records = []
     for row in summary_rows:
-        cls_str, group, mean_auc, sem, n_variants, n_fold = row.split('\t')
-        summary_records.append({
-            'class': cls_str, 'group': group,
-            'auc': float(mean_auc) if mean_auc != 'nan' else np.nan,
-            'sem': float(sem) if sem != 'nan' else np.nan,
-            'n_variants': int(n_variants), 'n_fold_curves': int(n_fold),
-        })
+        values = row.split('\t')
+        if len(values) != len(columns):
+            raise ValueError(
+                f"{name}: plot_on_axes emitted {len(values)} fields but "
+                f"{module.__name__}.SUMMARY_COLUMNS names {len(columns)}; the two "
+                f"must be updated together.")
+        record = {}
+        for col, value in zip(columns, values):
+            if col in numeric:
+                record[col] = float(value) if value != 'nan' else np.nan
+            elif col in ('n_variants', 'n_fold_curves'):
+                record[col] = int(value)
+            else:
+                record[col] = value
+        summary_records.append(record)
     summary_df = pd.DataFrame(summary_records)
+
+    # The group column is named `group` in two modules and `plddt_bin` in the
+    # third; the exported CSV uses `group` throughout, as its README says.
+    group_col = columns[1]
+    if group_col != 'group':
+        summary_df = summary_df.rename(columns={group_col: 'group'})
+    summary_df = summary_df.rename(columns={'mean_auroc': 'auc'})
+    group_order = list(dict.fromkeys(summary_df['group']))
     summary_path = os.path.join(OUT_DIR, f'robustness_{name}_summary.csv')
     summary_df.to_csv(summary_path, index=False)
 
@@ -336,17 +358,16 @@ def _export_one_robustness(name: str, module, group_order):
 
 def export_robustness():
     os.makedirs(OUT_DIR, exist_ok=True)
+    import disorder_stratification
     import interface_analysis
     import plddt_stratification
     import protein_class_stratification
 
     written = []
-    written += _export_one_robustness('interface', interface_analysis,
-                                       ['interface', 'non_interface'])
-    written += _export_one_robustness('plddt', plddt_stratification,
-                                       ['low', 'medium', 'high'])
-    written += _export_one_robustness('protein_class', protein_class_stratification,
-                                       ['single', 'multi'])
+    written += _export_one_robustness('interface', interface_analysis)
+    written += _export_one_robustness('disorder', disorder_stratification)
+    written += _export_one_robustness('plddt', plddt_stratification)
+    written += _export_one_robustness('protein_class', protein_class_stratification)
     return written
 
 
@@ -369,9 +390,10 @@ conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure al
 | Fig 3, S1 (GCV method comparison ROC curves) | `gcv_{method}.csv` (one per method/dataset combination plotted in `roc_plots.py`) | `vt_id, interactor, partner, variant, gcv_seed, fold, test_class, true_label, predicted_score`. `vt_id`/`interactor`/`partner`/`variant` are resolved from the canonical rows CSV in `datasets/cv_reference/` by positional index, for each of the three canonical GCV datasets. Where a fold/class row count does not match the pkl's prediction count -- a method may drop rows it cannot score -- that slice keeps its preds/labels and leaves those 4 columns blank rather than risk a misaligned join. Recompute AUC per (gcv_seed, fold, test_class) with `sklearn.metrics.roc_auc_score`; average across seeds/folds per test_class to reproduce Fig 3/S1. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure gcv` |
 | Fig 4, S2 (VarChAMP blind test ROC curves) | `blind_test_{method}.csv` (one per method key found in `results/varchamp_seqcnf_newvar_eval/`) | `vt_id, interactor, partner, variant, test_class, true_label, predicted_score` (test_class in {C1,C2,C3}). Recompute AUC per test_class with `sklearn.metrics.roc_auc_score` to reproduce Fig 4/S2. | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure blind_test` |
 | Fig 5, S4, S-stability (variant-DB disease-enrichment / stability-interaction figures) | `../master_variant_db_predictions.csv.gz` (one row per interactor/variant/partner triplet, all-data-model predictions + disease-label flags) | See that file's own header row. | (already generated; not produced by this script) |
-| Interface-residue robustness panel | `robustness_interface_curves.csv`, `robustness_interface_summary.csv` | curves: `class, group (interface/non_interface), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure robustness` |
-| pLDDT-stratification robustness panel | `robustness_plddt_curves.csv`, `robustness_plddt_summary.csv` | curves: `class, group (low/medium/high), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | (same as above) |
-| Protein-class (single- vs multi-domain) robustness panel | `robustness_protein_class_curves.csv`, `robustness_protein_class_summary.csv` | curves: `class, group (single/multi), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves` | (same as above) |
+| Interface-residue robustness panel | `robustness_interface_curves.csv`, `robustness_interface_summary.csv` | curves: `class, group (interface/surface/buried/interface_hc), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves, positive_rate` | `conda run -n ppi python src/analysis/export_reconstruction_tables.py --figure robustness` |
+| Local-confidence robustness panel | `robustness_plddt_curves.csv`, `robustness_plddt_summary.csv` | curves: `class, group (low/medium/high), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves, positive_rate, disordered_rate`. Bins are the mean pLDDT over the mutation's two-hop contact neighbourhood. | (same as above) |
+| Disorder stratification (not a figure panel) | `robustness_disorder_curves.csv`, `robustness_disorder_summary.csv` | curves: `class, group (disordered/structured), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves, positive_rate`. Disordered sites are defined by AIUPred at its calibrated cutoff of 0.5. | (same as above) |
+| Protein-class (single- vs multi-domain) robustness panel | `robustness_protein_class_curves.csv`, `robustness_protein_class_summary.csv` | curves: `class, group (single/multi), fpr, mean_tpr, sem_tpr`; summary: `class, group, auc, sem, n_variants, n_fold_curves, positive_rate` | (same as above) |
 
 Notes:
 - `test_class` for GCV/blind-test tables follows the manuscript's C1/C2/C3 convention:

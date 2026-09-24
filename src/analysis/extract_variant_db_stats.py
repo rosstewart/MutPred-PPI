@@ -54,7 +54,6 @@ GNOMAD_AF_FILE   = ANNOTATIONS_DIR / "gnomad_allele_frequencies.tsv"
 VT_TO_TUMOR_SITE = ANNOTATIONS_LICENSED_DIR / "vt_to_tumor_site.pkl"
 ONCO_TSG_FILE    = ANNOTATIONS_LICENSED_DIR / "onco_tsg_dict.pkl"
 NEURODEV_LABELS  = ANNOTATIONS_DIR / "neurodev" / "variant_label_dict.pkl"
-HGMD_SUBSET      = ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl"
 AR_AD_FILE       = ANNOTATIONS_DIR / "clingen_ar_ad_uniprot_sets.pkl"
 
 
@@ -97,6 +96,47 @@ def _drop_training_overlap(df: pd.DataFrame, tsv_path) -> pd.DataFrame:
     if n:
         print(f"  training-overlap filter [{tsv_path.name if hasattr(tsv_path, 'name') else tsv_path}]: "
               f"dropped {n:,} of {len(df):,} rows ({100 * n / len(df):.2f}%)", flush=True)
+    return df.loc[keep].reset_index(drop=True)
+
+
+#: The coverage rule stated in Methods, matching `classify_variant_dbs.py`'s
+#: `--min-partners` default. Table S1 has to apply it too: without it the table
+#: counted 11,946 ClinVar Pathogenic AD variants where Fig 5 plotted 11,744,
+#: and a reader comparing the two would have found them contradicting.
+MIN_PARTNERS = 3
+
+
+def _apply_coverage_rule(df: pd.DataFrame, db: str,
+                         min_partners: int = MIN_PARTNERS) -> pd.DataFrame:
+    """Drop variants BioGRID lists >= `min_partners` partners for, scored on fewer.
+
+    The BioGRID counts come from `{db}_rows.csv.gz`, which holds the FULL
+    enumeration including the pairs that could not be scored -- the predictions
+    TSV holds only the scored ones, so the denominator has to come from the row
+    table or the rule cannot be evaluated at all.
+    """
+    from analysis.classify_variant_dbs import load_biogrid_partner_counts
+
+    if df.empty:
+        return df
+    try:
+        biogrid = load_biogrid_partner_counts(db)
+    except FileNotFoundError:
+        print(f"  [warn] {db}: row table unavailable, so the >= {min_partners} "
+              f"tested-partner rule is NOT applied and these counts will not "
+              f"match the enrichment figures", flush=True)
+        return df
+
+    scored = df.groupby(["interactor", "variant"])["partner"].nunique()
+    drop = {key for key, n in scored.items()
+            if biogrid.get(key, n) >= min_partners and n < min_partners}
+    if not drop:
+        return df
+    keep = [(i, v) not in drop
+            for i, v in zip(df["interactor"].astype(str), df["variant"].astype(str))]
+    print(f"  coverage rule [{db}]: dropped {len(drop):,} variants scored on "
+          f"fewer than {min_partners} of their >= {min_partners} BioGRID partners",
+          flush=True)
     return df.loc[keep].reset_index(drop=True)
 
 
@@ -148,6 +188,7 @@ def main() -> None:
     # ── ClinVar ──────────────────────────────────────────────────────────────
     print("Processing ClinVar...", flush=True)
     cv_df = parse_preds(prediction_tsv("clinvar"))
+    cv_df = _apply_coverage_rule(cv_df, "clinvar")
     subsets = {k: pickle.load(open(v, "rb")) for k, v in CLINVAR_SUBSETS.items()}
     rare_benign_set = set()
     if BENIGN_AF_FILE.exists():
@@ -192,6 +233,7 @@ def main() -> None:
             and ONCO_TSG_FILE.exists()):
         print("Processing COSMIC...", flush=True)
         cos_df = parse_preds(prediction_tsv("cosmic"))
+        cos_df = _apply_coverage_rule(cos_df, "cosmic")
         # Despite the file name, the list holds one entry PER OCCURRENCE (a site repeats once per sample), so len() is the recurrence -- the number of times the variant was observed, NOT the number of distinct tissues.
         vt_to_sites = pickle.load(open(VT_TO_TUMOR_SITE, "rb"))
         onco_tsg    = pickle.load(open(ONCO_TSG_FILE, "rb"))
@@ -209,9 +251,15 @@ def main() -> None:
         thresholds = [1, 2, 4, 8, 16, 32]
         labels_rec = ["Single-occurrence", r"Recurrence $\geq$ 2", r"Recurrence $\geq$ 4",
                       r"Recurrence $\geq$ 8", r"Recurrence $\geq$ 16", r"Recurrence $\geq$ 32"]
+        # The full set is reported to >=256; the oncogene and TSG subsets stop at
+        # >=32, matching the strata classify_variant_dbs.py writes for each.
+        thresholds_all = thresholds + [64, 128, 256]
+        labels_rec_all = labels_rec + [r"Recurrence $\geq$ 64",
+                                       r"Recurrence $\geq$ 128",
+                                       r"Recurrence $\geq$ 256"]
 
         lines += [r"\multicolumn{6}{l}{\textit{COSMIC}} \\"]
-        for thr, lbl in zip(thresholds, labels_rec):
+        for thr, lbl in zip(thresholds_all, labels_rec_all):
             sub = cos_df[cos_df["recurrence"] == thr] if thr == 1 else cos_df[cos_df["recurrence"] >= thr]
             lines.append(row(lbl, stats(sub)))
         lines.append(r"\hline")
@@ -237,19 +285,21 @@ def main() -> None:
     hgmd_tsv = prediction_tsv("hgmd")
     if hgmd_tsv.exists():
         hgmd_df = parse_preds(hgmd_tsv)
+        hgmd_df = _apply_coverage_rule(hgmd_df, "hgmd")
         lines += [r"\multicolumn{6}{l}{\textit{HGMD}} \\"]
         lines.append(row("All", stats(hgmd_df)))
-        if HGMD_SUBSET.exists():
-            hgmd_subset = pickle.load(open(HGMD_SUBSET, "rb"))
-            ar_hgmd_set = {(u, v, p) for (u, v, p) in hgmd_subset if u in ar_uniprots}
-            ad_hgmd_set = {(u, v, p) for (u, v, p) in hgmd_subset if u in ad_uniprots}
-            lines.append(row("AR", stats(hgmd_df, ar_hgmd_set)))
-            lines.append(row("AD", stats(hgmd_df, ad_hgmd_set)))
+        # Every HGMD row is a DM variant, so the AR/AD split is a property of
+        # the interactor alone. This used to select through
+        # `hgmd_variant_subset.pkl`, which is the AlphaFold folding-budget cap
+        # rather than an HGMD variant list; see `classify_variant_dbs.py`.
+        lines.append(row("AR", stats(hgmd_df[hgmd_df["interactor"].isin(ar_uniprots)])))
+        lines.append(row("AD", stats(hgmd_df[hgmd_df["interactor"].isin(ad_uniprots)])))
         lines.append(r"\hline")
 
     # ── gnomAD ────────────────────────────────────────────────────────────────
     print("Processing gnomAD...", flush=True)
     gn_df = parse_preds(prediction_tsv("gnomad"))
+    gn_df = _apply_coverage_rule(gn_df, "gnomad")
     af_dict = {}
     with open(GNOMAD_AF_FILE) as f:
         for ln in f:
@@ -284,6 +334,7 @@ def main() -> None:
     # ── NDD & ASD ─────────────────────────────────────────────────────────────
     print("Processing NDD / ASD...", flush=True)
     ndd_df = parse_preds(prediction_tsv("neurodev"))
+    ndd_df = _apply_coverage_rule(ndd_df, "neurodev")
     label_dict = pickle.load(open(NEURODEV_LABELS, "rb"))
     ndd_case_set, ndd_ctrl_set = set(), set()
     for (u, v, p) in ndd_df.apply(
@@ -306,7 +357,8 @@ def main() -> None:
     asd_tsv = prediction_tsv("asd")
     lines += [r"\multicolumn{6}{l}{\textit{Autism Spectrum Disorder}} \\"]
     if asd_tsv.exists():
-        lines.append(row("Case", stats(parse_preds(asd_tsv))))
+        lines.append(row("Case", stats(_apply_coverage_rule(
+            parse_preds(asd_tsv), "asd"))))
     else:
         print(f"  ASD: {asd_tsv} not found, row omitted", flush=True)
     lines.append(r"\hline")

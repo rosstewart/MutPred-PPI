@@ -15,7 +15,7 @@ Output directory structure:
   {output_dir}/clinvar/    benign, pathogenic, vus, rare_benign, ar_pathogenic, ad_pathogenic
   {output_dir}/gnomad/     gnomad, gnomad_upper_af_1e-06, ..., gnomad_upper_af_0.1
   {output_dir}/hgmd/       hgmd, ar_hgmd, ad_hgmd
-  {output_dir}/cosmic/     cosmic_single, cosmic_2+, ..., cosmic_32+,
+  {output_dir}/cosmic/     cosmic_single, cosmic_2+, ..., cosmic_256+,
                            cosmic_onco_*, cosmic_tsg_*
   {output_dir}/neurodev/  ndd_case, ndd_control
   {output_dir}/asd/       asd
@@ -92,9 +92,6 @@ SUBSET_FILES = {
         "pathogenic": str(ANNOTATIONS_DIR / "clinvar" / "pathogenic_dirbind_variant_subset.pkl"),
         "benign":     str(ANNOTATIONS_DIR / "clinvar" / "benign_dirbind_variant_subset.pkl"),
         "vus":        str(ANNOTATIONS_DIR / "clinvar" / "vus_dirbind_variant_subset.pkl"),
-    },
-    "hgmd": {
-        "hgmd":       str(ANNOTATIONS_LICENSED_DIR / "hgmd_variant_subset.pkl"),
     },
 }
 
@@ -278,12 +275,23 @@ def process_clinvar(tsv_path, out_dir, threshold, min_partners):
 
 
 def process_hgmd(tsv_path, out_dir, threshold, min_partners):
+    """HGMD disease-causing (DM) variants.
+
+    Every row of `hgmd_rows.csv.gz` is a DM variant, so there is no sub-group to
+    select and the whole scored set is the group. This used to be carved out
+    using `hgmd_variant_subset.pkl`, which is not an HGMD variant list -- it is
+    the AlphaFold folding-budget cap written by `map_hgmd.py`
+    (`interactor_count < 10`, stopping at 600 complexes, over an unordered set).
+    It discarded 9,822 of the 13,383 scored variants, and unevenly: 91% of the
+    AR ones against 67% of the AD ones, which is what produced the AR:AD ratio
+    of 1:11.3 in Fig 5 where ClinVar gives 1:3.06. Same failure as the ASD
+    cohort in `process_asd`.
+    """
     biogrid_counts = load_biogrid_partner_counts("hgmd")
     print("Processing HGMD...")
     pairs = load_predictions(tsv_path)
     grouped = group_by_variant(pairs)
-    with open(SUBSET_FILES["hgmd"]["hgmd"], "rb") as f:
-        subset = pickle.load(f)
+    subset = {(u, v, p) for (u, v), ps in grouped.items() for p in ps}
     table = build_arrays(grouped, subset, threshold, min_partners, biogrid_counts)
     save_outputs(out_dir, "hgmd", table)
 
@@ -436,7 +444,17 @@ def process_cosmic(tsv_path, out_dir, threshold, min_partners):
         ("cosmic_16+", 16, None),
         ("cosmic_32+", 32, None),
     ]
-    for name, min_rec, max_rec in bin_defs:
+    # Deeper cuts, for the FULL COSMIC set only. The recurrence tail is where
+    # drivers concentrate and the edgetic signal keeps climbing through it, so
+    # stopping at >=32 truncates the trend. They are not applied to the oncogene
+    # or TSG subsets: those hold ~130 and ~113 variants at >=32 already, and
+    # splitting further gives bins too small to estimate an enrichment from.
+    cosmic_all_extra = [
+        ("cosmic_64+",  64, None),
+        ("cosmic_128+", 128, None),
+        ("cosmic_256+", 256, None),
+    ]
+    for name, min_rec, max_rec in bin_defs + cosmic_all_extra:
         subset = recurrence_subset(all_cosmic_pairs, min_rec, max_rec)
         if not subset:
             print(f"  {name}: no variants, skipping")
@@ -473,8 +491,11 @@ def main():
                    help="Base output directory (will create DB subdirs inside)")
     p.add_argument("--threshold", type=float, default=0.5,
                    help="Disruption score threshold (default: 0.5)")
-    p.add_argument("--min-partners", type=int, default=1,
-                   help="Minimum partners for posterior_ls (default: 1)")
+    p.add_argument("--min-partners", type=int, default=3,
+                   help="Coverage rule: drop a variant when BioGRID lists this "
+                        "many partners for it but fewer were tested. A variant "
+                        "BioGRID knows fewer partners for is kept (default: 3, "
+                        "the rule stated in Methods)")
     p.add_argument("--databases", nargs="+",
                    choices=["clinvar", "gnomad", "hgmd", "cosmic", "neurodev", "asd"],
                    default=["clinvar", "gnomad", "hgmd", "cosmic", "neurodev", "asd"],

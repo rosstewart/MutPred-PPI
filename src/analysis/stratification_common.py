@@ -62,6 +62,44 @@ def load_canonical_rows(rows_file: str = ROWS_FILE) -> pd.DataFrame:
     return rows
 
 
+def row_perturbation_labels(dataset: str = CANONICAL_DATASET,
+                            rows_file: str = ROWS_FILE) -> np.ndarray:
+    """Per-canonical-row `perturbed` label (1 = interaction disrupted), 0..n-1.
+
+    Read from the dataset the row table was exported from, not reconstructed
+    from the GCV pkl: the label is a property of the row, so it does not need
+    the fold machinery, and taking it from the source means the composition
+    columns cannot drift against a stale pkl. The row order is asserted to
+    match, which is the only thing that makes the positional alignment safe.
+    """
+    from utils.gcv_common import dataset_config, load_data
+
+    df = load_data(dataset_config(dataset)).reset_index(drop=True)
+    rows = load_canonical_rows(rows_file)
+    if len(df) != len(rows) or not (df["mutation"].values == rows["mutation"].values).all() \
+            or not (df["interactor"].values == rows["interactor"].values).all():
+        raise ValueError(
+            f"{dataset} and {os.path.basename(rows_file)} are not row-aligned, so "
+            f"labels cannot be attached positionally. Regenerate the CV reference "
+            f"with src/analysis/export_cv_reference.py --dataset {dataset}.")
+    return df["perturbed"].to_numpy()
+
+
+def composition(row_indices, labels: np.ndarray) -> tuple[int, float]:
+    """`(n, positive_rate)` for a set of canonical row indices.
+
+    Every S5 panel compares AUC between strata that differ in size, class
+    balance and intrinsic difficulty, so an AUC gap on its own does not mean a
+    skill gap. Reporting the positive rate beside each AUC is what lets a reader
+    tell the two apart.
+    """
+    idx = sorted(row_indices)
+    if not idx:
+        return 0, float("nan")
+    sel = labels[np.asarray(idx)]
+    return len(idx), float(np.mean(sel))
+
+
 def _has_index(container, key) -> bool:
     """True if `container[key]` exists, for a dict OR a list.
 
